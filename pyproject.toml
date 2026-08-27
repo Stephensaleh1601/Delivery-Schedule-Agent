@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dispatch-agent"
+version = "0.1.0"
+description = "Dispatch sequencing agent for a home-installation delivery scheduling system"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["dispatch_agent", "dispatch_agent.agents", "dispatch_agent.geo", "dispatch_agent.dashboard"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
