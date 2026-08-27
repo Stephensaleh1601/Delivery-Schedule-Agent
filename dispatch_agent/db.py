@@ -81,6 +81,18 @@ class JobsRepository:
             ).fetchall()
         return [JobRecord.model_validate_json(r[0]) for r in rows]
 
+    def all_jobs(self) -> list[JobRecord]:
+        """Every job regardless of date -- the back office's "orders coming in" feed."""
+        with _connect() as conn:
+            rows = conn.execute("SELECT data FROM jobs ORDER BY delivery_date, id").fetchall()
+        return [JobRecord.model_validate_json(r[0]) for r in rows]
+
+    def pending_dates(self) -> list[Date]:
+        """Distinct delivery dates with at least one job -- populates the route-plan date picker."""
+        with _connect() as conn:
+            rows = conn.execute("SELECT DISTINCT delivery_date FROM jobs ORDER BY delivery_date").fetchall()
+        return [Date.fromisoformat(r[0]) for r in rows]
+
     def save_sequence(self, sequence: DaySequence) -> None:
         with _connect() as conn:
             conn.execute(

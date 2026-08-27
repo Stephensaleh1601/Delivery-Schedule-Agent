@@ -14,8 +14,8 @@ from langgraph.graph import END, StateGraph
 
 from dispatch_agent.agents.prompts import DRAFT_MESSAGE_SYSTEM_PROMPT
 from dispatch_agent.geo.routing_client import RoutingClient
-from dispatch_agent.geo.zones import SINGAPORE_CENTROID
-from dispatch_agent.llm import BedrockClaude
+from dispatch_agent.geo.zones import COMPANY_DEPOT
+from dispatch_agent.llm import LLMClient, build_llm_client
 from dispatch_agent.models import DaySequence, JobRecord
 from dispatch_agent.solver import sequence_day
 
@@ -32,7 +32,7 @@ def _solve_node(routing_client: RoutingClient):
     def node(state: PlanningState) -> PlanningState:
         try:
             sequence = sequence_day(
-                state["jobs"], state["delivery_date"], depot=SINGAPORE_CENTROID, routing_client=routing_client
+                state["jobs"], state["delivery_date"], depot=COMPANY_DEPOT, routing_client=routing_client
             )
         except Exception as exc:  # noqa: BLE001 -- surfaced to the coordinator, not swallowed
             return {"error": str(exc), "sequence": None}
@@ -41,7 +41,7 @@ def _solve_node(routing_client: RoutingClient):
     return node
 
 
-def _draft_messages_node(llm: BedrockClaude):
+def _draft_messages_node(llm: LLMClient):
     def node(state: PlanningState) -> PlanningState:
         sequence = state.get("sequence")
         if sequence is None:
@@ -63,8 +63,8 @@ def _draft_messages_node(llm: BedrockClaude):
     return node
 
 
-def build_planning_graph(llm: BedrockClaude | None = None, routing_client: RoutingClient | None = None):
-    llm = llm or BedrockClaude()
+def build_planning_graph(llm: LLMClient | None = None, routing_client: RoutingClient | None = None):
+    llm = llm or build_llm_client()
     routing_client = routing_client or RoutingClient()
 
     graph = StateGraph(PlanningState)
@@ -79,7 +79,7 @@ def build_planning_graph(llm: BedrockClaude | None = None, routing_client: Routi
 def run_planning(
     jobs: list[JobRecord],
     delivery_date: Date,
-    llm: BedrockClaude | None = None,
+    llm: LLMClient | None = None,
     routing_client: RoutingClient | None = None,
 ) -> PlanningState:
     graph = build_planning_graph(llm, routing_client)

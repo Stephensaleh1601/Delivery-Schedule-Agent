@@ -8,7 +8,7 @@ from datetime import date as Date
 from dispatch_agent.agents.planning_agent import run_planning
 from dispatch_agent.db import JobsRepository
 from dispatch_agent.geo.routing_client import RoutingClient
-from dispatch_agent.llm import BedrockClaude
+from dispatch_agent.llm import LLMClient
 from dispatch_agent.models import (
     DaySequence,
     JobStatus,
@@ -21,7 +21,7 @@ from dispatch_agent.models import (
 def apply_reschedule(
     request: RescheduleRequest,
     repo: JobsRepository | None = None,
-    llm: BedrockClaude | None = None,
+    llm: LLMClient | None = None,
     routing_client: RoutingClient | None = None,
 ) -> ReschedulePlan:
     repo = repo or JobsRepository()

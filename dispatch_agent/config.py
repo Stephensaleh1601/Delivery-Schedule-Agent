@@ -19,6 +19,9 @@ def _time(env_var: str, default: str) -> Time:
 
 @dataclass
 class Settings:
+    # LLM_PROVIDER picks which client build_llm_client() (dispatch_agent/llm.py) returns --
+    # "bedrock" (default) or "openai". Only one needs valid credentials at a time.
+    llm_provider: str = os.getenv("LLM_PROVIDER", "bedrock").lower()
     aws_region: str = os.getenv("AWS_REGION", "ap-southeast-1")
     bedrock_model_id: str = os.getenv(
         "BEDROCK_MODEL_ID",
@@ -27,7 +30,13 @@ class Settings:
         # and model launches, so treat this default as a placeholder, not a guarantee.
         "apac.anthropic.claude-haiku-4-5-20250929-v1:0",
     )
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    # ROUTING_PROVIDER: "google" (Distance Matrix API), "onemap", or "haversine". Leave
+    # credentials blank for whichever provider you're not using -- an unset/failing provider
+    # falls back to the haversine estimate automatically.
     routing_provider: str = os.getenv("ROUTING_PROVIDER", "onemap")
+    google_maps_api_key: str = os.getenv("GOOGLE_MAPS_API_KEY", "")
     # Either a pre-issued static token (ONEMAP_TOKEN, takes priority) or an email/password pair
     # the routing client exchanges for a token itself. Leave all three blank to use the
     # haversine fallback.

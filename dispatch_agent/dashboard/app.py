@@ -14,7 +14,7 @@ import streamlit as st
 
 from dispatch_agent.agents.planning_agent import run_planning
 from dispatch_agent.db import JobsRepository, init_db
-from dispatch_agent.geo.zones import SINGAPORE_CENTROID
+from dispatch_agent.geo.zones import COMPANY_DEPOT
 from dispatch_agent.models import JobStatus, RescheduleRequest
 from dispatch_agent.reschedule import apply_reschedule, record_override
 
@@ -52,7 +52,7 @@ messages: dict[str, str] = st.session_state.get("messages", {})
 col_map, col_list = st.columns([2, 1])
 
 with col_map:
-    path_points = [[SINGAPORE_CENTROID.lng, SINGAPORE_CENTROID.lat]]
+    path_points = [[COMPANY_DEPOT.lng, COMPANY_DEPOT.lat]]
     rows = []
     for stop in sequence.stops:
         job = jobs_by_id.get(stop.job_id)
@@ -80,7 +80,7 @@ with col_map:
             pickable=True,
         ),
     ]
-    view_state = pdk.ViewState(latitude=SINGAPORE_CENTROID.lat, longitude=SINGAPORE_CENTROID.lng, zoom=11)
+    view_state = pdk.ViewState(latitude=COMPANY_DEPOT.lat, longitude=COMPANY_DEPOT.lng, zoom=11)
     st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view_state, tooltip={"text": "{label}\n{window}"}))
     st.metric("Total drive time", f"{sequence.total_drive_minutes} min")
 

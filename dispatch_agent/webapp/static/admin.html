@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dispatch Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <nav class="top"><a href="/">Client booking form &rarr;</a></nav>
+  <main class="page">
+    <h1>Dispatch Dashboard</h1>
+    <p class="subtitle">Every booking request comes in here. Pick a date and generate a sequenced route.</p>
+
+    <section>
+      <h2>Incoming orders</h2>
+      <div id="orders-table" class="table-wrap"><p class="muted">Loading...</p></div>
+    </section>
+
+    <section>
+      <h2>Generate route plan</h2>
+      <div class="row">
+        <label>
+          Delivery date
+          <input type="date" id="date-input" />
+        </label>
+        <button id="generate-btn">Generate Route Plan</button>
+      </div>
+      <p id="dates-hint" class="muted"></p>
+      <div id="map"><p class="muted">Loading map...</p></div>
+      <div id="plan-output" class="table-wrap"></div>
+    </section>
+  </main>
+  <script src="/static/admin.js"></script>
+</body>
+</html>

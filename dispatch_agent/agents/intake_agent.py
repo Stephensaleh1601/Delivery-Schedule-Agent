@@ -15,7 +15,7 @@ from langgraph.graph import END, StateGraph
 from dispatch_agent.agents.prompts import INTAKE_SYSTEM_PROMPT_TEMPLATE, RECORD_JOB_TOOL_SCHEMA
 from dispatch_agent.db import JobsRepository
 from dispatch_agent.geo.postal_codes import postal_code_to_coords
-from dispatch_agent.llm import BedrockClaude
+from dispatch_agent.llm import LLMClient, build_llm_client
 from dispatch_agent.models import Address, JobRecord, JobType, TimeWindow
 
 
@@ -26,7 +26,7 @@ class IntakeState(TypedDict, total=False):
     errors: list[str]
 
 
-def _extract_node(llm: BedrockClaude):
+def _extract_node(llm: LLMClient):
     def node(state: IntakeState) -> IntakeState:
         system = INTAKE_SYSTEM_PROMPT_TEMPLATE.format(today=Date.today().isoformat())
         extracted = llm.extract_structured(
@@ -92,8 +92,8 @@ def _persist_node(repo: JobsRepository):
     return node
 
 
-def build_intake_graph(llm: BedrockClaude | None = None, repo: JobsRepository | None = None):
-    llm = llm or BedrockClaude()
+def build_intake_graph(llm: LLMClient | None = None, repo: JobsRepository | None = None):
+    llm = llm or build_llm_client()
     repo = repo or JobsRepository()
 
     graph = StateGraph(IntakeState)
@@ -108,7 +108,7 @@ def build_intake_graph(llm: BedrockClaude | None = None, repo: JobsRepository | 
 
 
 def run_intake(
-    raw_message: str, llm: BedrockClaude | None = None, repo: JobsRepository | None = None
+    raw_message: str, llm: LLMClient | None = None, repo: JobsRepository | None = None
 ) -> IntakeState:
     graph = build_intake_graph(llm, repo)
     return graph.invoke({"raw_message": raw_message})

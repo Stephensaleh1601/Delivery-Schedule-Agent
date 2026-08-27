@@ -1,20 +1,20 @@
-"""Drive-time client, with a filter for routes that stray into Johor and a network-free fallback.
+"""Drive-time/distance client, with a filter for routes that stray into Johor and a
+network-free fallback. Three providers:
 
-Placeholder for the Stow team's routing client (see PRD: "That last one has a filter that
-rejects routes cutting through Johor, which the maps API does sometimes for local trips. It
-will happen during a demo otherwise."). Two providers:
-
+- "google": Google Maps Platform's Distance Matrix API -- needs GOOGLE_MAPS_API_KEY, a plain
+  Maps API key (not a GCP service account). Returns both drive time and distance in one call.
 - "onemap": Singapore's free government routing API (https://www.onemap.gov.sg), which needs
   no billing account -- a good fit for a hackathon demo restricted to Singapore.
 - "haversine": a zero-dependency straight-line fallback (great-circle distance over an assumed
-  average speed), used automatically when no OneMap credentials are configured or the API is
-  unreachable, so the rest of the system -- and the whole test suite -- keeps working offline.
+  average speed), used automatically when the selected provider has no credentials configured
+  or its API call fails, so the rest of the system -- and the whole test suite -- keeps working
+  offline.
 
-The Johor filter: a Singapore-focused router will occasionally return a route that dips across
-the Straits into Johor, Malaysia for what should be a short local hop, usually near the
-Woodlands/Tuas checkpoints. That route is geometrically "valid" but wrong for a same-day
-domestic run. We reject any route that leaves Singapore's bounding box and fall back to the
-haversine estimate for that pair instead of surfacing a cross-border drive time.
+The Johor filter (OneMap only): a Singapore-focused router will occasionally return a route
+that dips across the Straits into Johor, Malaysia for what should be a short local hop, usually
+near the Woodlands/Tuas checkpoints. That route is geometrically "valid" but wrong for a
+same-day domestic run. We reject any OneMap route that leaves Singapore's bounding box and fall
+back to the haversine estimate for that pair instead of surfacing a cross-border drive time.
 """
 from __future__ import annotations
 
@@ -67,12 +67,14 @@ class RoutingClient:
         )
 
     def drive_minutes(self, origin: Coordinates, destination: Coordinates) -> int:
-        has_onemap_auth = settings.onemap_token or (settings.onemap_email and settings.onemap_password)
-        if self.provider == "onemap" and has_onemap_auth:
-            minutes = self._onemap_drive_minutes(origin, destination)
-            if minutes is not None:
-                return minutes
-        return haversine_drive_minutes(origin, destination)
+        route = self._route(origin, destination)
+        return route["minutes"] if route else haversine_drive_minutes(origin, destination)
+
+    def distance_km(self, origin: Coordinates, destination: Coordinates) -> float:
+        """Drive distance in km, same provider/fallback logic as drive_minutes -- used for
+        display (e.g. the route planner's per-leg breakdown), never by the solver itself."""
+        route = self._route(origin, destination)
+        return route["km"] if route else round(haversine_km(origin, destination) * 1.3, 2)
 
     def matrix(self, points: list[Coordinates]) -> list[list[int]]:
         """Full drive-time matrix in minutes, points[i] -> points[j]."""
@@ -80,6 +82,61 @@ class RoutingClient:
             [0 if i == j else self.drive_minutes(a, b) for j, b in enumerate(points)]
             for i, a in enumerate(points)
         ]
+
+    def _route(self, origin: Coordinates, destination: Coordinates) -> dict | None:
+        """{"minutes": int, "km": float} for one leg via the configured provider, or None if
+        it's unconfigured/unreachable -- callers fall back to the haversine estimate."""
+        if self.provider == "google" and settings.google_maps_api_key:
+            info = self._google_route(origin, destination)
+            if info is not None:
+                return {
+                    "minutes": max(1, round(info["duration_seconds"] / 60)),
+                    "km": round(info["distance_meters"] / 1000, 2),
+                }
+            return None
+
+        has_onemap_auth = settings.onemap_token or (settings.onemap_email and settings.onemap_password)
+        if self.provider == "onemap" and has_onemap_auth:
+            summary = self._onemap_route(origin, destination)
+            if summary is not None:
+                try:
+                    return {
+                        "minutes": max(1, round(int(summary["total_time"]) / 60)),
+                        "km": round(float(summary["total_distance"]) / 1000, 2),
+                    }
+                except (KeyError, ValueError, TypeError):
+                    pass
+        return None
+
+    # -- Google Maps Distance Matrix ---------------------------------------------
+
+    def _google_route(self, origin: Coordinates, destination: Coordinates) -> dict | None:
+        """{"duration_seconds": int, "distance_meters": int} for one leg, or None on any
+        failure (bad key, no route, quota, network) -- caller falls back to haversine."""
+        try:
+            resp = requests.get(
+                "https://maps.googleapis.com/maps/api/distancematrix/json",
+                params={
+                    "origins": f"{origin.lat},{origin.lng}",
+                    "destinations": f"{destination.lat},{destination.lng}",
+                    "mode": "driving",
+                    "key": settings.google_maps_api_key,
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            if body.get("status") != "OK":
+                return None
+            element = body["rows"][0]["elements"][0]
+            if element.get("status") != "OK":
+                return None
+            return {
+                "duration_seconds": int(element["duration"]["value"]),
+                "distance_meters": int(element["distance"]["value"]),
+            }
+        except (requests.RequestException, KeyError, IndexError, ValueError, TypeError):
+            return None
 
     # -- OneMap -----------------------------------------------------------------
 
@@ -100,7 +157,9 @@ class RoutingClient:
         except (requests.RequestException, KeyError, ValueError):
             return None
 
-    def _onemap_drive_minutes(self, origin: Coordinates, destination: Coordinates) -> int | None:
+    def _onemap_route(self, origin: Coordinates, destination: Coordinates) -> dict | None:
+        """route_summary dict (total_time in seconds, total_distance in metres) for one leg,
+        or None on any failure/Johor-detour -- callers fall back to the haversine estimate."""
         token = self._onemap_auth_token()
         if not token:
             return None
@@ -119,8 +178,7 @@ class RoutingClient:
             body = resp.json()
             if not self._route_stays_in_singapore(body):
                 return None  # the Johor detour -- fall back to haversine for this pair
-            total_seconds = int(body["route_summary"]["total_time"])
-            return max(1, round(total_seconds / 60))
+            return body["route_summary"]
         except (requests.RequestException, KeyError, ValueError, TypeError):
             return None
 
