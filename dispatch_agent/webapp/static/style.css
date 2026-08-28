@@ -125,6 +125,72 @@ button:disabled {
   color: var(--error-text);
 }
 
+.notification {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  background: #fff8e1;
+  border: 1px solid #f0d98c;
+  color: #6b5500;
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+}
+
+.notification-text {
+  flex: 1;
+  min-width: 220px;
+  font-size: 0.9rem;
+}
+
+.notification-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.notification-actions button {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+}
+
+.notification-actions .chip {
+  background: #ffffff;
+}
+
+.trip-share {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.trip-share #trip-link-box {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+}
+
+.trip-share input {
+  flex: 1;
+  min-width: 220px;
+  font: inherit;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.trip-share .muted {
+  margin: 0.75rem 0 0;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -155,6 +221,21 @@ tr:last-child td {
   overflow-x: auto;
 }
 
+#edit-order-section {
+  margin-top: 1.5rem;
+}
+
+#edit-order-section h3 {
+  font-size: 1rem;
+  margin: 0 0 0.75rem;
+}
+
+#cancel-edit-btn {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
 #map {
   height: 420px;
   margin: 1rem 0;
@@ -179,6 +260,7 @@ tr:last-child td {
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--card);
+  color: var(--text);
   cursor: pointer;
 }
 

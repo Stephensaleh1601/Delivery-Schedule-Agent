@@ -12,6 +12,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# On some networks (corporate proxy/VPN doing TLS interception, some antivirus/endpoint
+# security software) the OS trusts the intercepting certificate but certifi's bundled CA list
+# doesn't, so `requests` calls to Google/OneMap fail with CERTIFICATE_VERIFY_FAILED. Those
+# failures are caught by the routing client's broad except-and-fall-back-to-haversine handling,
+# so this doesn't crash anything -- it just silently degrades every drive-time/distance call to
+# the haversine estimate and, for the batched matrix call, still pays for every failed
+# connection attempt before falling back. Using the OS trust store instead (this is an
+# application entry point, not a library, so this is the documented safe place for it) fixes
+# both. Import errors here would mean `truststore` isn't installed -- non-fatal, same as before.
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 
 def _time(env_var: str, default: str) -> Time:
     return Time.fromisoformat(os.getenv(env_var, default))

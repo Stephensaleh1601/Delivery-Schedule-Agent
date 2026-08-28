@@ -12,7 +12,7 @@ def _job(name, postal_code, day, start, end):
     return JobRecord(
         customer_name=name,
         address=Address(raw_text=name, postal_code=postal_code, coordinates=postal_code_to_coords(postal_code)),
-        job_type=JobType.DELIVERY,
+        job_type=JobType.SOFA,
         availability=[TimeWindow(start=time(*start), end=time(*end))],
         delivery_date=day,
         raw_message="test",

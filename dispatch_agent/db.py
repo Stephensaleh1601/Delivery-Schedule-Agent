@@ -12,7 +12,7 @@ from datetime import date as Date
 from pathlib import Path
 
 from dispatch_agent.config import settings
-from dispatch_agent.models import DaySequence, JobRecord, OverrideLogEntry
+from dispatch_agent.models import DaySequence, JobRecord, Notification, OverrideLogEntry
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -31,6 +31,12 @@ CREATE TABLE IF NOT EXISTS override_log (
     id TEXT PRIMARY KEY,
     delivery_date TEXT NOT NULL,
     job_id TEXT NOT NULL,
+    data TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    read INTEGER NOT NULL DEFAULT 0,
     data TEXT NOT NULL
 );
 """
@@ -68,6 +74,10 @@ class JobsRepository:
                 (job.id, job.delivery_date.isoformat(), job.status.value, job.model_dump_json()),
             )
 
+    def delete_job(self, job_id: str) -> None:
+        with _connect() as conn:
+            conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+
     def get_job(self, job_id: str) -> JobRecord | None:
         with _connect() as conn:
             row = conn.execute("SELECT data FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -86,6 +96,19 @@ class JobsRepository:
         with _connect() as conn:
             rows = conn.execute("SELECT data FROM jobs ORDER BY delivery_date, id").fetchall()
         return [JobRecord.model_validate_json(r[0]) for r in rows]
+
+    def find_jobs_by_customer(self, query: str) -> list[JobRecord]:
+        """Case-insensitive substring match on name or phone -- how the reschedule chat flow
+        looks a customer's booking up. Jobs are stored as opaque JSON blobs (see module
+        docstring), so this filters in Python rather than with SQL LIKE on a real column."""
+        needle = query.strip().lower()
+        if not needle:
+            return []
+        return [
+            job
+            for job in self.all_jobs()
+            if needle in job.customer_name.lower() or (job.phone and needle in job.phone.lower())
+        ]
 
     def pending_dates(self) -> list[Date]:
         """Distinct delivery dates with at least one job -- populates the route-plan date picker."""
@@ -123,3 +146,27 @@ class JobsRepository:
                 (delivery_date.isoformat(),),
             ).fetchall()
         return [OverrideLogEntry.model_validate_json(r[0]) for r in rows]
+
+    def add_notification(self, notification: Notification) -> None:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO notifications (id, read, data) VALUES (?, ?, ?)",
+                (notification.id, int(notification.read), notification.model_dump_json()),
+            )
+
+    def unread_notifications(self) -> list[Notification]:
+        with _connect() as conn:
+            rows = conn.execute("SELECT data FROM notifications WHERE read = 0 ORDER BY id").fetchall()
+        return [Notification.model_validate_json(r[0]) for r in rows]
+
+    def mark_notification_read(self, notification_id: str) -> None:
+        with _connect() as conn:
+            row = conn.execute("SELECT data FROM notifications WHERE id = ?", (notification_id,)).fetchone()
+            if row is None:
+                return
+            notification = Notification.model_validate_json(row[0])
+            notification.read = True
+            conn.execute(
+                "UPDATE notifications SET read = 1, data = ? WHERE id = ?",
+                (notification.model_dump_json(), notification_id),
+            )

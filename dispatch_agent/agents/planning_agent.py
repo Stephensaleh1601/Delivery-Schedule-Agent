@@ -63,16 +63,28 @@ def _draft_messages_node(llm: LLMClient):
     return node
 
 
-def build_planning_graph(llm: LLMClient | None = None, routing_client: RoutingClient | None = None):
-    llm = llm or build_llm_client()
+def build_planning_graph(
+    llm: LLMClient | None = None,
+    routing_client: RoutingClient | None = None,
+    draft_messages: bool = True,
+):
     routing_client = routing_client or RoutingClient()
 
     graph = StateGraph(PlanningState)
     graph.add_node("solve", _solve_node(routing_client))
-    graph.add_node("draft_messages", _draft_messages_node(llm))
     graph.set_entry_point("solve")
-    graph.add_edge("solve", "draft_messages")
-    graph.add_edge("draft_messages", END)
+
+    if draft_messages:
+        # Only instantiate an LLM client when a caller actually wants drafted messages -- a
+        # caller that doesn't (e.g. the chat's reschedule negotiation, which sends its own
+        # confirmation) shouldn't need working LLM credentials just to re-sequence a day.
+        llm = llm or build_llm_client()
+        graph.add_node("draft_messages", _draft_messages_node(llm))
+        graph.add_edge("solve", "draft_messages")
+        graph.add_edge("draft_messages", END)
+    else:
+        graph.add_edge("solve", END)
+
     return graph.compile()
 
 
@@ -81,6 +93,7 @@ def run_planning(
     delivery_date: Date,
     llm: LLMClient | None = None,
     routing_client: RoutingClient | None = None,
+    draft_messages: bool = True,
 ) -> PlanningState:
-    graph = build_planning_graph(llm, routing_client)
+    graph = build_planning_graph(llm, routing_client, draft_messages=draft_messages)
     return graph.invoke({"delivery_date": delivery_date, "jobs": jobs, "messages": {}})

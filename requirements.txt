@@ -9,5 +9,6 @@ streamlit>=1.35
 pydeck>=0.9
 pandas>=2.2
 requests>=2.31
+truststore>=0.9
 python-dotenv>=1.0
 pytest>=8.0

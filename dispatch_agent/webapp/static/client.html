@@ -3,67 +3,27 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Book a Home Visit</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <title>Majestic Fighters Furniture Delivery</title>
+  <link rel="stylesheet" href="/static/chat.css?v=2" />
 </head>
 <body>
-  <nav class="top"><a href="/admin">Dispatch team login &rarr;</a></nav>
-  <main class="page">
-    <h1>Book a Home Visit</h1>
-    <p class="subtitle">
-      Tell us your address and when you're free -- we'll schedule a visit and confirm the exact
-      arrival time closer to the date.
-    </p>
-
-    <form id="job-form" novalidate>
-      <label>
-        Full name
-        <input type="text" name="customer_name" required />
-      </label>
-      <label>
-        Phone (optional)
-        <input type="tel" name="phone" />
-      </label>
-      <label>
-        Address
-        <input type="text" name="address_raw" placeholder="e.g. 1 Marina Blvd, #12-34" required />
-      </label>
-      <label>
-        Postal code
-        <input type="text" name="postal_code" inputmode="numeric" pattern="\d{6}" maxlength="6" placeholder="6 digits" required />
-      </label>
-      <label>
-        What do you need?
-        <select name="job_type">
-          <option value="delivery">Delivery</option>
-          <option value="installation">Installation</option>
-          <option value="setup">Setup</option>
-          <option value="other">Other</option>
-        </select>
-      </label>
-      <label>
-        Preferred date
-        <input type="date" name="delivery_date" required />
-      </label>
-      <div class="row">
-        <label>
-          Earliest time
-          <input type="time" name="window_start" value="09:00" required />
-        </label>
-        <label>
-          Latest time
-          <input type="time" name="window_end" value="18:00" required />
-        </label>
+  <div class="wa-app">
+    <header class="wa-header">
+      <div class="wa-avatar">🛋️</div>
+      <div>
+        <div class="wa-name">Majestic Fighters Furniture Delivery</div>
+        <div class="wa-status">online</div>
       </div>
-      <label>
-        Notes (optional)
-        <textarea name="notes" rows="3" placeholder="Anything we should know?"></textarea>
-      </label>
-      <button type="submit">Request booking</button>
-    </form>
+    </header>
 
-    <div id="result" class="result" hidden></div>
-  </main>
-  <script src="/static/client.js"></script>
+    <div class="wa-chat" id="chat"></div>
+
+    <form class="wa-composer" id="composer">
+      <input type="text" id="composer-input" placeholder="Type a message" autocomplete="off" />
+      <button type="submit" aria-label="Send">&#10148;</button>
+    </form>
+  </div>
+  <a class="wa-admin-link" href="/admin">Dispatch team login &rarr;</a>
+  <script src="/static/chat.js?v=2"></script>
 </body>
 </html>

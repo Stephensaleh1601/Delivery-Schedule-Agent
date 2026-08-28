@@ -28,7 +28,7 @@ def test_job_record_defaults():
     job = JobRecord(
         customer_name="Mrs Tan",
         address=Address(raw_text="1 Marina Blvd", postal_code="018956"),
-        job_type=JobType.DELIVERY,
+        job_type=JobType.SOFA,
         availability=[TimeWindow(start=time(9, 0), end=time(12, 0))],
         delivery_date=date(2026, 8, 28),
         raw_message="hi",

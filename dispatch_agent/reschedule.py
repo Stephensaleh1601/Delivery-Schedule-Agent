@@ -23,6 +23,7 @@ def apply_reschedule(
     repo: JobsRepository | None = None,
     llm: LLMClient | None = None,
     routing_client: RoutingClient | None = None,
+    draft_messages: bool = True,
 ) -> ReschedulePlan:
     repo = repo or JobsRepository()
     job = repo.get_job(request.job_id)
@@ -32,28 +33,31 @@ def apply_reschedule(
     previous_date = job.delivery_date
     previous_sequence = repo.get_sequence(previous_date)
 
-    job.delivery_date = request.new_date or job.delivery_date
-    if request.new_availability:
-        job.availability = request.new_availability
+    new_date: Date = request.new_date or job.delivery_date
+    new_availability = request.new_availability or job.availability
+
+    # Test feasibility against a candidate copy first -- don't persist the move until we know
+    # the new day can actually fit it, otherwise a rejected request ("sorry, that slot doesn't
+    # work") would still silently leave the job moved in the database.
+    candidate = job.model_copy(update={"delivery_date": new_date, "availability": new_availability})
+    jobs_on_new_day = [j for j in repo.jobs_for_date(new_date) if j.id != job.id] + [candidate]
+
+    new_result = run_planning(jobs_on_new_day, new_date, llm, routing_client, draft_messages=draft_messages)
+    proposed_new_day = new_result.get("sequence")
+    if proposed_new_day is None:
+        raise ValueError(new_result.get("error") or "could not find a feasible sequence for the new day")
+
+    job.delivery_date = new_date
+    job.availability = new_availability
     job.status = JobStatus.RESCHEDULE_REQUESTED
     job.raw_message = request.raw_message
     repo.save_job(job)
 
-    new_date: Date = job.delivery_date
-    remaining_on_old_day = [j for j in repo.jobs_for_date(previous_date) if j.id != job.id]
-    jobs_on_new_day = repo.jobs_for_date(new_date)
-    if job.id not in {j.id for j in jobs_on_new_day}:
-        jobs_on_new_day = jobs_on_new_day + [job]
-
     proposed_old_day: DaySequence | None = None
+    remaining_on_old_day = [j for j in repo.jobs_for_date(previous_date) if j.id != job.id]
     if remaining_on_old_day:
-        old_result = run_planning(remaining_on_old_day, previous_date, llm, routing_client)
+        old_result = run_planning(remaining_on_old_day, previous_date, llm, routing_client, draft_messages=draft_messages)
         proposed_old_day = old_result.get("sequence")
-
-    new_result = run_planning(jobs_on_new_day, new_date, llm, routing_client)
-    proposed_new_day = new_result.get("sequence")
-    if proposed_new_day is None:
-        raise ValueError(new_result.get("error") or "could not find a feasible sequence for the new day")
 
     affected_job_ids = _diff_affected(previous_sequence, proposed_old_day, proposed_new_day, moved_job_id=job.id)
 

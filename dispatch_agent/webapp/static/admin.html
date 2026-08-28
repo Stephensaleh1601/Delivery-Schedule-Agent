@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Dispatch Dashboard</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=3" />
 </head>
 <body>
   <nav class="top"><a href="/">Client booking form &rarr;</a></nav>
@@ -12,9 +12,48 @@
     <h1>Dispatch Dashboard</h1>
     <p class="subtitle">Every booking request comes in here. Pick a date and generate a sequenced route.</p>
 
+    <div id="notifications"></div>
+
     <section>
       <h2>Incoming orders</h2>
       <div id="orders-table" class="table-wrap"><p class="muted">Loading...</p></div>
+
+      <div id="edit-order-section" hidden>
+        <h3>Edit order</h3>
+        <form id="edit-order-form">
+          <input type="hidden" name="job_id" />
+          <div class="row">
+            <label>Full name<input type="text" name="customer_name" required /></label>
+            <label>Phone<input type="tel" name="phone" /></label>
+          </div>
+          <div class="row">
+            <label>Address<input type="text" name="address_raw" required /></label>
+            <label>Postal code<input type="text" name="postal_code" inputmode="numeric" pattern="\d{6}" maxlength="6" required /></label>
+          </div>
+          <div class="row">
+            <label>Furniture type
+              <select name="job_type">
+                <option value="sofa">Sofa</option>
+                <option value="bed">Bed</option>
+                <option value="cabinet">Cabinet</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label>Delivery date<input type="date" name="delivery_date" required /></label>
+          </div>
+          <div class="row">
+            <label>Earliest<input type="time" name="window_start" required /></label>
+            <label>Latest<input type="time" name="window_end" required /></label>
+            <label>Duration (min)<input type="number" name="duration_minutes" min="5" step="5" required /></label>
+          </div>
+          <label>Notes<textarea name="notes" rows="2"></textarea></label>
+          <div class="row">
+            <button type="submit">Save changes</button>
+            <button type="button" id="cancel-edit-btn">Cancel</button>
+          </div>
+          <p id="edit-order-error" class="result result--error" hidden></p>
+        </form>
+      </div>
     </section>
 
     <section>
@@ -28,9 +67,10 @@
       </div>
       <p id="dates-hint" class="muted"></p>
       <div id="map"><p class="muted">Loading map...</p></div>
+      <p id="map-note" class="muted"></p>
       <div id="plan-output" class="table-wrap"></div>
     </section>
   </main>
-  <script src="/static/admin.js"></script>
+  <script src="/static/admin.js?v=3"></script>
 </body>
 </html>

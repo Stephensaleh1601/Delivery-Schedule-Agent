@@ -18,10 +18,20 @@ def _utcnow() -> datetime:
 
 
 class JobType(str, Enum):
-    DELIVERY = "delivery"
-    INSTALLATION = "installation"
-    SETUP = "setup"
+    SOFA = "sofa"
+    BED = "bed"
+    CABINET = "cabinet"
     OTHER = "other"
+
+
+# Default job duration by furniture type, used when a customer/coordinator doesn't specify one --
+# heavier assembly work (cabinets) gets more time than a straightforward sofa drop-off.
+DEFAULT_DURATION_MINUTES_BY_JOB_TYPE: dict[JobType, int] = {
+    JobType.SOFA: 45,
+    JobType.BED: 75,
+    JobType.CABINET: 105,
+    JobType.OTHER: 60,
+}
 
 
 class JobStatus(str, Enum):
@@ -106,6 +116,17 @@ class OverrideLogEntry(BaseModel):
     coordinator_value: str
     reason: Optional[str] = None
     timestamp: datetime = Field(default_factory=_utcnow)
+
+
+class Notification(BaseModel):
+    """A heads-up for the back office -- e.g. a customer rescheduled via the chat after a route
+    was already generated for the affected date(s), so that plan is now stale."""
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    message: str
+    dates: list[Date] = Field(default_factory=list)
+    read: bool = False
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 class RescheduleRequest(BaseModel):

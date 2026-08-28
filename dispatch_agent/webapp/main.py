@@ -1,4 +1,4 @@
-"""FastAPI replacement for the Streamlit dashboard: a public client-facing intake form
+"""FastAPI replacement for the Streamlit dashboard: a WhatsApp-style client-facing chat
 (static/client.html) and a back-office dispatch dashboard (static/admin.html), talking to the
 JSON API below over plain fetch() -- no build step, no frontend framework.
 
@@ -6,21 +6,28 @@ Run with: uvicorn dispatch_agent.webapp.main:app --reload
 """
 from __future__ import annotations
 
-from datetime import date as Date, time as Time
+from datetime import date as Date
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from dispatch_agent.config import settings
 from dispatch_agent.db import JobsRepository, init_db
-from dispatch_agent.geo.postal_codes import postal_code_to_coords
 from dispatch_agent.geo.routing_client import RoutingClient
 from dispatch_agent.geo.zones import COMPANY_DEPOT, COMPANY_DEPOT_ADDRESS
-from dispatch_agent.models import Address, JobRecord, JobStatus, JobType, TimeWindow
+from dispatch_agent.models import DaySequence, JobRecord, JobStatus, Notification
 from dispatch_agent.solver import UnsolvableDayError, sequence_day
+from dispatch_agent.webapp import chat as chat_engine
+from dispatch_agent.webapp.jobs_service import (
+    JobSubmission,
+    JobSubmissionError,
+    create_job_from_submission,
+    update_job_from_submission,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -28,21 +35,20 @@ app = FastAPI(title="Dispatch Sequencing")
 init_db()
 
 
-class JobSubmission(BaseModel):
-    customer_name: str
-    phone: str | None = None
-    address_raw: str
-    postal_code: str
-    job_type: JobType = JobType.DELIVERY
-    delivery_date: Date
-    window_start: Time
-    window_end: Time
-    duration_minutes: int | None = Field(default=None, gt=0)
-    notes: str | None = None
-
-
 class RoutePlanRequest(BaseModel):
     date: Date
+
+
+class ChatEvent(BaseModel):
+    type: str
+    value: str | None = None
+    form: str | None = None
+    data: dict[str, Any] | None = None
+    state: dict[str, Any] | None = None
+
+
+def _sequence_has_stops(sequence: DaySequence | None) -> bool:
+    return sequence is not None and bool(sequence.stops)
 
 
 def _job_to_dict(job: JobRecord) -> dict:
@@ -68,26 +74,18 @@ def _job_to_dict(job: JobRecord) -> dict:
 
 @app.post("/api/jobs")
 def submit_job(payload: JobSubmission) -> dict:
-    if payload.window_end <= payload.window_start:
-        raise HTTPException(400, "Preferred window end must be after start.")
     try:
-        coordinates = postal_code_to_coords(payload.postal_code)
-    except ValueError as exc:
+        job = create_job_from_submission(payload, raw_message="[submitted via client booking form]")
+    except JobSubmissionError as exc:
         raise HTTPException(400, str(exc)) from exc
-
-    job = JobRecord(
-        customer_name=payload.customer_name,
-        phone=payload.phone,
-        address=Address(raw_text=payload.address_raw, postal_code=payload.postal_code, coordinates=coordinates),
-        job_type=payload.job_type,
-        availability=[TimeWindow(start=payload.window_start, end=payload.window_end)],
-        duration_minutes=payload.duration_minutes or settings.default_job_duration_minutes,
-        delivery_date=payload.delivery_date,
-        raw_message="[submitted via client booking form]",
-        notes=payload.notes,
-    )
-    JobsRepository().save_job(job)
     return {"id": job.id, "status": "ok"}
+
+
+@app.post("/api/chat")
+def chat_turn(event: ChatEvent) -> dict:
+    """The WhatsApp-style front face's only endpoint -- see dispatch_agent/webapp/chat.py for
+    the actual conversation state machine (booking form + reschedule negotiation)."""
+    return chat_engine.handle_event(event.model_dump())
 
 
 # -- Back office (back face) --------------------------------------------------
@@ -103,6 +101,77 @@ def list_jobs(date: Date | None = None) -> list[dict]:
 @app.get("/api/dates")
 def list_dates() -> list[str]:
     return [d.isoformat() for d in JobsRepository().pending_dates()]
+
+
+@app.put("/api/jobs/{job_id}")
+def edit_job(job_id: str, payload: JobSubmission) -> dict:
+    repo = JobsRepository()
+    existing = repo.get_job(job_id)
+    if existing is None:
+        raise HTTPException(404, "Job not found")
+    previous_date = existing.delivery_date
+
+    try:
+        job = update_job_from_submission(job_id, payload)
+    except JobSubmissionError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    stale_dates = sorted(
+        {d for d in {previous_date, job.delivery_date} if _sequence_has_stops(repo.get_sequence(d))}
+    )
+    if stale_dates:
+        dates_text = " and ".join(d.isoformat() for d in stale_dates)
+        repo.add_notification(
+            Notification(
+                message=f"{job.customer_name}'s order was edited. The route plan for {dates_text} "
+                "was already generated and is now out of date -- regenerate it.",
+                dates=stale_dates,
+            )
+        )
+    return {"id": job.id, "status": "ok"}
+
+
+@app.delete("/api/jobs/{job_id}")
+def remove_job(job_id: str) -> dict:
+    repo = JobsRepository()
+    job = repo.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+
+    was_sequenced = _sequence_has_stops(repo.get_sequence(job.delivery_date))
+    repo.delete_job(job_id)
+
+    if was_sequenced:
+        repo.add_notification(
+            Notification(
+                message=f"{job.customer_name}'s order was deleted. The route plan for "
+                f"{job.delivery_date.isoformat()} was already generated and is now out of date -- "
+                "regenerate it.",
+                dates=[job.delivery_date],
+            )
+        )
+    return {"status": "ok"}
+
+
+@app.get("/api/notifications")
+def list_notifications() -> list[dict]:
+    """Unread notifications for the back office -- e.g. a chat reschedule that made an
+    already-generated route plan stale (see dispatch_agent/webapp/chat.py)."""
+    return [
+        {
+            "id": n.id,
+            "message": n.message,
+            "dates": [d.isoformat() for d in n.dates],
+            "created_at": n.created_at.isoformat(),
+        }
+        for n in JobsRepository().unread_notifications()
+    ]
+
+
+@app.post("/api/notifications/{notification_id}/dismiss")
+def dismiss_notification(notification_id: str) -> dict:
+    JobsRepository().mark_notification_read(notification_id)
+    return {"status": "ok"}
 
 
 @app.get("/api/config")
@@ -130,14 +199,15 @@ def generate_route_plan(payload: RoutePlanRequest) -> dict:
         return {"stops": [], "total_drive_minutes": 0, "total_distance_km": 0, "error": str(exc)}
 
     jobs_by_id = {j.id: j for j in jobs}
+    ordered_points = [COMPANY_DEPOT] + [jobs_by_id[s.job_id].address.coordinates for s in sequence.stops]
+    legs = routing_client.leg_distances(ordered_points)  # one batched call, not one per stop
+
     stops = []
-    prev_coords = COMPANY_DEPOT
     total_km = 0.0
-    for stop in sequence.stops:
+    for stop, leg in zip(sequence.stops, legs):
         job = jobs_by_id[stop.job_id]
         coords = job.address.coordinates
-        leg_km = routing_client.distance_km(prev_coords, coords)
-        total_km += leg_km
+        total_km += leg["km"]
         stops.append(
             {
                 "sequence_index": stop.sequence_index + 1,
@@ -151,11 +221,10 @@ def generate_route_plan(payload: RoutePlanRequest) -> dict:
                 "lng": coords.lng,
                 "arrival": stop.arrival_window.start.strftime("%H:%M"),
                 "departure": stop.arrival_window.end.strftime("%H:%M"),
-                "distance_from_prev_km": leg_km,
+                "distance_from_prev_km": leg["km"],
                 "drive_minutes_from_prev": stop.drive_minutes_from_prev,
             }
         )
-        prev_coords = coords
         job.status = JobStatus.SEQUENCED
         repo.save_job(job)
 

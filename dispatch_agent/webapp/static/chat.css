@@ -1,0 +1,244 @@
+:root {
+  --wa-header: #075e54;
+  --wa-header-text: #ffffff;
+  --wa-page-bg: #d9dbd3;
+  --wa-chat-bg: #ece5dd;
+  --wa-sent: #dcf8c6;
+  --wa-received: #ffffff;
+  --wa-text: #111b21;
+  --wa-muted: #667781;
+  --wa-accent: #25d366;
+  --wa-border: #d1d7db;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--wa-page-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--wa-text);
+}
+
+.wa-app {
+  width: 100%;
+  max-width: 480px;
+  height: 100vh;
+  max-height: 900px;
+  display: flex;
+  flex-direction: column;
+  background: var(--wa-chat-bg);
+  box-shadow: 0 0 24px rgba(0, 0, 0, 0.15);
+}
+
+.wa-header {
+  background: var(--wa-header);
+  color: var(--wa-header-text);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  flex-shrink: 0;
+}
+
+.wa-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
+  flex-shrink: 0;
+}
+
+.wa-name {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.wa-status {
+  font-size: 0.75rem;
+  opacity: 0.85;
+}
+
+.wa-chat {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.wa-bubble {
+  max-width: 78%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.92rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.1);
+}
+
+.wa-bubble--bot {
+  background: var(--wa-received);
+  align-self: flex-start;
+  border-top-left-radius: 0;
+}
+
+.wa-bubble--user {
+  background: var(--wa-sent);
+  align-self: flex-end;
+  border-top-right-radius: 0;
+}
+
+.wa-buttons {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-width: 78%;
+}
+
+.wa-button {
+  font: inherit;
+  padding: 0.5rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid var(--wa-header);
+  background: #ffffff;
+  color: var(--wa-header);
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.wa-button:hover {
+  background: #f0fbf8;
+}
+
+.wa-card-form {
+  margin: 0;
+}
+
+.wa-card {
+  background: #ffffff;
+  border-radius: 10px;
+  padding: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  align-self: flex-start;
+  max-width: 88%;
+  box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.1);
+}
+
+.wa-card-title {
+  font-weight: 700;
+  margin-bottom: 0.15rem;
+}
+
+.wa-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--wa-muted);
+}
+
+.wa-card input,
+.wa-card select,
+.wa-card textarea {
+  font: inherit;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--wa-border);
+  border-radius: 6px;
+  color: var(--wa-text);
+  background: #ffffff;
+}
+
+.wa-card textarea {
+  resize: vertical;
+}
+
+.wa-card-row {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.wa-card-row label {
+  flex: 1;
+}
+
+.wa-card-submit {
+  font: inherit;
+  font-weight: 700;
+  padding: 0.55rem 1rem;
+  border: none;
+  border-radius: 999px;
+  background: var(--wa-accent);
+  color: #ffffff;
+  cursor: pointer;
+  margin-top: 0.25rem;
+}
+
+.wa-card-submit:hover {
+  opacity: 0.9;
+}
+
+.wa-composer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  background: #f0f0f0;
+  border-top: 1px solid var(--wa-border);
+  flex-shrink: 0;
+}
+
+.wa-composer input {
+  flex: 1;
+  font: inherit;
+  padding: 0.6rem 1rem;
+  border-radius: 999px;
+  border: none;
+  outline: none;
+}
+
+.wa-composer button {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: var(--wa-header);
+  color: #ffffff;
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.wa-composer button:hover {
+  opacity: 0.9;
+}
+
+.wa-admin-link {
+  margin-top: 0.75rem;
+  color: #555555;
+  font-size: 0.8rem;
+  text-decoration: none;
+}
+
+.wa-admin-link:hover {
+  text-decoration: underline;
+}

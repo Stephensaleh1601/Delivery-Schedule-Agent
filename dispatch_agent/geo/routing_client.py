@@ -78,10 +78,39 @@ class RoutingClient:
 
     def matrix(self, points: list[Coordinates]) -> list[list[int]]:
         """Full drive-time matrix in minutes, points[i] -> points[j]."""
+        if self.provider == "google" and settings.google_maps_api_key and len(points) > 1:
+            batched = self._google_matrix(points)
+            if batched is not None:
+                return batched
         return [
             [0 if i == j else self.drive_minutes(a, b) for j, b in enumerate(points)]
             for i, a in enumerate(points)
         ]
+
+    def leg_distances(self, ordered_points: list[Coordinates]) -> list[dict]:
+        """{"minutes": int, "km": float} for each consecutive leg in ordered_points (e.g.
+        depot -> stop1 -> stop2 -> ...) -- batched requests instead of one call per leg, which
+        is what made a 10-stop route-plan display take the better part of a minute and a half.
+        Used for the route-plan/admin-map display, never by the solver (which needs the full
+        points-by-points matrix from matrix() instead)."""
+        if len(ordered_points) < 2:
+            return []
+        if self.provider == "google" and settings.google_maps_api_key:
+            grid = self._google_distance_matrix(ordered_points[:-1], ordered_points[1:])
+            if grid is not None:
+                return [grid[i][i] for i in range(len(grid))]
+        legs = []
+        for i in range(len(ordered_points) - 1):
+            origin, destination = ordered_points[i], ordered_points[i + 1]
+            route = self._route(origin, destination)
+            legs.append(
+                route
+                or {
+                    "minutes": haversine_drive_minutes(origin, destination),
+                    "km": round(haversine_km(origin, destination) * 1.3, 2),
+                }
+            )
+        return legs
 
     def _route(self, origin: Coordinates, destination: Coordinates) -> dict | None:
         """{"minutes": int, "km": float} for one leg via the configured provider, or None if
@@ -137,6 +166,86 @@ class RoutingClient:
             }
         except (requests.RequestException, KeyError, IndexError, ValueError, TypeError):
             return None
+
+    # Google's Distance Matrix API caps elements (origins x destinations) per request --
+    # documented as up to 25 origins/destinations, but the actual enforced cap on the element
+    # *product* is much lower (observed: an 11x11 = 121-element request is rejected outright,
+    # silently falling back to ~110 sequential pairwise calls -- which is what made a 10-stop
+    # day take 80+ seconds before this). Chunking origins keeps each request's element count
+    # under this cap regardless of how many stops are in a day.
+    _MAX_ELEMENTS_PER_REQUEST = 100
+
+    def _google_matrix(self, points: list[Coordinates]) -> list[list[int]] | None:
+        """Full drive-time matrix (minutes) for the solver, built from _google_distance_matrix."""
+        grid = self._google_distance_matrix(points, points)
+        if grid is None:
+            return None
+        return [[0 if i == j else grid[i][j]["minutes"] for j in range(len(points))] for i in range(len(points))]
+
+    def _google_distance_matrix(
+        self, origins: list[Coordinates], destinations: list[Coordinates]
+    ) -> list[list[dict]] | None:
+        """Full origins x destinations grid of {"minutes": int, "km": float}, chunked over
+        origins into multiple requests so no single request exceeds the element cap. Returns
+        None (triggering the caller's pairwise/haversine fallback) only if a request fails
+        outright -- an individual element's own failure status still falls back to haversine
+        for just that pair, same as the single-pair path."""
+        n_destinations = len(destinations)
+        if not origins or not n_destinations:
+            return []
+
+        batch_size = max(1, self._MAX_ELEMENTS_PER_REQUEST // n_destinations)
+        destinations_str = "|".join(f"{p.lat},{p.lng}" for p in destinations)
+        grid: list[list[dict] | None] = [None] * len(origins)
+
+        for start in range(0, len(origins), batch_size):
+            batch = origins[start : start + batch_size]
+            origins_str = "|".join(f"{p.lat},{p.lng}" for p in batch)
+            try:
+                resp = requests.get(
+                    "https://maps.googleapis.com/maps/api/distancematrix/json",
+                    params={
+                        "origins": origins_str,
+                        "destinations": destinations_str,
+                        "mode": "driving",
+                        "key": settings.google_maps_api_key,
+                    },
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                body = resp.json()
+                if body.get("status") != "OK":
+                    return None
+                rows = body["rows"]
+                if len(rows) != len(batch):
+                    return None
+
+                for bi, row_data in enumerate(rows):
+                    i = start + bi
+                    elements = row_data["elements"]
+                    if len(elements) != n_destinations:
+                        return None
+                    row: list[dict] = []
+                    for j, element in enumerate(elements):
+                        if element.get("status") == "OK":
+                            row.append(
+                                {
+                                    "minutes": max(1, round(int(element["duration"]["value"]) / 60)),
+                                    "km": round(int(element["distance"]["value"]) / 1000, 2),
+                                }
+                            )
+                        else:
+                            row.append(
+                                {
+                                    "minutes": haversine_drive_minutes(origins[i], destinations[j]),
+                                    "km": round(haversine_km(origins[i], destinations[j]) * 1.3, 2),
+                                }
+                            )
+                    grid[i] = row
+            except (requests.RequestException, KeyError, ValueError, TypeError, IndexError):
+                return None
+
+        return grid
 
     # -- OneMap -----------------------------------------------------------------
 

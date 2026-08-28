@@ -11,14 +11,14 @@ def test_intake_produces_job_record(temp_db):
         "phone": "91234567",
         "address_raw_text": "1 Marina Blvd",
         "postal_code": "018956",
-        "job_type": "delivery",
-        "duration_minutes": 60,
+        "job_type": "sofa",
+        "duration_minutes": 45,
         "delivery_date": "2026-08-28",
         "availability": [{"start": "09:00", "end": "12:00"}],
         "notes": None,
     }
     graph = build_intake_graph(llm=FakeLLM(structured_response=structured), repo=temp_db)
-    result = graph.invoke({"raw_message": "hi, need delivery to 1 Marina Blvd S018956, free Fri morning"})
+    result = graph.invoke({"raw_message": "hi, need my sofa delivered to 1 Marina Blvd S018956, free Fri morning"})
 
     assert result["errors"] == []
     job = result["job"]
@@ -32,12 +32,12 @@ def test_intake_flags_missing_postal_code(temp_db):
         "customer_name": "Mr Lee",
         "address_raw_text": "somewhere in Tampines",
         "postal_code": None,
-        "job_type": "installation",
+        "job_type": "bed",
         "delivery_date": "2026-08-28",
         "availability": [{"start": "09:00", "end": "12:00"}],
     }
     graph = build_intake_graph(llm=FakeLLM(structured_response=structured), repo=temp_db)
-    result = graph.invoke({"raw_message": "install my aircon somewhere in Tampines"})
+    result = graph.invoke({"raw_message": "deliver my bed frame somewhere in Tampines"})
 
     assert result["job"] is None
     assert any("postal code" in e for e in result["errors"])

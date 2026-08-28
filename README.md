@@ -1,10 +1,11 @@
 # Delivery-Schedule-Agent
 
-Dispatch sequencing agent for a Singapore home-installation company. A coordinator gets a
-WhatsApp message, an agent turns it into a job record, a second agent works out where it fits
-in the day's route, and the coordinator approves, edits or rejects the proposed schedule before
-anything goes to a customer. See `PRD.md` (not in this repo — see the hackathon submission) for
-the full brief; this README covers what's actually built and how to run it.
+Dispatch sequencing agent for a Singapore large-furniture delivery company (sofas, beds,
+cabinets). A customer messages a WhatsApp-style chat, an agent (or, for the chat's own booking
+form, a plain structured submit) turns it into a job record, a second agent works out where it
+fits in the day's route, and the coordinator approves, edits or rejects the proposed schedule
+before anything goes to a customer. See `PRD.md` for the original brief; this README covers
+what's actually built and how to run it.
 
 Built for IGNITE Agentic AI Hackathon 2026, digital track.
 
@@ -19,12 +20,26 @@ Built for IGNITE Agentic AI Hackathon 2026, digital track.
   and drafts a short WhatsApp confirmation per stop.
 - **Reschedule loop** (`dispatch_agent/reschedule.py`) — a customer moves, the day re-solves,
   and only the customers whose arrival window actually changed come back as "affected".
-- **Web app** (`dispatch_agent/webapp/`) — FastAPI, two plain-HTML/JS pages, no build step:
-  a public client booking form (`/`) and a back-office dashboard (`/admin`) that lists incoming
-  orders and has a "Generate Route Plan" button showing sequence, scheduled arrival, and
-  distance/duration from the previous stop for each client, plus an interactive Google map
-  (`/api/config` hands the browser the Maps JS key + depot) pinning every stop in order with a
-  connecting line back to the depot.
+- **Web app** (`dispatch_agent/webapp/`) — FastAPI, plain HTML/JS pages, no build step:
+  - **Client front face** (`/`) — a WhatsApp-look chat UI (`static/client.html`, `chat.css`,
+    `chat.js`). A rule-based conversation engine (`dispatch_agent/webapp/chat.py`, no LLM call)
+    greets the customer with two options: book a delivery (bot replies with an inline card-style
+    form for name/address/furniture type/preferred date+time) or reschedule an existing one
+    (bot asks for name/phone, looks the booking up, then negotiates a new slot -- it calls the
+    real solver via `apply_reschedule`, and if the requested slot doesn't fit the rest of that
+    day it asks the customer to suggest a different one, up to a few tries before handing off to
+    the team).
+  - **Back office** (`/admin`) — lists incoming orders and has a "Generate Route Plan" button
+    showing sequence, scheduled arrival, and distance/duration from the previous stop for each
+    client, plus an interactive Google map (`/api/config` hands the browser the Maps JS key +
+    depot) pinning every stop in order with the actual road-following route (Directions API,
+    falling back to a straight line if that API isn't reachable/enabled). Polls for
+    notifications every 15s -- if a chat reschedule touched a date whose plan was already
+    generated, a banner appears with a one-click "Regenerate" per affected date. A "Share Trip
+    Link" button on the generated plan builds a plain `google.com/maps/dir/...` deep link
+    (Google's public URL scheme, no API key or OAuth) through every stop in the solved order --
+    send it to a driver's phone and it opens turn-by-turn navigation in their own Google Maps
+    app, signed into their own account, no "connect an account" step needed.
 - **Dashboard** (`dispatch_agent/dashboard/app.py`) — the original Streamlit prototype: a map,
   approve/edit/reject per stop, and a reschedule trigger, with every edit logged to the override
   table. Superseded by the web app above for day-to-day use; kept because the
@@ -73,15 +88,20 @@ dispatch_agent/
     zones.py                   zone centroids (placeholder, see above)
     routing_client.py           drive time + distance: Google Distance Matrix, OneMap, or haversine
   webapp/
-    main.py                      FastAPI: client booking API + back-office route-plan API
-    static/                        client.html/js (booking form), admin.html/js (dashboard)
+    main.py                      FastAPI: /api/jobs, /api/chat, back-office route-plan API
+    jobs_service.py                shared job-creation logic (used by /api/jobs and chat.py)
+    chat.py                         rule-based conversation engine: booking form + reschedule negotiation
+    static/
+      client.html, chat.css, chat.js    WhatsApp-look chat UI (front face)
+      admin.html, admin.js, style.css    back-office dashboard (route plan + map)
   dashboard/
     app.py                      Streamlit prototype -- map + approve/edit/reject + reschedule
 scripts/
   seed_db.py                     create the SQLite schema
+  seed_test_clients.py             wipe + seed 20 synthetic furniture-delivery clients across 5 dates
   run_demo.py                     the PRD's demo beat end to end
 data/
-  sample_messages.json             3 sample WhatsApp messages for the demo
+  sample_messages.json             3 sample WhatsApp messages for the demo (furniture delivery)
 tests/
   conftest.py                       temp-DB fixture + a FakeLLM (no network in tests)
   test_models.py, test_solver.py, test_intake_agent.py, test_reschedule.py
@@ -159,18 +179,23 @@ credentials → API key**) and set `GOOGLE_MAPS_API_KEY` in `.env`. This is a no
 a GCP service account — Google's separate *Route Optimization API* needs the latter and isn't
 what this project uses.
 
-> **⚠️ Enable both of these APIs on that key — Google Cloud Console → APIs & Services →
+> **⚠️ Enable all three of these APIs on that key — Google Cloud Console → APIs & Services →
 > Library — or things will silently misbehave instead of erroring clearly:**
 >
 > 1. **Distance Matrix API** — used by `dispatch_agent/geo/routing_client.py` for drive
->    time/distance between stops. Missing this: routing quietly falls back to a straight-line
->    haversine estimate (no crash, just less accurate times/distances).
+>    time/distance between stops (one batched request per day's stop list, not one per pair).
+>    Missing this: routing quietly falls back to a straight-line haversine estimate (no crash,
+>    just less accurate times/distances).
 > 2. **Maps JavaScript API** — used by the admin dashboard's interactive route map
 >    (`/admin`). Missing this: the map area shows an authentication error instead of rendering
 >    (the page itself still loads fine).
+> 3. **Directions API** — used by the same map to draw the actual road-following route between
+>    stops. Missing this: the map still renders with numbered stop markers, but the connecting
+>    line is a straight-line estimate instead of the real driving path (a note under the map
+>    says so when this happens).
 >
-> Each is a separate on/off switch even though both use the same key — enabling one does not
-> enable the other. Search each API by name in the Library and click **Enable**.
+> Each is a separate on/off switch even though all three use the same key — enabling one does
+> not enable the others. Search each API by name in the Library and click **Enable**.
 >
 > The key is sent to the browser as-is for the map — that's Google's own design for the Maps
 > JavaScript API, not a mistake in this codebase. Restrict the key by **HTTP referrer** in Cloud
@@ -197,6 +222,29 @@ Every route starts and ends at the company office: **8 Somapah Rd, Singapore 487
 the Google Geocoding API). Change that constant if the office ever moves. Nothing to configure
 in `.env` for this — it's a code constant, not a credential.
 
+### Test data
+
+`scripts/seed_test_clients.py` inserts 20 synthetic furniture customers across 5 weekdays -- 7
+on the first date, spread across 7 genuinely different Singapore neighbourhoods (Tampines,
+Bedok, Katong, Geylang, Macpherson, Toa Payoh, Hougang) rather than clustered next to the
+depot, and 13 more spread even further (including the far west and north) across the other 4
+dates at 3-4/day. No LLM call, no network, so it always works.
+
+The busy date is capped at 7, not more: 10 same-day sofa deliveries (45 min each) only leave 90
+minutes of total travel budget in a 09:00-18:00 day, and real drive times between distinct
+neighbourhoods (11-30+ min each) blow through that in a handful of legs -- verified against the
+live solver with a 30-second search budget, not just infeasible-by-guess. 7 stops (225 minutes
+of travel budget) comfortably fits this spread.
+
+**⚠️ This wipes every job, sequence, and notification currently in the DB** -- not just
+previously-seeded ones. Anything booked through the live chat or admin dashboard, including
+your own manual testing, is deleted too. Only run this against a database nobody's actively
+using.
+
+```bash
+python scripts/seed_test_clients.py
+```
+
 ### Testing
 
 ```bash
@@ -210,10 +258,10 @@ python -m pytest
 #    reschedule -> re-sequence, printing each step to the terminal.
 python scripts/run_demo.py
 
-# 3. Interactive -- the web app. Needs jobs in the DB (run step 2 first, submit one through the
-#    booking form, or use the Streamlit dashboard below).
+# 3. Interactive -- the web app. Needs jobs in the DB: run scripts/seed_test_clients.py, run
+#    step 2 above, book one through the chat, or use the Streamlit dashboard below.
 uvicorn dispatch_agent.webapp.main:app --reload
-#   -> http://localhost:8000/       client booking form (public)
+#   -> http://localhost:8000/       WhatsApp-style client chat (public) -- book or reschedule
 #   -> http://localhost:8000/admin  back-office dashboard: orders + "Generate Route Plan"
 
 # 3b. The original Streamlit prototype -- map view, approve/edit/reject, reschedule trigger.
@@ -223,6 +271,39 @@ streamlit run dispatch_agent/dashboard/app.py
 If step 2 fails immediately, it's almost always one of: credentials not picked up (check
 `.env` was actually loaded — `python -c "from dispatch_agent.config import settings; print(settings.llm_provider)"`),
 or (Bedrock specifically) model access not yet granted / a stale `BEDROCK_MODEL_ID`.
+
+**Neither the client chat's booking form nor its reschedule negotiation calls an LLM** -- both
+are plain structured flows (see `dispatch_agent/webapp/chat.py`'s module docstring), so they
+work regardless of `LLM_PROVIDER`. Under the hood, reschedule calls `apply_reschedule(...,
+draft_messages=False)`, which re-solves the day but skips the planning agent's drafted WhatsApp
+messages (the chat sends its own confirmation instead) -- `scripts/run_demo.py` and the
+Streamlit dashboard still draft real messages via the LLM, since they call it with the default
+`draft_messages=True`.
+
+### Notifications: a chat reschedule making an already-generated route plan stale
+
+If a customer reschedules via the chat after the admin already clicked "Generate Route Plan"
+for the affected date(s), that plan is now out of date -- the job composition changed but the
+saved sequence didn't. `dispatch_agent/webapp/chat.py` detects this (by checking whether the
+old and/or new date already had a saved `DaySequence` before the move) and writes a
+`Notification` row. The admin dashboard polls `GET /api/notifications` every 15s and shows a
+banner with the affected date(s) and a one-click "Regenerate `<date>`" button per date, plus a
+"Dismiss" button (`POST /api/notifications/{id}/dismiss`). This is independent of whether the
+LLM drafts a message -- it's driven purely by whether a sequence already existed.
+
+### Troubleshooting: SSL certificate errors calling Google/OneMap
+
+On some networks (a corporate proxy or VPN doing TLS interception, some antivirus/endpoint
+security software) the OS trusts the intercepting certificate but Python's bundled `certifi` CA
+list doesn't, so every `requests` call to Google Maps or OneMap fails with
+`CERTIFICATE_VERIFY_FAILED`. The routing client's broad fallback handling means this doesn't
+crash anything -- it just silently degrades every drive-time/distance call to the haversine
+estimate (and, for the batched Distance Matrix call, still pays for every failed connection
+attempt first, so it's also slow). `dispatch_agent/config.py` calls
+`truststore.inject_into_ssl()` at import time to use the OS's own trust store instead of
+`certifi`'s, which fixes this on Windows/macOS/Linux without needing to install a corporate root
+CA into Python manually. If you still see certificate errors after `pip install -r
+requirements.txt`, confirm `truststore` actually installed (`python -c "import truststore"`).
 
 ## How this maps to the PRD's three demo numbers
 
