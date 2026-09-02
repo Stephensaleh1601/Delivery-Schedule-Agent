@@ -63,6 +63,12 @@ class Settings:
     onemap_token: str = os.getenv("ONEMAP_TOKEN", "")
     onemap_email: str = os.getenv("ONEMAP_EMAIL", "")
     onemap_password: str = os.getenv("ONEMAP_PASSWORD", "")
+    # Reject a provider's drive time when it exceeds this multiple of the straight-line estimate.
+    # This is the Johor-detour filter for providers that return no route geometry (Google's
+    # Distance Matrix gives only duration and distance, so there is nothing to inspect for a
+    # border crossing). Generous on purpose: congestion must never trip it, a trip through
+    # another country always should.
+    max_drive_time_ratio: float = float(os.getenv("MAX_DRIVE_TIME_RATIO", "4.0"))
     db_path: str = os.getenv("DB_PATH", "./data/dispatch.db")
     default_job_duration_minutes: int = int(os.getenv("DEFAULT_JOB_DURATION_MINUTES", "60"))
     work_day_start: Time = _time("WORK_DAY_START", "09:00")

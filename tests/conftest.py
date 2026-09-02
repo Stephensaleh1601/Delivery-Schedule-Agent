@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from dispatch_agent import config, db
+from dispatch_agent.geo.matrix_cache import MATRIX_CACHE
 
 
 class FakeLLM:
@@ -43,12 +44,27 @@ class FakeLLM:
 
 
 @pytest.fixture(autouse=True)
+def isolated_db(tmp_path, monkeypatch):
+    """Point every test at its own SQLite file.
+
+    Not only for the jobs table: the drive-time cache persists through settings.db_path too, so
+    without this a test run writes into the developer's real ./data/dispatch.db -- and, worse,
+    the next run's cache lookups are satisfied by the previous run's entries, which silently
+    turns "did we fetch this?" assertions into whatever happened last time.
+    """
+    monkeypatch.setattr(config.settings, "db_path", str(tmp_path / "isolated.db"))
+
+
+@pytest.fixture(autouse=True)
 def offline_routing(monkeypatch):
     """Force every test onto the network-free haversine estimate, whatever the developer's
     environment says. Autouse: no test should have to remember to ask for this."""
     monkeypatch.setattr(config.settings, "routing_provider", "haversine")
     for field in ("google_maps_api_key", "onemap_token", "onemap_email", "onemap_password"):
         monkeypatch.setattr(config.settings, field, "")
+    # The drive-time cache is a module singleton, so without this one test's fetched legs would
+    # silently satisfy another's, and cost assertions would depend on test ordering.
+    MATRIX_CACHE.clear()
 
 
 @pytest.fixture(autouse=True)

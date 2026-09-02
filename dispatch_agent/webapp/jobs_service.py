@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from dispatch_agent.db import JobsRepository
 from dispatch_agent.geo.postal_codes import postal_code_to_coords
+from dispatch_agent.geo.sanity import OutsideServiceAreaError, validate_delivery_location
 from dispatch_agent.models import (
     DEFAULT_DURATION_MINUTES_BY_JOB_TYPE,
     Address,
@@ -43,6 +44,13 @@ def _validated_fields(payload: JobSubmission) -> dict:
     try:
         coordinates = postal_code_to_coords(payload.postal_code)
     except ValueError as exc:
+        raise JobSubmissionError(str(exc)) from exc
+    # Reject an out-of-area address here rather than letting it reach the router, which would
+    # happily return a cross-border drive time for a job nobody can service. Every front door
+    # (REST, chat booking, admin edit) goes through this function, so one check covers them all.
+    try:
+        validate_delivery_location(coordinates, label=f"Postal code {payload.postal_code}")
+    except OutsideServiceAreaError as exc:
         raise JobSubmissionError(str(exc)) from exc
 
     return {

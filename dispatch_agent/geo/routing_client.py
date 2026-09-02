@@ -10,11 +10,23 @@ network-free fallback. Three providers:
   or its API call fails, so the rest of the system -- and the whole test suite -- keeps working
   offline.
 
-The Johor filter (OneMap only): a Singapore-focused router will occasionally return a route
-that dips across the Straits into Johor, Malaysia for what should be a short local hop, usually
-near the Woodlands/Tuas checkpoints. That route is geometrically "valid" but wrong for a
-same-day domestic run. We reject any OneMap route that leaves Singapore's bounding box and fall
-back to the haversine estimate for that pair instead of surfacing a cross-border drive time.
+The Johor filter: a Singapore-focused router will occasionally return a route that dips across
+the Straits into Johor, Malaysia for what should be a short local hop, usually near the
+Woodlands/Tuas checkpoints. Geometrically "valid", wrong for a same-day domestic run. Both
+providers are now protected, by different means (see geo/sanity.py):
+
+- OneMap returns turn-by-turn coordinates, so its route is rejected if any of them leave
+  Singapore's bounding box.
+- Google's Distance Matrix returns no geometry at all -- only a duration and a distance -- so
+  there is nothing to inspect for a border crossing. Instead each leg is checked against the
+  straight-line estimate and rejected if wildly out of proportion. A heuristic, but until this
+  the default provider had no protection at all.
+
+Either way a rejected leg falls back to the haversine estimate for that pair only.
+
+Every drive time goes through the module-level cache in geo/matrix_cache.py, so a pair is
+fetched at most once per process (and once per database, if it persists). This is what makes
+evaluating a booking across four candidate dates affordable -- see that module for the details.
 """
 from __future__ import annotations
 
@@ -24,18 +36,15 @@ from datetime import datetime, timedelta
 import requests
 
 from dispatch_agent.config import settings
+from dispatch_agent.geo.matrix_cache import MATRIX_CACHE, cover_misses
+from dispatch_agent.geo.sanity import (
+    is_plausible_leg,
+    onemap_instruction_points,
+    route_geometry_stays_in_singapore,
+)
 from dispatch_agent.models import Coordinates
 
-# Singapore mainland bounding box, generous margin. A route leaving this box is heading to
-# Johor or an offshore island, neither of which is a same-day install stop.
-SG_LAT_MIN, SG_LAT_MAX = 1.13, 1.47
-SG_LNG_MIN, SG_LNG_MAX = 103.60, 104.05
-
 AVERAGE_URBAN_SPEED_KMH = 30.0
-
-
-def _in_singapore(lat: float, lng: float) -> bool:
-    return SG_LAT_MIN <= lat <= SG_LAT_MAX and SG_LNG_MIN <= lng <= SG_LNG_MAX
 
 
 def haversine_km(a: Coordinates, b: Coordinates) -> float:
@@ -77,15 +86,72 @@ class RoutingClient:
         return route["km"] if route else round(haversine_km(origin, destination) * 1.3, 2)
 
     def matrix(self, points: list[Coordinates]) -> list[list[int]]:
-        """Full drive-time matrix in minutes, points[i] -> points[j]."""
-        if self.provider == "google" and settings.google_maps_api_key and len(points) > 1:
-            batched = self._google_matrix(points)
-            if batched is not None:
-                return batched
+        """Full drive-time matrix in minutes, points[i] -> points[j].
+
+        Everything already in the cache is free; only the genuinely unknown pairs are fetched,
+        grouped into as few provider requests as possible. A day that has been solved once costs
+        nothing to solve again, which is what makes candidate evaluation across four dates
+        affordable.
+        """
+        pairs = [(a, b) for i, a in enumerate(points) for j, b in enumerate(points) if i != j]
+        if pairs:
+            self._fill_cache(pairs)
         return [
-            [0 if i == j else self.drive_minutes(a, b) for j, b in enumerate(points)]
+            [0 if i == j else self._cached_leg(a, b)["minutes"] for j, b in enumerate(points)]
             for i, a in enumerate(points)
         ]
+
+    def _cached_leg(self, origin: Coordinates, destination: Coordinates) -> dict:
+        """The cached value for one leg, falling back to haversine if the provider never
+        supplied one (unconfigured, unreachable, or the pair was rejected as implausible)."""
+        cached = MATRIX_CACHE.peek(self.provider, origin, destination)
+        if cached is not None:
+            return cached
+        return {
+            "minutes": haversine_drive_minutes(origin, destination),
+            "km": round(haversine_km(origin, destination) * 1.3, 2),
+        }
+
+    def _fill_cache(self, pairs: list[tuple[Coordinates, Coordinates]]) -> None:
+        """Fetch whatever `pairs` the cache does not already hold, in as few requests as we can."""
+        _hits, misses = MATRIX_CACHE.split(self.provider, pairs)
+        if not misses:
+            return
+
+        if self.provider == "google" and settings.google_maps_api_key:
+            for origins, destinations in cover_misses(misses):
+                grid = self._google_distance_matrix(origins, destinations)
+                if grid is None:
+                    continue  # whole rectangle failed -- those pairs stay haversine
+                # Clamp on the way into the cache, so nothing implausible can be stored no
+                # matter which code path produced it.
+                MATRIX_CACHE.put_many(
+                    self.provider,
+                    [
+                        (
+                            origins[i],
+                            destinations[j],
+                            self._sane_leg(
+                                origins[i],
+                                destinations[j],
+                                minutes=grid[i][j]["minutes"],
+                                km=grid[i][j]["km"],
+                            ),
+                        )
+                        for i in range(len(origins))
+                        for j in range(len(destinations))
+                    ],
+                )
+                MATRIX_CACHE.record_fetch(len(origins) * len(destinations))
+            return
+
+        # OneMap and haversine have no batch endpoint: one call per missing pair, but at least
+        # only for the pairs we actually lack.
+        for origin, destination in misses:
+            route = self._route(origin, destination)
+            if route is not None:
+                MATRIX_CACHE.put(self.provider, origin, destination, route)
+                MATRIX_CACHE.record_fetch(1)
 
     def leg_distances(self, ordered_points: list[Coordinates]) -> list[dict]:
         """{"minutes": int, "km": float} for each consecutive leg in ordered_points (e.g.
@@ -95,22 +161,29 @@ class RoutingClient:
         points-by-points matrix from matrix() instead)."""
         if len(ordered_points) < 2:
             return []
-        if self.provider == "google" and settings.google_maps_api_key:
-            grid = self._google_distance_matrix(ordered_points[:-1], ordered_points[1:])
-            if grid is not None:
-                return [grid[i][i] for i in range(len(grid))]
-        legs = []
-        for i in range(len(ordered_points) - 1):
-            origin, destination = ordered_points[i], ordered_points[i + 1]
-            route = self._route(origin, destination)
-            legs.append(
-                route
-                or {
-                    "minutes": haversine_drive_minutes(origin, destination),
-                    "km": round(haversine_km(origin, destination) * 1.3, 2),
-                }
-            )
-        return legs
+        # Previously this asked the provider for an (n-1)x(n-1) grid and kept only the diagonal --
+        # (n-1)^2 billable elements to obtain n-1 legs. Going through the cache asks for exactly
+        # the n-1 pairs needed, and after a solve over the same points it asks for nothing at all.
+        legs = [(ordered_points[i], ordered_points[i + 1]) for i in range(len(ordered_points) - 1)]
+        self._fill_cache(legs)
+        return [self._cached_leg(origin, destination) for origin, destination in legs]
+
+    def _sane_leg(self, origin: Coordinates, destination: Coordinates, minutes: int, km: float) -> dict:
+        """Accept a provider's numbers, or substitute the straight-line estimate when they are
+        not believable for this pair.
+
+        This is the Johor filter for providers that return no geometry. Google's Distance Matrix
+        gives only a duration and a distance, so there is nothing to inspect for a border
+        crossing -- but a local hop that comes back four times longer than the straight-line
+        estimate is not a local hop. Heuristic by construction; it rejects the absurd rather than
+        second-guessing traffic.
+        """
+        if is_plausible_leg(origin, destination, minutes):
+            return {"minutes": minutes, "km": km}
+        return {
+            "minutes": haversine_drive_minutes(origin, destination),
+            "km": round(haversine_km(origin, destination) * 1.3, 2),
+        }
 
     def _route(self, origin: Coordinates, destination: Coordinates) -> dict | None:
         """{"minutes": int, "km": float} for one leg via the configured provider, or None if
@@ -118,10 +191,12 @@ class RoutingClient:
         if self.provider == "google" and settings.google_maps_api_key:
             info = self._google_route(origin, destination)
             if info is not None:
-                return {
-                    "minutes": max(1, round(info["duration_seconds"] / 60)),
-                    "km": round(info["distance_meters"] / 1000, 2),
-                }
+                return self._sane_leg(
+                    origin,
+                    destination,
+                    minutes=max(1, round(info["duration_seconds"] / 60)),
+                    km=round(info["distance_meters"] / 1000, 2),
+                )
             return None
 
         has_onemap_auth = settings.onemap_token or (settings.onemap_email and settings.onemap_password)
@@ -228,11 +303,15 @@ class RoutingClient:
                     row: list[dict] = []
                     for j, element in enumerate(elements):
                         if element.get("status") == "OK":
+                            # Same plausibility clamp as the single-leg path -- a cross-border
+                            # detour is just as likely to appear inside a batched grid.
                             row.append(
-                                {
-                                    "minutes": max(1, round(int(element["duration"]["value"]) / 60)),
-                                    "km": round(int(element["distance"]["value"]) / 1000, 2),
-                                }
+                                self._sane_leg(
+                                    origins[i],
+                                    destinations[j],
+                                    minutes=max(1, round(int(element["duration"]["value"]) / 60)),
+                                    km=round(int(element["distance"]["value"]) / 1000, 2),
+                                )
                             )
                         else:
                             row.append(
@@ -293,18 +372,6 @@ class RoutingClient:
 
     @staticmethod
     def _route_stays_in_singapore(onemap_response: dict) -> bool:
-        # OneMap's turn-by-turn `route_instructions` entries carry unencoded lat/lng at
-        # index 3 -- sampling those is enough to catch a Johor detour without needing a full
-        # polyline decode of `route_geometry`.
-        instructions = onemap_response.get("route_instructions")
-        if not instructions:
-            return True  # nothing to check against, don't reject on missing data
-        for leg in instructions:
-            try:
-                lat_str, lng_str = str(leg[3]).split(",")
-                lat, lng = float(lat_str), float(lng_str)
-            except (IndexError, TypeError, ValueError):
-                continue
-            if not _in_singapore(lat, lng):
-                return False
-        return True
+        """Geometry-based Johor check. Kept as a thin wrapper so the bounding box and the
+        traversal live in geo/sanity.py alongside the checks the Google path uses."""
+        return route_geometry_stays_in_singapore(onemap_instruction_points(onemap_response))
