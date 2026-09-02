@@ -55,9 +55,9 @@ def overtime_minutes(
     """
     if not sequence.stops:
         return 0
-    last = sequence.stops[-1]
-    finish = _minutes_since_midnight(last.arrival_window.end) + sequence.return_drive_minutes
-    return max(0, finish - _minutes_since_midnight(config.soft_day_end))
+    # DaySequence.completion_minutes is the same arithmetic, kept in one place so the score and
+    # anything the UI displays can never disagree about when the day ends.
+    return max(0, sequence.completion_minutes - _minutes_since_midnight(config.soft_day_end))
 
 
 def score_candidate(

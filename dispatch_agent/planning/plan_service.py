@@ -86,6 +86,44 @@ def assert_locks_respected(sequence: DaySequence, jobs_by_id: dict[str, JobRecor
             )
 
 
+def annotate_distances(
+    sequence: DaySequence,
+    jobs_by_id: dict[str, JobRecord],
+    routing_client: RoutingClient,
+    depot: Coordinates = COMPANY_DEPOT,
+) -> DaySequence:
+    """Attach per-leg distance to a solved sequence, including the drive home.
+
+    Done here rather than in the solver because candidate evaluation deliberately hands the solver
+    a precomputed drive-time matrix and has no routing client to ask -- so `_extract` structurally
+    cannot make this call. `solve_day` is the single funnel every *published* sequence passes
+    through, and the solve has just warmed the cache for exactly these points, so this costs no
+    provider requests.
+
+    The trailing depot is deliberate: /api/route-plan's own distance total omitted the return leg,
+    which made a distant final stop look free.
+    """
+    if not sequence.stops:
+        return sequence.model_copy(update={"distance_recorded": True})
+
+    points = (
+        [depot]
+        + [jobs_by_id[s.job_id].address.coordinates for s in sequence.stops]
+        + [depot]
+    )
+    legs = routing_client.leg_distances(points)
+    return sequence.model_copy(
+        update={
+            "stops": [
+                stop.model_copy(update={"distance_km_from_prev": legs[i]["km"]})
+                for i, stop in enumerate(sequence.stops)
+            ],
+            "return_distance_km": legs[-1]["km"],
+            "distance_recorded": True,
+        }
+    )
+
+
 def solve_day(
     repo: JobsRepository,
     delivery_date: Date,
@@ -94,14 +132,17 @@ def solve_day(
 ) -> DaySequence:
     """Solve a date from what is currently committed to it, verifying every promise survives."""
     jobs = routable_jobs(repo, delivery_date)
+    client = routing_client or RoutingClient()
     sequence = sequence_day(
         jobs,
         delivery_date,
         depot=depot,
-        routing_client=routing_client or RoutingClient(),
+        routing_client=client,
         time_limit_seconds=settings.solver_time_limit_seconds,
     )
-    assert_locks_respected(sequence, {job.id: job for job in jobs})
+    jobs_by_id = {job.id: job for job in jobs}
+    sequence = annotate_distances(sequence, jobs_by_id, client, depot)
+    assert_locks_respected(sequence, jobs_by_id)
     return sequence
 
 

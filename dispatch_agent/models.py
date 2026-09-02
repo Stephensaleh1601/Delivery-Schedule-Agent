@@ -285,6 +285,9 @@ class StopAssignment(BaseModel):
     sequence_index: int
     arrival_window: TimeWindow
     drive_minutes_from_prev: int = 0
+    # Distance for the leg into this stop. Read DaySequence.distance_recorded before trusting a
+    # zero here -- plans published before distance existed carry 0.0 for every leg.
+    distance_km_from_prev: float = 0.0
 
 
 class DaySequence(BaseModel):
@@ -296,12 +299,37 @@ class DaySequence(BaseModel):
     # of a day -- without the return leg, appending a far-flung final stop looks free.
     total_drive_minutes: int
     return_drive_minutes: int = 0
+    return_distance_km: float = 0.0
+    # False on every plan published before distance was recorded. This is what lets a UI print
+    # "not recorded" rather than drawing a 0 km bar beside a real one.
+    distance_recorded: bool = False
     status: JobStatus = JobStatus.SEQUENCED
     generated_at: datetime = Field(default_factory=_utcnow)
 
     @property
     def round_trip_drive_minutes(self) -> int:
         return self.total_drive_minutes + self.return_drive_minutes
+
+    @property
+    def total_distance_km(self) -> float:
+        return round(sum(s.distance_km_from_prev for s in self.stops), 2)
+
+    @property
+    def round_trip_distance_km(self) -> float:
+        return round(self.total_distance_km + self.return_distance_km, 2)
+
+    @property
+    def completion_minutes(self) -> int:
+        """When the crew is back at the depot, as minutes since midnight.
+
+        Derived rather than stored: it is a summary of the stops, and a stored copy could drift
+        from them. This is also the expression scoring.overtime_minutes needs, so there is one
+        definition of when a day ends rather than two.
+        """
+        if not self.stops:
+            return 0
+        last = self.stops[-1].arrival_window.end
+        return last.hour * 60 + last.minute + self.return_drive_minutes
 
 
 class OverrideLogEntry(BaseModel):
@@ -360,6 +388,14 @@ class CandidateSlotEvaluation(BaseModel):
     baseline_drive_minutes: int = 0
     proposed_drive_minutes: int = 0
     incremental_drive_minutes: int = 0
+    # The day before and after, as scalars. Deliberately NOT the baseline sequence itself, which
+    # would carry other customers' stops into every response that quotes a price.
+    baseline_stop_count: int = 0
+    proposed_stop_count: int = 0
+    baseline_completion_minutes: int = 0
+    proposed_completion_minutes: int = 0
+    opens_empty_day: bool = False
+    preference_rank: int = 1
     day_opening_penalty_minutes: int = 0
     preference_penalty_minutes: int = 0
     overtime_penalty_minutes: int = 0

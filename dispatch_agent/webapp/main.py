@@ -259,30 +259,17 @@ def generate_route_plan(payload: RoutePlanRequest) -> dict:
     sequence = plan.sequence
 
     jobs_by_id = {j.id: j for j in jobs}
-    ordered_points = [COMPANY_DEPOT] + [jobs_by_id[s.job_id].address.coordinates for s in sequence.stops]
-    legs = routing_client.leg_distances(ordered_points)  # one batched call, not one per stop
 
     stops = []
-    total_km = 0.0
-    for stop, leg in zip(sequence.stops, legs):
+    for stop in sequence.stops:
         job = jobs_by_id[stop.job_id]
-        coords = job.address.coordinates
-        total_km += leg["km"]
+        # Distance now comes from the published plan. This used to run its own leg_distances call
+        # that omitted the return leg, so it disagreed with the plan it had just published.
         stops.append(
             {
-                "sequence_index": stop.sequence_index + 1,
-                "job_id": job.id,
-                "customer_name": job.customer_name,
+                **_stop_to_dict(stop, job),
                 "phone": job.phone,
-                "address": job.address.raw_text,
-                "postal_code": job.address.postal_code,
-                "job_type": job.job_type.value,
-                "lat": coords.lat,
-                "lng": coords.lng,
-                "arrival": stop.arrival_window.start.strftime("%H:%M"),
-                "departure": stop.arrival_window.end.strftime("%H:%M"),
-                "distance_from_prev_km": leg["km"],
-                "drive_minutes_from_prev": stop.drive_minutes_from_prev,
+                "distance_from_prev_km": stop.distance_km_from_prev,
             }
         )
         # Advance ONLY a confirmed appointment to sequenced. The old code set this on every job
@@ -299,7 +286,9 @@ def generate_route_plan(payload: RoutePlanRequest) -> dict:
         "total_drive_minutes": sequence.total_drive_minutes,
         "return_drive_minutes": sequence.return_drive_minutes,
         "round_trip_drive_minutes": sequence.round_trip_drive_minutes,
-        "total_distance_km": round(total_km, 2),
+        "total_distance_km": sequence.total_distance_km,
+        "round_trip_distance_km": sequence.round_trip_distance_km,
+        "distance_recorded": sequence.distance_recorded,
         "plan_version": plan.version,
         "plan_id": plan.id,
         "error": None,
@@ -363,6 +352,68 @@ def _evaluation_to_dict(evaluation) -> dict:
         },
         "baseline_drive_minutes": evaluation.baseline_drive_minutes,
         "proposed_drive_minutes": evaluation.proposed_drive_minutes,
+        # The same figures decomposed for display. Route efficiency is the objective; preference
+        # stays inside `breakdown` because promoting it here would imply it is a routing fact.
+        "route_impact": {
+            "drive_minutes": {
+                "before": evaluation.baseline_drive_minutes,
+                "after": evaluation.proposed_drive_minutes,
+            },
+            "stops": {
+                "before": evaluation.baseline_stop_count,
+                "after": evaluation.proposed_stop_count,
+            },
+            "finishes_at": {
+                # None when the day had no stops -- "this day did not exist yet" is the honest
+                # rendering, not 00:00.
+                "before": _hhmm(evaluation.baseline_completion_minutes)
+                if evaluation.baseline_stop_count
+                else None,
+                "after": _hhmm(evaluation.proposed_completion_minutes),
+            },
+            "opens_empty_day": evaluation.opens_empty_day,
+            "empty_day_overhead_minutes": evaluation.day_opening_penalty_minutes,
+            "preference_rank": evaluation.preference_rank,
+        },
+    }
+
+
+def _hhmm(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+@app.get("/api/bootstrap")
+def bootstrap() -> dict:
+    """Everything a client needs before it can render anything, in one request.
+
+    Includes the operating constants the UI would otherwise hardcode -- the working day, the soft
+    finish time, and the scoring weights -- so an interface explaining a route impact quotes the
+    same numbers the solver used rather than a copy that can drift.
+    """
+    first, last = PlanningClock.horizon()
+    return {
+        "horizon": {
+            "today": PlanningClock.today().isoformat(),
+            "first": first.isoformat(),
+            "last": last.isoformat(),
+            "dates": [d.isoformat() for d in PlanningClock.horizon_dates()],
+        },
+        "map": {
+            "google_maps_api_key": settings.google_maps_api_key,
+            "depot": {
+                "lat": COMPANY_DEPOT.lat,
+                "lng": COMPANY_DEPOT.lng,
+                "address": COMPANY_DEPOT_ADDRESS,
+            },
+        },
+        "operating": {
+            "work_day_start": settings.work_day_start.strftime("%H:%M"),
+            "work_day_end": settings.work_day_end.strftime("%H:%M"),
+            "soft_day_end": settings.soft_day_end.strftime("%H:%M"),
+            "day_opening_penalty_minutes": settings.day_opening_penalty_minutes,
+            "preference_penalty_per_rank": settings.preference_penalty_per_rank,
+            "routing_provider": settings.routing_provider,
+        },
     }
 
 
@@ -501,6 +552,13 @@ def _plan_to_dict(plan) -> dict:
         "total_drive_minutes": plan.sequence.total_drive_minutes,
         "return_drive_minutes": plan.sequence.return_drive_minutes,
         "round_trip_drive_minutes": plan.sequence.round_trip_drive_minutes,
+        "total_distance_km": plan.sequence.total_distance_km,
+        "return_distance_km": plan.sequence.return_distance_km,
+        "round_trip_distance_km": plan.sequence.round_trip_distance_km,
+        # False for plans published before distance was recorded. Render "not recorded" rather
+        # than a 0 km bar beside a real one.
+        "distance_recorded": plan.sequence.distance_recorded,
+        "finishes_at": _hhmm(plan.sequence.completion_minutes) if plan.sequence.stops else None,
         "generated_at": plan.generated_at.isoformat(),
     }
 
@@ -511,19 +569,42 @@ def get_plan(plan_date: Date) -> dict:
     if plan is None:
         raise HTTPException(404, "No plan for that date")
     repo = JobsRepository()
+    # One lookup per stop, not two. This used to call get_job twice for every row.
+    jobs_by_id = {job.id: job for job in repo.jobs_for_date(plan_date)}
     return {
         **_plan_to_dict(plan),
-        "stops": [
-            {
-                "sequence_index": s.sequence_index + 1,
-                "job_id": s.job_id,
-                "customer_name": (repo.get_job(s.job_id).customer_name if repo.get_job(s.job_id) else "?"),
-                "arrival": s.arrival_window.start.strftime("%H:%M"),
-                "departure": s.arrival_window.end.strftime("%H:%M"),
-                "drive_minutes_from_prev": s.drive_minutes_from_prev,
-            }
-            for s in plan.sequence.stops
-        ],
+        "depot": {"lat": COMPANY_DEPOT.lat, "lng": COMPANY_DEPOT.lng, "address": COMPANY_DEPOT_ADDRESS},
+        "stops": [_stop_to_dict(stop, jobs_by_id.get(stop.job_id)) for stop in plan.sequence.stops],
+    }
+
+
+def _stop_to_dict(stop, job: JobRecord | None) -> dict:
+    """A stop, with everything a map needs to draw it."""
+    coords = job.address.coordinates if job and job.address.coordinates else None
+    return {
+        "sequence_index": stop.sequence_index + 1,
+        "job_id": stop.job_id,
+        "customer_name": job.customer_name if job else "Unknown",
+        "address": job.address.formatted_address or job.address.raw_text if job else None,
+        "postal_code": job.address.postal_code if job else None,
+        "job_type": job.job_type.value if job else None,
+        "duration_minutes": job.duration_minutes if job else None,
+        "readiness_status": job.readiness_status.value if job else None,
+        "planning_status": job.planning_status.value if job else None,
+        "locked_window": (
+            {"start": job.locked_window.start.strftime("%H:%M"),
+             "end": job.locked_window.end.strftime("%H:%M")}
+            if job and job.locked_window
+            else None
+        ),
+        "lat": coords.lat if coords else None,
+        "lng": coords.lng if coords else None,
+        # False means the pin is a district centre, ~1-2km out. The UI should say so.
+        "precise_location": bool(job and job.address.precisely_located),
+        "arrival": stop.arrival_window.start.strftime("%H:%M"),
+        "departure": stop.arrival_window.end.strftime("%H:%M"),
+        "drive_minutes_from_prev": stop.drive_minutes_from_prev,
+        "distance_km_from_prev": stop.distance_km_from_prev,
     }
 
 
