@@ -14,10 +14,13 @@ from dispatch_agent.geo.sanity import OutsideServiceAreaError, validate_delivery
 from dispatch_agent.models import (
     DEFAULT_DURATION_MINUTES_BY_JOB_TYPE,
     Address,
+    AvailabilityOption,
     JobRecord,
     JobType,
+    PlanningStatus,
     TimeWindow,
 )
+from dispatch_agent.planning.clock import PlanningClock
 
 
 class JobSubmission(BaseModel):
@@ -31,6 +34,38 @@ class JobSubmission(BaseModel):
     window_end: Time
     duration_minutes: int | None = Field(default=None, gt=0)
     notes: str | None = None
+
+
+class AvailabilityChoice(BaseModel):
+    """One date+window a customer says they could accept."""
+
+    date: Date
+    window_start: Time
+    window_end: Time
+    preference_rank: int = 1
+
+
+class OrderSubmission(BaseModel):
+    """A booking under the multi-day flow: no date is chosen, only acceptable windows.
+
+    Two options are asked for on the form, but only one is required here. A customer messaging
+    in free text may genuinely only give one, and refusing to record that would lose the order
+    -- they are told their flexibility is limited instead.
+    """
+
+    customer_name: str
+    phone: str | None = None
+    address_raw: str
+    postal_code: str
+    job_type: JobType = JobType.SOFA
+    availability: list[AvailabilityChoice] = Field(min_length=1)
+    duration_minutes: int | None = Field(default=None, gt=0)
+    can_deliver_early: bool = False
+    notes: str | None = None
+
+
+MIN_OPTIONS_ON_FORM = 2  # what the booking form asks for
+MIN_OPTIONS_ACCEPTED = 1  # what the system will still record
 
 
 class JobSubmissionError(ValueError):
@@ -66,7 +101,70 @@ def _validated_fields(payload: JobSubmission) -> dict:
 
 
 def create_job_from_submission(payload: JobSubmission, raw_message: str) -> JobRecord:
-    job = JobRecord(raw_message=raw_message, **_validated_fields(payload))
+    """The legacy single-slot path: the customer named one date and window, and we take it.
+
+    Kept working so the existing chat and admin UI keep functioning while the multi-day flow is
+    built alongside. The chosen slot is recorded as an availability option too, so such an order
+    is still legible to the planner.
+    """
+    fields = _validated_fields(payload)
+    option = AvailabilityOption(
+        date=fields["delivery_date"], window=fields["availability"][0], preference_rank=1
+    )
+    job = JobRecord(raw_message=raw_message, availability_options=[option], **fields)
+    JobsRepository().save_job(job)
+    return job
+
+
+def create_order(payload: OrderSubmission, raw_message: str) -> JobRecord:
+    """The multi-day path: an order with acceptable windows but no agreed date.
+
+    Deliberately leaves delivery_date and locked_window unset. The order exists -- it has to,
+    before feasibility can be evaluated -- but nothing has been promised, and the model's
+    validator enforces that a pending order carries no lock.
+    """
+    if not payload.availability:
+        raise JobSubmissionError("Please give us at least one date and time that works for you.")
+
+    try:
+        coordinates = postal_code_to_coords(payload.postal_code)
+        validate_delivery_location(coordinates, label=f"Postal code {payload.postal_code}")
+    except (ValueError, OutsideServiceAreaError) as exc:
+        raise JobSubmissionError(str(exc)) from exc
+
+    options = []
+    for choice in payload.availability:
+        if choice.window_end <= choice.window_start:
+            raise JobSubmissionError("Each window's end time must be after its start time.")
+        if not PlanningClock.is_within_horizon(choice.date):
+            first, last = PlanningClock.horizon()
+            raise JobSubmissionError(
+                f"We can only take bookings between {first} and {last}. "
+                f"{choice.date} is outside that."
+            )
+        options.append(
+            AvailabilityOption(
+                date=choice.date,
+                window=TimeWindow(start=choice.window_start, end=choice.window_end),
+                preference_rank=choice.preference_rank,
+            )
+        )
+
+    job = JobRecord(
+        customer_name=payload.customer_name,
+        phone=payload.phone,
+        address=Address(
+            raw_text=payload.address_raw, postal_code=payload.postal_code, coordinates=coordinates
+        ),
+        job_type=payload.job_type,
+        availability_options=options,
+        duration_minutes=payload.duration_minutes
+        or DEFAULT_DURATION_MINUTES_BY_JOB_TYPE[payload.job_type],
+        can_deliver_early=payload.can_deliver_early,
+        planning_status=PlanningStatus.PENDING_PLANNING,
+        raw_message=raw_message,
+        notes=payload.notes,
+    )
     JobsRepository().save_job(job)
     return job
 
