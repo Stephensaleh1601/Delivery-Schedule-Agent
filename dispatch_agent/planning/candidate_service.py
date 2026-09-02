@@ -1,0 +1,214 @@
+"""Evaluating a customer's proposed windows against the real operation.
+
+This is the deterministic core of the product. For each date+window a customer said they could
+accept, it solves that day with and without the order and reports what saying yes would cost.
+The language model chooses between the results; it never produces them.
+
+Two design points worth knowing:
+
+**The baseline is always re-solved, never read from a stored plan.** The brief suggests falling
+back to solving only when no stored plan exists, but comparing a stored plan against a freshly
+solved one makes the incremental cost meaningless -- possibly negative -- because the stored
+plan may have been produced with a different job set, different settings, or a different routing
+provider. Stored plans are for display; comparisons are made against a baseline computed in the
+same run, with the same parameters.
+
+**One service instance evaluates one order.** Each date's baseline is solved once and memoised,
+so three options spread over two dates cost two baselines rather than three. Combined with the
+drive-time cache underneath RoutingClient, evaluating a full booking is a handful of solves and
+almost no provider traffic.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date as Date
+
+from dispatch_agent.config import settings
+from dispatch_agent.db import JobsRepository
+from dispatch_agent.geo.routing_client import RoutingClient
+from dispatch_agent.geo.zones import COMPANY_DEPOT
+from dispatch_agent.models import (
+    AvailabilityOption,
+    CandidateSlotEvaluation,
+    Coordinates,
+    DaySequence,
+    JobRecord,
+    PlanningStatus,
+)
+from dispatch_agent.planning.clock import PlanningClock
+from dispatch_agent.planning.scoring import ScoringConfig, overtime_minutes, score_candidate
+from dispatch_agent.solver import UnsolvableDayError, sequence_day
+
+# Planning statuses whose jobs are actually on the road that day. An order that was cancelled,
+# or is still being negotiated, must not shape the route another customer is quoted against.
+SCHEDULED_STATUSES = frozenset(
+    {
+        PlanningStatus.CONFIRMED,
+        PlanningStatus.SEQUENCED,
+        PlanningStatus.DISPATCHED,
+        PlanningStatus.COMPLETED,
+    }
+)
+
+
+@dataclass
+class DayContext:
+    """A date's existing workload and what it currently costs to serve."""
+
+    delivery_date: Date
+    jobs: list[JobRecord]
+    baseline: DaySequence | None
+    baseline_drive_minutes: int
+    baseline_error: str | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.jobs
+
+
+class CandidateService:
+    def __init__(
+        self,
+        repo: JobsRepository | None = None,
+        routing_client: RoutingClient | None = None,
+        depot: Coordinates = COMPANY_DEPOT,
+        scoring: ScoringConfig | None = None,
+    ):
+        self._repo = repo or JobsRepository()
+        self._routing = routing_client or RoutingClient()
+        self._depot = depot
+        self._scoring = scoring or ScoringConfig.from_settings()
+        self._contexts: dict[Date, DayContext] = {}
+
+    # -- day baselines --------------------------------------------------------
+
+    def day_context(self, delivery_date: Date) -> DayContext:
+        """The date's committed jobs and the cost of serving them, solved at most once."""
+        if delivery_date in self._contexts:
+            return self._contexts[delivery_date]
+
+        jobs = [
+            job
+            for job in self._repo.jobs_for_date(delivery_date)
+            if job.planning_status in SCHEDULED_STATUSES and job.readiness_status.value == "ready"
+        ]
+        baseline: DaySequence | None = None
+        error: str | None = None
+        if jobs:
+            try:
+                baseline = self._solve(jobs, delivery_date)
+            except UnsolvableDayError as exc:
+                # An already-broken day is not this customer's fault, but nothing can be quoted
+                # against it either -- every candidate for this date will report the reason.
+                error = str(exc)
+        else:
+            baseline = DaySequence(
+                delivery_date=delivery_date, stops=[], total_drive_minutes=0, return_drive_minutes=0
+            )
+
+        context = DayContext(
+            delivery_date=delivery_date,
+            jobs=jobs,
+            baseline=baseline,
+            baseline_drive_minutes=baseline.round_trip_drive_minutes if baseline else 0,
+            baseline_error=error,
+        )
+        self._contexts[delivery_date] = context
+        return context
+
+    def _solve(self, jobs: list[JobRecord], delivery_date: Date) -> DaySequence:
+        return sequence_day(
+            jobs,
+            delivery_date,
+            depot=self._depot,
+            routing_client=self._routing,
+            time_limit_seconds=settings.candidate_solver_time_limit_seconds,
+        )
+
+    # -- evaluation -----------------------------------------------------------
+
+    def evaluate(self, order: JobRecord, option: AvailabilityOption) -> CandidateSlotEvaluation:
+        """Solve `option`'s day with this order inserted, and price the difference."""
+        context = self.day_context(option.date)
+
+        if context.baseline_error is not None:
+            return self._infeasible(option, f"that day cannot currently be routed: {context.baseline_error}")
+
+        # An in-memory copy pinned to just this window. Never persisted -- the order keeps no
+        # date and no lock until a customer actually accepts something.
+        candidate = order.model_copy(
+            update={
+                "delivery_date": option.date,
+                "availability": [option.window],
+                "availability_options": [],
+                "locked_window": None,
+                "planning_status": PlanningStatus.PENDING_PLANNING,
+                "status": "new",
+            }
+        )
+
+        try:
+            proposed = self._solve(context.jobs + [candidate], option.date)
+        except UnsolvableDayError as exc:
+            return self._infeasible(option, str(exc))
+
+        proposed_minutes = proposed.round_trip_drive_minutes
+        jobs_by_id = {job.id: job for job in context.jobs + [candidate]}
+        total, breakdown = score_candidate(
+            baseline_drive_minutes=context.baseline_drive_minutes,
+            proposed_drive_minutes=proposed_minutes,
+            is_empty_day=context.is_empty,
+            preference_rank=option.preference_rank,
+            overtime=overtime_minutes(proposed, jobs_by_id, self._depot, self._scoring),
+            config=self._scoring,
+        )
+
+        return CandidateSlotEvaluation(
+            availability_option_id=option.id,
+            date=option.date,
+            window=option.window,
+            feasible=True,
+            baseline_drive_minutes=context.baseline_drive_minutes,
+            proposed_drive_minutes=proposed_minutes,
+            total_score=total,
+            proposed_sequence=proposed,
+            **breakdown,
+        )
+
+    def evaluate_all(self, order: JobRecord) -> list[CandidateSlotEvaluation]:
+        """Every option the customer offered, ranked best first.
+
+        Options outside the bookable horizon are rejected here rather than silently scored, so a
+        customer is never quoted a date the operation cannot commit to.
+        """
+        evaluations = []
+        for option in order.availability_options:
+            if not PlanningClock.is_within_horizon(option.date):
+                first, last = PlanningClock.horizon()
+                evaluations.append(
+                    self._infeasible(
+                        option, f"we only take bookings between {first} and {last}"
+                    )
+                )
+                continue
+            evaluations.append(self.evaluate(order, option))
+        return self.rank(evaluations)
+
+    @staticmethod
+    def rank(evaluations: list[CandidateSlotEvaluation]) -> list[CandidateSlotEvaluation]:
+        """Feasibility first, then cost, then earliest date.
+
+        Sorting on `not feasible` keeps infeasibility a separate key rather than a large score --
+        an impossible slot sorts last no matter how cheap its arithmetic would have been.
+        """
+        return sorted(evaluations, key=lambda e: (not e.feasible, e.total_score, e.date))
+
+    @staticmethod
+    def _infeasible(option: AvailabilityOption, reason: str) -> CandidateSlotEvaluation:
+        return CandidateSlotEvaluation(
+            availability_option_id=option.id,
+            date=option.date,
+            window=option.window,
+            feasible=False,
+            infeasible_reason=reason,
+        )
