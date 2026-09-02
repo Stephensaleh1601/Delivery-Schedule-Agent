@@ -83,6 +83,10 @@ class JobRecord(BaseModel):
     address: Address
     job_type: JobType
     availability: list[TimeWindow] = Field(min_length=1)
+    # Set once a customer accepts an offered slot. A locked window is a promise: the solver
+    # treats it as the job's SOLE window (see solver._effective_windows), so a replan can never
+    # quietly slide a confirmed appointment onto one of the customer's other original options.
+    locked_window: Optional[TimeWindow] = None
     duration_minutes: int = Field(gt=0, default=60)
     delivery_date: Date
     status: JobStatus = JobStatus.NEW
@@ -102,9 +106,18 @@ class StopAssignment(BaseModel):
 class DaySequence(BaseModel):
     delivery_date: Date
     stops: list[StopAssignment]
+    # Sum of drive_minutes_from_prev across stops: depot -> stop1 -> ... -> lastStop. This
+    # deliberately EXCLUDES the drive home, because several callers already display and diff
+    # this exact number. Use round_trip_drive_minutes for anything that compares the real cost
+    # of a day -- without the return leg, appending a far-flung final stop looks free.
     total_drive_minutes: int
+    return_drive_minutes: int = 0
     status: JobStatus = JobStatus.SEQUENCED
     generated_at: datetime = Field(default_factory=_utcnow)
+
+    @property
+    def round_trip_drive_minutes(self) -> int:
+        return self.total_drive_minutes + self.return_drive_minutes
 
 
 class OverrideLogEntry(BaseModel):

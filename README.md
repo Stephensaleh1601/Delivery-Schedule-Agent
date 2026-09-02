@@ -16,7 +16,7 @@ Built for IGNITE Agentic AI Hackathon 2026, digital track.
   availability) via a forced Claude tool call, geocodes the postal code, and persists it.
   Missing fields (no postal code, no name) come back as `errors` instead of a guess.
 - **Planning agent** (`dispatch_agent/agents/planning_agent.py`) — takes a day's jobs, gets a
-  real drive-time matrix, solves an exact single-vehicle time-windowed sequence with OR-Tools,
+  real drive-time matrix, solves a single-vehicle time-windowed sequence with OR-Tools,
   and drafts a short WhatsApp confirmation per stop.
 - **Reschedule loop** (`dispatch_agent/reschedule.py`) — a customer moves, the day re-solves,
   and only the customers whose arrival window actually changed come back as "affected".
@@ -45,8 +45,9 @@ Built for IGNITE Agentic AI Hackathon 2026, digital track.
   table. Superseded by the web app above for day-to-day use; kept because the
   approve/edit/reject + reschedule flow isn't in the web app yet.
 - **Solver** (`dispatch_agent/solver.py`) — single-vehicle TSP with time windows via OR-Tools'
-  routing library. Exact, not a heuristic, which is fine at the size this runs at (a handful to
-  a few dozen jobs/day).
+  routing library. A time-limited guided local search -- good routes at the size this runs at
+  (a handful to a few dozen jobs/day), but not a guaranteed optimum, so don't describe it as
+  one. Honours disjoint availability windows and never moves a job with a locked window.
 - **Storage** (`dispatch_agent/db.py`) — SQLite: jobs, the day's proposed sequence, and the
   coordinator override log.
 

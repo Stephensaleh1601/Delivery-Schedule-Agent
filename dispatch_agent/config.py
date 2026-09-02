@@ -66,7 +66,24 @@ class Settings:
     db_path: str = os.getenv("DB_PATH", "./data/dispatch.db")
     default_job_duration_minutes: int = int(os.getenv("DEFAULT_JOB_DURATION_MINUTES", "60"))
     work_day_start: Time = _time("WORK_DAY_START", "09:00")
+    # Hard end of the working day: the solver will not schedule past it, so a route that would
+    # run late is infeasible rather than expensive.
     work_day_end: Time = _time("WORK_DAY_END", "18:00")
+    # Soft end, used only for scoring: minutes worked past this (including the drive home) are
+    # penalised. Because work_day_end is a hard constraint, a purely hard model can never
+    # produce overtime, which would make the scoring term dead -- this is what gives it meaning.
+    soft_day_end: Time = _time("SOFT_DAY_END", "17:00")
+    # Whether a job's SERVICE must finish inside the customer's window, not merely start in it.
+    # With this off, a 60-minute job may start at 11:55 in a 09:00-12:00 window and run to
+    # 12:55 -- i.e. straight through a gap the customer said they were unavailable.
+    require_service_within_window: bool = os.getenv("REQUIRE_SERVICE_WITHIN_WINDOW", "1") != "0"
+    # OR-Tools uses guided local search, which burns its whole time budget regardless of when it
+    # converges. Publishing a plan happens once and can afford to look harder; candidate
+    # evaluation runs many solves per booking, so it gets a much shorter leash.
+    solver_time_limit_seconds: int = int(os.getenv("SOLVER_TIME_LIMIT_SECONDS", "5"))
+    candidate_solver_time_limit_seconds: int = int(
+        os.getenv("CANDIDATE_SOLVER_TIME_LIMIT_SECONDS", "1")
+    )
 
 
 settings = Settings()

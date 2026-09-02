@@ -75,7 +75,8 @@ told she's wrong. She approves a draft.
 ## Stack
 
 Python. LangGraph for the two agents. Claude Haiku 4.5 on Bedrock. Pydantic for the job schema.
-Google OR-tools for the sequencing, which handles time windows and is exact at our size. A maps
+Google OR-tools for the sequencing, which handles time windows. (Implementation note: this is a
+time-limited guided local search, not an exact method -- good enough at our size, but not optimal.) A maps
 API for real drive times. SQLite for jobs and the override log. Deployed on AgentCore. Small
 dashboard showing the day on a map.
 
