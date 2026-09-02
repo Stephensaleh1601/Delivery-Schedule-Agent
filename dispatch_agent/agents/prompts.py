@@ -47,6 +47,85 @@ RECORD_JOB_TOOL_SCHEMA = {
 }
 
 
+SCHEDULING_DECISION_SYSTEM_PROMPT = """You are the scheduling coordinator for a Singapore \
+large-furniture delivery company. You decide what the operation should do next, one step at a \
+time, by calling the `choose_next_action` tool.
+
+You do not calculate anything. Drive times, whether a day can be routed, and what time a van \
+arrives are all worked out by the tools -- never estimate them yourself, and never state one in \
+your reason.
+
+Rules:
+- Choose exactly one action per turn, from the list in the tool schema. Nothing else exists.
+- Evaluate a customer's windows before offering any of them. Never offer a slot the customer \
+did not ask for, however convenient it looks.
+- A confirmed appointment is a promise. If keeping every promise is impossible, escalate to a \
+coordinator; do not move anyone.
+- If a tool fails, read why. Retry only if the reason suggests it would help; otherwise escalate.
+- When there is nothing useful left to do, choose `finish`.
+
+`reason_summary` is one short sentence shown to the coordinator, describing what you are doing \
+and why in operational terms ("Checking which of the three requested windows we can serve"). It \
+is not private reasoning, and it must not mention scores, penalties or internal weightings.
+"""
+
+
+def action_decision_schema(allowed_actions: list[str]) -> dict:
+    """The tool schema handed to the model.
+
+    The action enum lives HERE rather than on the Python model. Constraining the Python type
+    would make an out-of-list action unrepresentable, and the "never execute an unknown action"
+    guardrail would become untestable -- the failure would surface as a parse error instead of a
+    refusal we can log. In the schema it steers generation without preventing us from observing
+    a model that ignores it.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": list(allowed_actions)},
+            "reason_summary": {
+                "type": "string",
+                "description": "One short operational sentence for the coordinator.",
+            },
+            "arguments": {"type": "object", "description": "Arguments for the chosen action."},
+        },
+        "required": ["action", "reason_summary"],
+    }
+
+
+def render_state_digest(state) -> str:
+    """A small, typed summary of the situation -- deliberately not raw database rows.
+
+    The model should reason about the decision, not parse persistence. Keeping this narrow also
+    keeps the prompt cheap and stops stored customer data leaking into it wholesale.
+    """
+    lines = [f"Event: {state['event'].event_type.value}"]
+    if state.get("horizon_start"):
+        lines.append(f"Bookable dates: {state['horizon_start']} to {state['horizon_end']}")
+
+    order = state.get("order_summary")
+    if order:
+        lines.append(
+            f"Order: {order['customer_name']}, {order['job_type']}, "
+            f"{order['duration_minutes']} minutes, status {order['planning_status']}"
+        )
+        for option in order.get("options", []):
+            lines.append(
+                f"  - requested {option['date']} {option['start']}-{option['end']} "
+                f"(preference {option['preference_rank']})"
+            )
+    if state.get("affected_date"):
+        lines.append(f"Affected date: {state['affected_date']}")
+
+    for action in state.get("actions", []):
+        outcome = "ok" if action.ok else f"FAILED ({action.error})"
+        lines.append(f"Step {action.step}: {action.tool} -> {outcome}. {action.summary}")
+
+    steps_used = state.get("step_count", 0)
+    lines.append(f"Steps used: {steps_used}. Choose the next action.")
+    return "\n".join(lines)
+
+
 DRAFT_MESSAGE_SYSTEM_PROMPT = """You draft a short WhatsApp message to a customer confirming \
 or updating their arrival window for a large-furniture delivery (sofa, bed, cabinet, etc). Keep \
 it under 300 characters, friendly, in English, and state the arrival window as a time range \

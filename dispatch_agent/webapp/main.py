@@ -19,11 +19,14 @@ from dispatch_agent.config import settings
 from dispatch_agent.db import JobsRepository, init_db
 from dispatch_agent.geo.routing_client import RoutingClient
 from dispatch_agent.geo.zones import COMPANY_DEPOT, COMPANY_DEPOT_ADDRESS
+from dispatch_agent.agents.scheduling_agent import handle_planning_event
 from dispatch_agent.models import (
     DaySequence,
     JobRecord,
     JobStatus,
     Notification,
+    PlanningEvent,
+    PlanningEventType,
     PlanningStatus,
 )
 from dispatch_agent.planning import offer_service, plan_service
@@ -504,6 +507,54 @@ def get_plan(plan_date: Date) -> dict:
 def list_plan_versions(plan_date: Date) -> list[dict]:
     """Every version of a day's plan, oldest first -- the v1-vs-v2 comparison."""
     return [_plan_to_dict(p) for p in JobsRepository().plan_versions(plan_date)]
+
+
+def _run_to_dict(run) -> dict:
+    """The activity feed. Every entry is a real persisted tool call and its outcome -- there is
+    no decorative narration in here, which is the point."""
+    return {
+        "id": run.id,
+        "event_id": run.event_id,
+        "event_type": run.event_type.value if run.event_type else None,
+        "order_id": run.order_id,
+        "status": run.status.value,
+        "final_summary": run.final_summary,
+        "started_at": run.started_at.isoformat(),
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "actions": [
+            {
+                "step": a.step,
+                "tool": a.tool,
+                "ok": a.ok,
+                "summary": a.summary,
+                "reason": a.reason_summary,
+                "error": a.error,
+            }
+            for a in run.actions
+        ],
+    }
+
+
+@app.get("/api/agent-runs")
+def list_agent_runs(limit: int = 20) -> list[dict]:
+    return [_run_to_dict(r) for r in JobsRepository().agent_runs(limit=limit)]
+
+
+@app.post("/api/orders/{order_id}/plan-agentic")
+def plan_agentically(order_id: str) -> dict:
+    """Hand a new order to the scheduling agent rather than calling the services directly.
+
+    Same outcome as /plan-options, but the decisions are the agent's and the whole sequence is
+    recorded, which is what the activity panel shows.
+    """
+    repo = JobsRepository()
+    if repo.get_job(order_id) is None:
+        raise HTTPException(404, "Order not found")
+    run = handle_planning_event(
+        PlanningEvent(event_type=PlanningEventType.NEW_ORDER, order_id=order_id), repo=repo
+    )
+    offers = repo.offers_for_order(order_id)
+    return {"run": _run_to_dict(run), "offer": _offer_to_dict(offers[-1]) if offers else None}
 
 
 @app.get("/api/exceptions")
