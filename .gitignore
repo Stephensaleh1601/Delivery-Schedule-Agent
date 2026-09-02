@@ -9,3 +9,5 @@ venv/
 build/
 .streamlit/
 *.log
+.env.local
+.env.*.local

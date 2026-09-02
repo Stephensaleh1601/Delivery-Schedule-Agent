@@ -10,6 +10,10 @@ from datetime import time as Time
 
 from dotenv import load_dotenv
 
+# `.env.local` holds real credentials and is gitignored; `.env` is the shared/checked-in-shaped
+# fallback. Loaded local-first because python-dotenv never overwrites an already-set variable,
+# so whatever `.env.local` defines wins.
+load_dotenv(".env.local")
 load_dotenv()
 
 # On some networks (corporate proxy/VPN doing TLS interception, some antivirus/endpoint
