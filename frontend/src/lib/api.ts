@@ -150,8 +150,11 @@ export interface Offer {
 
 export interface PlanOptions {
   offer: Offer | null;
-  message?: string;
+  message?: string | null;
   evaluations: Evaluation[];
+  /** True when an offer was already outstanding, so no new one was created. */
+  reused?: boolean;
+  run?: AgentRun | null;
   error: string | null;
 }
 
@@ -292,8 +295,9 @@ export const dispatch = {
 
   createOrder: (payload: unknown) => api.post<{ id: string; planning_status: string }>("/api/orders", payload),
   planOptions: (orderId: string) => api.post<PlanOptions>(`/api/orders/${orderId}/plan-options`),
-  planAgentic: (orderId: string) =>
-    api.post<{ run: AgentRun; offer: Offer | null }>(`/api/orders/${orderId}/plan-agentic`),
+  /** The single planning call: one agent run returning the offer AND the evaluations behind it,
+   *  so what the customer is shown is by construction what the log records. */
+  planAgentic: (orderId: string) => api.post<PlanOptions>(`/api/orders/${orderId}/plan-agentic`),
   respond: (offerId: string, accepted: boolean, slotId?: string) =>
     api.post<AcceptResponse>(`/api/offers/${offerId}/respond`, { accepted, slot_id: slotId ?? null }),
 

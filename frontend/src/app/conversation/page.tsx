@@ -82,9 +82,9 @@ export default function ConversationPage() {
     try {
       const created = await dispatch.createOrder(payload);
       setOrderId(created.id);
-      // The agent decides; we render what it did.
-      await dispatch.planAgentic(created.id);
-      const options = await dispatch.planOptions(created.id);
+      // ONE planning call. Calling planAgentic and then planOptions opened two negotiations
+      // with different slots in each -- the customer saw one pair, the log recorded the other.
+      const options = await dispatch.planAgentic(created.id);
       setEvaluations(options.evaluations);
       dropTyping();
 

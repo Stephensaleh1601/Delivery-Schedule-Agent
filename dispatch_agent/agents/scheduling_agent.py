@@ -131,11 +131,24 @@ class RuleDecisionAgent:
                 return ActionDecision(action="create_offer",
                                       reason_summary="Offering the workable slots to the customer.",
                                       arguments={"order_id": event.order_id})
-            if "send_message" not in done:
+            if _last_failed(state, "create_offer") and "create_exception" not in done:
+                # There is nothing to send. Without this the next branch would message the
+                # customer the literal fallback string below -- "we have some options for you"
+                # to someone who is being offered none.
+                return ActionDecision(
+                    action="create_exception",
+                    reason_summary="No workable window; asking a coordinator to call the customer.",
+                    arguments={
+                        "order_id": event.order_id,
+                        "kind": "no_feasible_slot",
+                        "message": "None of the windows this customer gave us can be served; needs a call.",
+                    },
+                )
+            if "send_message" not in done and state.get("customer_message"):
                 return ActionDecision(action="send_message",
                                       reason_summary="Sending the options to the customer.",
                                       arguments={"order_id": event.order_id,
-                                                 "body": state.get("customer_message") or "We have some options for you."})
+                                                 "body": state["customer_message"]})
             return ActionDecision(action="finish", reason_summary="Offer sent; waiting on the customer.")
 
         if event.event_type is PlanningEventType.CUSTOMER_ACCEPTED_OFFER:
@@ -272,10 +285,13 @@ def _act_node(ctx: tools.ToolContext):
             step=step,
             tool=decision.action,
             ok=result.ok,
+            # Sanitised here, on the way into the log, so nothing personal or cross-customer is
+            # ever persisted -- not merely hidden at render time.
+            arguments=tools.capped_for_log(decision.arguments or {}),
             summary=result.summary,
             reason_summary=decision.reason_summary,
             error=result.error,
-            data=result.data,
+            data=tools.capped_for_log(result.data),
         )
         update: SchedulingState = {
             "actions": state.get("actions", []) + [entry],
@@ -324,14 +340,23 @@ def handle_planning_event(
     decider: DecisionAgent | None = None,
     routing_client: RoutingClient | None = None,
     use_fallback: bool = True,
+    ctx: tools.ToolContext | None = None,
 ) -> AgentRunLog:
     """Run the agent for one event and return its persisted log.
 
     Every trigger enters here: a new order, a customer's reply, a readiness change. A run is
     recorded before it starts and updated after each step, so the activity panel can be polled
     while it is still going rather than only seeing a finished result.
+
+    Pass `ctx` when the caller needs what the run *computed*, not only what it logged. The tools
+    fill in `ctx.evaluations` and `ctx.offer_id`, and those are the only reliable way to return
+    the offer this run actually made -- guessing at the newest row in the table is how a caller
+    ends up showing the customer slots from a different offer than the one in the log.
+
+    A replayed event short-circuits below without running the graph, so an injected context stays
+    empty. Callers must read that as "already handled", not as "no candidates".
     """
-    repo = repo or JobsRepository()
+    repo = repo or (ctx.repo if ctx is not None else JobsRepository())
 
     if not repo.save_planning_event(event):
         # This event id has been handled already -- replaying it must not redo the work.
@@ -345,7 +370,7 @@ def handle_planning_event(
     )
     repo.save_agent_run(run)
 
-    ctx = tools.ToolContext(repo=repo, routing_client=routing_client)
+    ctx = ctx if ctx is not None else tools.ToolContext(repo=repo, routing_client=routing_client)
     if decider is None:
         try:
             decider = LLMDecisionAgent()

@@ -432,6 +432,9 @@ class AgentActionLog(BaseModel):
     step: int
     tool: str
     ok: bool
+    # What the tool was called with and what it returned, both sanitised on the way in --
+    # see planning/tools.sanitise_for_log.
+    arguments: dict = Field(default_factory=dict)
     summary: str = ""
     reason_summary: str = ""
     error: Optional[str] = None

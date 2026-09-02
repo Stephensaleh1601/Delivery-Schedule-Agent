@@ -26,6 +26,7 @@ from dispatch_agent.models import (
     JobRecord,
     JobStatus,
     Notification,
+    OfferStatus,
     OverrideLogEntry,
     PlanningEvent,
     PlanningStatus,
@@ -442,11 +443,33 @@ class JobsRepository:
         return AppointmentOffer.model_validate_json(row[0]) if row else None
 
     def offers_for_order(self, order_id: str) -> list[AppointmentOffer]:
+        """An order's offers, oldest first.
+
+        This used to be `ORDER BY id`, which sorts a random uuid hex -- so `offers[-1]` could hand
+        back the EARLIER round. Callers used that to decide which slots to show a customer.
+        `rowid` is insertion order (save_offer inserts once, then updates), and round_number is the
+        real semantic order, so sort on both.
+        """
         with _connect() as conn:
             rows = conn.execute(
-                "SELECT data FROM appointment_offers WHERE order_id = ? ORDER BY id", (order_id,)
+                "SELECT data FROM appointment_offers WHERE order_id = ? ORDER BY rowid", (order_id,)
             ).fetchall()
-        return [AppointmentOffer.model_validate_json(r[0]) for r in rows]
+        offers = [AppointmentOffer.model_validate_json(r[0]) for r in rows]
+        return sorted(offers, key=lambda o: (o.round_number, o.created_at))
+
+    def latest_offer_for_order(self, order_id: str) -> AppointmentOffer | None:
+        offers = self.offers_for_order(order_id)
+        return offers[-1] if offers else None
+
+    def open_offer_for_order(self, order_id: str) -> AppointmentOffer | None:
+        """The offer this customer is currently being asked to respond to, if any.
+
+        Used to stop a second planning call opening a competing negotiation while the first is
+        still outstanding."""
+        for offer in reversed(self.offers_for_order(order_id)):
+            if offer.status in (OfferStatus.PENDING, OfferStatus.SENT):
+                return offer
+        return None
 
     def claim_offer_response(self, offer_id: str, status: str) -> bool:
         """Atomically move an offer out of the awaiting-response state.

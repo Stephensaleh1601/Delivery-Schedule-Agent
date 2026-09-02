@@ -24,13 +24,14 @@ from dispatch_agent.models import (
     DaySequence,
     JobRecord,
     JobStatus,
+    AgentRunStatus,
     Notification,
     PlanningEvent,
     PlanningEventType,
     PlanningStatus,
     ReadinessStatus,
 )
-from dispatch_agent.planning import offer_service, plan_service, recovery_service
+from dispatch_agent.planning import offer_service, plan_service, recovery_service, tools
 from dispatch_agent.planning.candidate_service import CandidateService
 from dispatch_agent.planning.clock import PlanningClock
 from dispatch_agent.solver import UnsolvableDayError, sequence_day
@@ -414,15 +415,33 @@ def plan_options(order_id: str) -> dict:
         raise HTTPException(404, "Order not found")
 
     evaluations = CandidateService(repo=repo).evaluate_all(order)
+
+    open_offer = repo.open_offer_for_order(order_id)
+    if open_offer is not None:
+        # Slots are already with this customer. Show the reasoning against the offer that exists
+        # rather than minting a second one -- create_offer excludes already-offered windows, so a
+        # competing offer would hold DIFFERENT slots from the ones they were sent.
+        return {
+            "offer": _offer_to_dict(open_offer),
+            "message": None,
+            "evaluations": [_evaluation_to_dict(e) for e in evaluations],
+            "reused": True,
+            "error": None,
+        }
+
     try:
         offer = offer_service.create_offer(repo, order, evaluations)
     except offer_service.OfferError as exc:
-        plan_service.raise_coordinator_exception(
-            repo, str(exc), kind="no_feasible_slot", order_id=order_id
-        )
+        # Only a genuinely unservable set of windows is a coordinator's problem. The other kinds
+        # are our own bookkeeping and must not be reported as "none of the windows can be fitted".
+        if exc.kind == "no_feasible_slot":
+            plan_service.raise_coordinator_exception(
+                repo, str(exc), kind=exc.kind, order_id=order_id
+            )
         return {
             "offer": None,
             "evaluations": [_evaluation_to_dict(e) for e in evaluations],
+            "reused": False,
             "error": str(exc),
         }
 
@@ -432,6 +451,7 @@ def plan_options(order_id: str) -> dict:
         "offer": _offer_to_dict(offer),
         "message": message,
         "evaluations": [_evaluation_to_dict(e) for e in evaluations],
+        "reused": False,
         "error": None,
     }
 
@@ -530,9 +550,13 @@ def _run_to_dict(run) -> dict:
                 "step": a.step,
                 "tool": a.tool,
                 "ok": a.ok,
+                # Input and result, both already sanitised where the log was written.
+                "arguments": a.arguments,
+                "data": a.data,
                 "summary": a.summary,
                 "reason": a.reason_summary,
                 "error": a.error,
+                "timestamp": a.timestamp.isoformat(),
             }
             for a in run.actions
         ],
@@ -546,19 +570,46 @@ def list_agent_runs(limit: int = 20) -> list[dict]:
 
 @app.post("/api/orders/{order_id}/plan-agentic")
 def plan_agentically(order_id: str) -> dict:
-    """Hand a new order to the scheduling agent rather than calling the services directly.
+    """Plan a new order. THE conversation's single planning call.
 
-    Same outcome as /plan-options, but the decisions are the agent's and the whole sequence is
-    recorded, which is what the activity panel shows.
+    Returns the run, the offer and the evaluations from one agent run, so the slots the customer
+    is shown are by construction the slots in the log. Calling this and /plan-options in sequence
+    used to open two negotiations with different slots in each.
     """
     repo = JobsRepository()
-    if repo.get_job(order_id) is None:
+    order = repo.get_job(order_id)
+    if order is None:
         raise HTTPException(404, "Order not found")
+
+    # A second press must not start a competing negotiation while the first is unanswered.
+    open_offer = repo.open_offer_for_order(order_id)
+    if open_offer is not None:
+        return {
+            "run": None,
+            "offer": _offer_to_dict(open_offer),
+            "message": None,
+            "evaluations": [],
+            "reused": True,
+            "error": None,
+        }
+
+    ctx = tools.ToolContext(repo=repo)
     run = handle_planning_event(
-        PlanningEvent(event_type=PlanningEventType.NEW_ORDER, order_id=order_id), repo=repo
+        PlanningEvent(event_type=PlanningEventType.NEW_ORDER, order_id=order_id),
+        repo=repo,
+        ctx=ctx,
     )
-    offers = repo.offers_for_order(order_id)
-    return {"run": _run_to_dict(run), "offer": _offer_to_dict(offers[-1]) if offers else None}
+    # ctx.offer_id is the authoritative link to the offer THIS run made. Picking the newest row
+    # instead is how a caller ends up showing slots from a different offer than the log records.
+    offer = repo.get_offer(ctx.offer_id) if ctx.offer_id else None
+    return {
+        "run": _run_to_dict(run),
+        "offer": _offer_to_dict(offer) if offer else None,
+        "message": ctx.scratch.get("offer_message"),
+        "evaluations": [_evaluation_to_dict(e) for e in ctx.evaluations],
+        "reused": False,
+        "error": None if run.status is AgentRunStatus.COMPLETED else run.final_summary,
+    }
 
 
 class ReadinessUpdate(BaseModel):

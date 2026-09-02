@@ -14,6 +14,7 @@ Two properties matter more than the list itself:
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date as Date
 from typing import Callable, NamedTuple
@@ -34,6 +35,61 @@ from dispatch_agent.planning.candidate_service import CandidateService
 from dispatch_agent.planning.clock import PlanningClock
 from dispatch_agent.solver import LockedPlanInfeasibleError, UnsolvableDayError
 from dispatch_agent.webapp.jobs_service import JobSubmissionError
+
+
+# -- log sanitisation ---------------------------------------------------------
+
+MAX_LOG_STRING = 300
+MAX_LOG_ITEMS = 10
+MAX_LOG_BYTES = 4096
+
+# Keys carrying either personal detail or ANOTHER customer's day. A coordinator reading one
+# order's activity must not thereby read a different customer's address, phone or schedule.
+REDACTED_KEYS = frozenset(
+    {
+        "address", "raw_text", "postal_code", "phone", "coordinates", "lat", "lng",
+        "proposed_sequence", "baseline_sequence", "stops", "arrival_window",
+    }
+)
+
+
+def sanitise_for_log(value, _depth: int = 0):
+    """Shrink a tool's arguments or result to something safe to persist and show.
+
+    Applied where the log is WRITTEN rather than where it is served, deliberately: the leak then
+    never reaches the database, no second consumer can rediscover it, and a tool added later is
+    safe by default instead of safe by review.
+    """
+    if _depth > 4:
+        return "..."
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if key in REDACTED_KEYS:
+                out[key] = "[redacted]"
+            else:
+                out[key] = sanitise_for_log(item, _depth + 1)
+        return out
+    if isinstance(value, (list, tuple)):
+        trimmed = [sanitise_for_log(v, _depth + 1) for v in list(value)[:MAX_LOG_ITEMS]]
+        if len(value) > MAX_LOG_ITEMS:
+            trimmed.append(f"... {len(value) - MAX_LOG_ITEMS} more")
+        return trimmed
+    if isinstance(value, str):
+        return value if len(value) <= MAX_LOG_STRING else value[:MAX_LOG_STRING] + "..."
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return sanitise_for_log(str(value), _depth)
+
+
+def capped_for_log(value: dict) -> dict:
+    """sanitise_for_log, plus a hard ceiling on the whole payload."""
+    cleaned = sanitise_for_log(value)
+    if not isinstance(cleaned, dict):
+        return {"value": cleaned}
+    if len(json.dumps(cleaned, default=str)) > MAX_LOG_BYTES:
+        return {"_truncated": True, "keys": sorted(cleaned)}
+    return cleaned
 
 
 class ToolResult(BaseModel):

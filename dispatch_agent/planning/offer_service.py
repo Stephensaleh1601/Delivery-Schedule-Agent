@@ -34,7 +34,16 @@ MAX_SLOTS_PER_OFFER = 2
 
 
 class OfferError(Exception):
-    """A request that cannot be honoured -- the caller turns this into a customer-facing reply."""
+    """A request that cannot be honoured -- the caller turns this into a customer-facing reply.
+
+    `kind` distinguishes three failures that used to share one message. Only `no_feasible_slot`
+    means the customer's windows genuinely cannot be served; the other two are our own bookkeeping
+    and must never be reported to a coordinator as "none of the windows can be fitted".
+    """
+
+    def __init__(self, message: str, kind: str = "no_feasible_slot"):
+        super().__init__(message)
+        self.kind = kind
 
 
 @dataclass
@@ -61,15 +70,27 @@ def create_offer(
     if len(previous) >= MAX_OFFER_ROUNDS:
         raise OfferError(
             f"already made {len(previous)} offer rounds for this order -- escalating rather than "
-            f"asking the customer again"
+            f"asking the customer again",
+            kind="round_cap_reached",
         )
 
     already_offered = {slot.availability_option_id for offer in previous for slot in offer.options}
-    feasible = [
-        e for e in evaluations if e.feasible and e.availability_option_id not in already_offered
-    ]
+    servable = [e for e in evaluations if e.feasible]
+    if not servable:
+        raise OfferError(
+            "none of the windows you gave us can be fitted into the schedule",
+            kind="no_feasible_slot",
+        )
+
+    feasible = [e for e in servable if e.availability_option_id not in already_offered]
     if not feasible:
-        raise OfferError("none of the windows you gave us can be fitted into the schedule")
+        # The windows are fine; we have simply already put all of them to this customer. Saying
+        # they "cannot be fitted" here would be false, and it used to raise a coordinator
+        # exception for a problem that does not exist.
+        raise OfferError(
+            "every window this customer offered has already been put to them",
+            kind="all_options_already_offered",
+        )
 
     offer = AppointmentOffer(
         order_id=order.id,
