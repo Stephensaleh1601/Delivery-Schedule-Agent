@@ -67,6 +67,19 @@ export interface Horizon {
   dates: string[];
 }
 
+export interface Bootstrap {
+  horizon: Horizon;
+  map: { google_maps_api_key: string; depot: { lat: number; lng: number; address: string } };
+  operating: {
+    work_day_start: string;
+    work_day_end: string;
+    soft_day_end: string;
+    day_opening_penalty_minutes: number;
+    preference_penalty_per_rank: number;
+    routing_provider: string;
+  };
+}
+
 export type PlanningStatus =
   | "pending_availability"
   | "pending_planning"
@@ -118,6 +131,18 @@ export interface ScoreBreakdown {
   overtime_penalty_minutes: number;
 }
 
+/** Before/after for one candidate date. Route efficiency is the objective; preference is a
+ *  courtesy weight and deliberately lives in `breakdown`, not here. */
+export interface RouteImpact {
+  drive_minutes: { before: number; after: number };
+  stops: { before: number; after: number };
+  /** `before` is null when the day had no stops -- it did not exist yet. */
+  finishes_at: { before: string | null; after: string };
+  opens_empty_day: boolean;
+  empty_day_overhead_minutes: number;
+  preference_rank: number;
+}
+
 export interface Evaluation {
   availability_option_id: string;
   date: string;
@@ -126,6 +151,7 @@ export interface Evaluation {
   infeasible_reason: string | null;
   total_score: number | null;
   breakdown: ScoreBreakdown;
+  route_impact: RouteImpact;
   baseline_drive_minutes: number;
   proposed_drive_minutes: number;
 }
@@ -169,6 +195,12 @@ export interface PlanVersion {
   total_drive_minutes: number;
   return_drive_minutes: number;
   round_trip_drive_minutes: number;
+  total_distance_km: number;
+  return_distance_km: number;
+  round_trip_distance_km: number;
+  /** False for plans published before distance was recorded. Show "not recorded", not 0 km. */
+  distance_recorded: boolean;
+  finishes_at: string | null;
   generated_at: string;
 }
 
@@ -176,12 +208,27 @@ export interface PlanStop {
   sequence_index: number;
   job_id: string;
   customer_name: string;
+  address: string | null;
+  postal_code: string | null;
+  job_type: string | null;
+  duration_minutes: number | null;
+  readiness_status: ReadinessStatus | null;
+  planning_status: PlanningStatus | null;
+  locked_window: Window | null;
+  lat: number | null;
+  lng: number | null;
+  /** False means a district-centre pin, ~1-2km out. Say so rather than implying a doorstep. */
+  precise_location: boolean;
   arrival: string;
   departure: string;
   drive_minutes_from_prev: number;
+  distance_km_from_prev: number;
 }
 
-export type ActivePlan = PlanVersion & { stops: PlanStop[] };
+export type ActivePlan = PlanVersion & {
+  stops: PlanStop[];
+  depot: { lat: number; lng: number; address: string };
+};
 
 export interface AcceptResponse {
   offer: Offer;
@@ -190,6 +237,9 @@ export interface AcceptResponse {
   message: string | null;
   delivery_date: string | null;
   plan_version: number | null;
+  /** Set when accepting moved the customer off a day they already held. */
+  vacated_date?: string | null;
+  vacated_plan_version?: number | null;
 }
 
 export interface Replacement {
@@ -213,9 +263,13 @@ export interface AgentAction {
   step: number;
   tool: string;
   ok: boolean;
+  /** What the tool was called with, and what it returned. Both sanitised server-side. */
+  arguments: Record<string, unknown>;
+  data: Record<string, unknown>;
   summary: string;
   reason: string;
   error: string | null;
+  timestamp: string;
 }
 
 export interface AgentRun {
@@ -286,6 +340,7 @@ export interface RoutePlanResponse {
 // -- Endpoints ----------------------------------------------------------------
 
 export const dispatch = {
+  bootstrap: () => api.get<Bootstrap>("/api/bootstrap"),
   horizon: () => api.get<Horizon>("/api/horizon"),
   orders: (planningStatus?: PlanningStatus) =>
     api.get<Order[]>(`/api/orders${planningStatus ? `?planning_status=${planningStatus}` : ""}`),
@@ -308,4 +363,17 @@ export const dispatch = {
   setReadiness: (orderId: string, readiness: ReadinessStatus) =>
     api.post<ReadinessResponse>(`/api/orders/${orderId}/readiness`, { readiness_status: readiness }),
   morningRun: (date: string) => api.post<MorningRunResponse>("/api/events/morning-run", { date }),
+
+  /** Put a freed slot to a customer who opted into an earlier delivery. An offer, not a move --
+   *  they accept through the normal respond() path. */
+  offerFreedSlot: (orderId: string, freedDate: string, window?: Window) =>
+    api.post<{ offer: Offer; message: string; evaluation: Evaluation; error: string | null }>(
+      "/api/recovery/offer",
+      {
+        order_id: orderId,
+        freed_date: freedDate,
+        window_start: window?.start ?? null,
+        window_end: window?.end ?? null,
+      },
+    ),
 };

@@ -264,12 +264,11 @@ uvicorn dispatch_agent.webapp.main:app --reload
 # 4. The Next.js console -- the six demo screens, in a second terminal. It proxies /api to
 #    FastAPI, so both processes must be running.
 cd frontend && npm install && npm run dev
-#   -> http://localhost:3000/              operations overview
-#   -> http://localhost:3000/conversation  customer booking, wired to the live agent
-#   -> http://localhost:3000/planning      slot evaluation with the score breakdown
-#   -> http://localhost:3000/routes        route plan and v1/v2 comparison
-#   -> http://localhost:3000/recovery      mark an order delayed, see the slot recovered
-#   -> http://localhost:3000/activity      the agent's persisted tool calls
+#   -> http://localhost:3000/        Orders -- every booking as a spreadsheet
+#   -> http://localhost:3000/routes  Daily Routes -- the four days mapped, versions, recovery
+#   -> http://localhost:3000/chat    Customer Chat -- the WhatsApp demo beside the agent's trace
+#
+# Agent activity is a drawer, reachable from the header on any screen.
 
 ```
 

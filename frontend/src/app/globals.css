@@ -55,6 +55,26 @@
   --radius-field: 9px;
 
   --ease-out-soft: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  /*
+    WhatsApp-alike, scoped to the customer conversation ONLY.
+
+    The conversation has to be instantly recognisable as a phone message thread -- that is the
+    whole point of showing it -- so it borrows the familiar colours and layout conventions. It
+    does NOT borrow any asset: no logo, no wordmark, and the wallpaper is drawn here rather than
+    copied. The screen is badged as simulated.
+
+    Nothing outside that one screen reads these. The console keeps its own palette.
+  */
+  --color-wa-header: #075e54;
+  --color-wa-header-deep: #054d44;
+  --color-wa-accent: #25d366;
+  --color-wa-paper: #ece5dd;
+  --color-wa-in: #ffffff;
+  --color-wa-out: #dcf8c6;
+  --color-wa-ink: #111b21;
+  --color-wa-meta: #667781;
+  --color-wa-tick: #53bdeb;
 }
 
 @layer base {
