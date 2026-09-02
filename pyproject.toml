@@ -13,8 +13,8 @@ packages = [
     "dispatch_agent",
     "dispatch_agent.agents",
     "dispatch_agent.geo",
-    "dispatch_agent.dashboard",
     "dispatch_agent.webapp",
+    "dispatch_agent.planning",
 ]
 
 [tool.pytest.ini_options]

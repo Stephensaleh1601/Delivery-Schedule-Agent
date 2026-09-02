@@ -68,7 +68,7 @@ def _effective_windows(job: JobRecord) -> list[TimeWindow]:
     would let a replan quietly move the customer to a different time they once said they were
     free -- which is exactly what "we never move a confirmed appointment" forbids.
     """
-    if job.locked_window is not None:
+    if job.is_locked:
         return [job.locked_window]
     return job.availability
 
@@ -260,7 +260,7 @@ def _diagnose(
     Cheap only because the drive-time matrix is already in hand: every probe below re-solves the
     same model with different domains and makes no routing calls.
     """
-    locked_indices = [i for i, job in enumerate(jobs) if job.locked_window is not None]
+    locked_indices = [i for i, job in enumerate(jobs) if job.is_locked]
     locked_ids = [jobs[i].id for i in locked_indices]
 
     if not locked_indices:

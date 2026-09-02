@@ -12,14 +12,18 @@ import pytest
 
 from dispatch_agent.geo.postal_codes import postal_code_to_coords
 from dispatch_agent.geo.zones import SINGAPORE_CENTROID
-from dispatch_agent.models import Address, JobRecord, JobType, TimeWindow
+from dispatch_agent.models import Address, JobRecord, JobType, PlanningStatus, TimeWindow
 from dispatch_agent.solver import LockedPlanInfeasibleError, UnsolvableDayError, sequence_day
 
 DAY = date(2026, 8, 28)
 
 
 def _job(name, postal_code, windows, duration_minutes=30, locked=None):
+    # A locked window is only honoured for a job that has actually been confirmed -- the model
+    # forbids the pair (pending status + locked window) outright, so set both together.
     return JobRecord(
+        planning_status=PlanningStatus.CONFIRMED if locked else PlanningStatus.PENDING_PLANNING,
+        status="approved" if locked else "new",
         customer_name=name,
         address=Address(raw_text=name, postal_code=postal_code, coordinates=postal_code_to_coords(postal_code)),
         job_type=JobType.SOFA,

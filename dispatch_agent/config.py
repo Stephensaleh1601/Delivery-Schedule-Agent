@@ -70,6 +70,16 @@ class Settings:
     # another country always should.
     max_drive_time_ratio: float = float(os.getenv("MAX_DRIVE_TIME_RATIO", "4.0"))
     db_path: str = os.getenv("DB_PATH", "./data/dispatch.db")
+    # Pins "today" so a recorded demo and the test suite behave identically every run. Blank
+    # means use the real date. ISO format, e.g. 2026-09-02.
+    demo_base_date: str = os.getenv("DEMO_BASE_DATE", "")
+    # The bookable window, as days from today. A customer may only choose dates in this range.
+    horizon_lead_days_min: int = int(os.getenv("HORIZON_LEAD_DAYS_MIN", "2"))
+    horizon_lead_days_max: int = int(os.getenv("HORIZON_LEAD_DAYS_MAX", "5"))
+    # Scoring weights. A day with no jobs on it costs a fixed penalty to open; a lower-ranked
+    # customer preference costs a little, so preference breaks ties without overriding routing.
+    day_opening_penalty_minutes: int = int(os.getenv("DAY_OPENING_PENALTY_MINUTES", "60"))
+    preference_penalty_per_rank: int = int(os.getenv("PREFERENCE_PENALTY_PER_RANK", "10"))
     default_job_duration_minutes: int = int(os.getenv("DEFAULT_JOB_DURATION_MINUTES", "60"))
     work_day_start: Time = _time("WORK_DAY_START", "09:00")
     # Hard end of the working day: the solver will not schedule past it, so a route that would

@@ -40,10 +40,6 @@ Built for IGNITE Agentic AI Hackathon 2026, digital track.
     (Google's public URL scheme, no API key or OAuth) through every stop in the solved order --
     send it to a driver's phone and it opens turn-by-turn navigation in their own Google Maps
     app, signed into their own account, no "connect an account" step needed.
-- **Dashboard** (`dispatch_agent/dashboard/app.py`) — the original Streamlit prototype: a map,
-  approve/edit/reject per stop, and a reschedule trigger, with every edit logged to the override
-  table. Superseded by the web app above for day-to-day use; kept because the
-  approve/edit/reject + reschedule flow isn't in the web app yet.
 - **Solver** (`dispatch_agent/solver.py`) — single-vehicle TSP with time windows via OR-Tools'
   routing library. A time-limited guided local search -- good routes at the size this runs at
   (a handful to a few dozen jobs/day), but not a guaranteed optimum, so don't describe it as
@@ -66,7 +62,7 @@ saying so:
 
 AgentCore deployment isn't wired up — the PRD lists it as the target runtime, but doing that
 config against a real AWS account is out of scope for what can be verified in this repo. The
-dashboard and demo script run locally against the same `dispatch_agent` package that would be
+web app and demo script run locally against the same `dispatch_agent` package that would be
 deployed.
 
 ## Repo layout
@@ -95,8 +91,8 @@ dispatch_agent/
     static/
       client.html, chat.css, chat.js    WhatsApp-look chat UI (front face)
       admin.html, admin.js, style.css    back-office dashboard (route plan + map)
-  dashboard/
-    app.py                      Streamlit prototype -- map + approve/edit/reject + reschedule
+  planning/
+    clock.py                    the one place "today" and the bookable horizon are decided
 scripts/
   seed_db.py                     create the SQLite schema
   seed_test_clients.py             wipe + seed 20 synthetic furniture-delivery clients across 5 dates
@@ -130,7 +126,7 @@ blank.
 | LLM (intake + planning agents) | AWS Bedrock **or** OpenAI | `LLM_PROVIDER=bedrock` or `openai` |
 | Routing + admin map (drive time/distance, route map) | Google Maps **or** OneMap **or** neither (haversine fallback, no signup) | `ROUTING_PROVIDER=google`, `onemap`, or `haversine` |
 
-Nothing else needs a cloud account: `pytest` and everything in `dashboard/` and `webapp/` runs
+Nothing else needs a cloud account: `pytest` and everything in `webapp/` runs
 against SQLite locally, and the haversine fallback keeps routing working with zero credentials.
 
 > **If you're using Google Maps, there are two separate APIs to switch on for the same key --
@@ -260,13 +256,11 @@ python -m pytest
 python scripts/run_demo.py
 
 # 3. Interactive -- the web app. Needs jobs in the DB: run scripts/seed_test_clients.py, run
-#    step 2 above, book one through the chat, or use the Streamlit dashboard below.
+#    step 2 above, or book one through the chat.
 uvicorn dispatch_agent.webapp.main:app --reload
 #   -> http://localhost:8000/       WhatsApp-style client chat (public) -- book or reschedule
 #   -> http://localhost:8000/admin  back-office dashboard: orders + "Generate Route Plan"
 
-# 3b. The original Streamlit prototype -- map view, approve/edit/reject, reschedule trigger.
-streamlit run dispatch_agent/dashboard/app.py
 ```
 
 If step 2 fails immediately, it's almost always one of: credentials not picked up (check
@@ -278,7 +272,7 @@ are plain structured flows (see `dispatch_agent/webapp/chat.py`'s module docstri
 work regardless of `LLM_PROVIDER`. Under the hood, reschedule calls `apply_reschedule(...,
 draft_messages=False)`, which re-solves the day but skips the planning agent's drafted WhatsApp
 messages (the chat sends its own confirmation instead) -- `scripts/run_demo.py` and the
-Streamlit dashboard still draft real messages via the LLM, since they call it with the default
+demo script still drafts real messages via the LLM, since it calls planning with the default
 `draft_messages=True`.
 
 ### Notifications: a chat reschedule making an already-generated route plan stale
