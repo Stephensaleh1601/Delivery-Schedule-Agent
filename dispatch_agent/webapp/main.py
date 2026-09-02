@@ -6,7 +6,7 @@ Run with: uvicorn dispatch_agent.webapp.main:app --reload
 """
 from __future__ import annotations
 
-from datetime import date as Date
+from datetime import date as Date, time as Time
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,7 @@ from dispatch_agent.models import (
     PlanningEventType,
     PlanningStatus,
     ReadinessStatus,
+    TimeWindow,
 )
 from dispatch_agent.planning import offer_service, plan_service, recovery_service, tools
 from dispatch_agent.planning.candidate_service import CandidateService
@@ -537,6 +538,9 @@ def respond_to_offer(offer_id: str, payload: OfferResponse) -> dict:
         "message": outcome.message,
         "delivery_date": outcome.job.delivery_date.isoformat() if outcome.job.delivery_date else None,
         "plan_version": outcome.plan.version if outcome.plan else None,
+        # Present when the customer moved off a day they already held.
+        "vacated_date": outcome.vacated_date.isoformat() if outcome.vacated_date else None,
+        "vacated_plan_version": outcome.vacated_plan.version if outcome.vacated_plan else None,
     }
 
 
@@ -731,6 +735,42 @@ def update_readiness(order_id: str, payload: ReadinessUpdate) -> dict:
             }
             for c in outcome.replacements
         ],
+    }
+
+
+class RecoveryOfferRequest(BaseModel):
+    order_id: str
+    freed_date: Date
+    window_start: str | None = None
+    window_end: str | None = None
+
+
+@app.post("/api/recovery/offer")
+def offer_recovery_slot(payload: RecoveryOfferRequest) -> dict:
+    """Put a freed slot to a customer who agreed to come forward.
+
+    An OFFER, not a move. Nothing about their existing appointment changes until they accept it
+    themselves through the normal /api/offers/{id}/respond path.
+    """
+    repo = JobsRepository()
+    window = None
+    if payload.window_start and payload.window_end:
+        window = TimeWindow(
+            start=Time.fromisoformat(payload.window_start),
+            end=Time.fromisoformat(payload.window_end),
+        )
+    try:
+        offer, message, evaluation = recovery_service.offer_freed_slot(
+            repo, payload.order_id, payload.freed_date, window=window
+        )
+    except offer_service.OfferError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+    return {
+        "offer": _offer_to_dict(offer),
+        "message": message,
+        "evaluation": _evaluation_to_dict(evaluation),
+        "error": None,
     }
 
 

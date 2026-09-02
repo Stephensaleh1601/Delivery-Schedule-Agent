@@ -22,6 +22,7 @@ from dispatch_agent.models import (
     JobRecord,
     MessageDirection,
     OfferedSlot,
+    OfferPurpose,
     OfferStatus,
     PlanningStatus,
     RoutePlanVersion,
@@ -31,6 +32,9 @@ from dispatch_agent.solver import LockedPlanInfeasibleError, UnsolvableDayError
 
 MAX_OFFER_ROUNDS = 2
 MAX_SLOTS_PER_OFFER = 2
+# A customer is asked about a freed slot at most once. How many people get asked per freed date is
+# bounded separately, by recovery_service.MAX_REPLACEMENT_OFFERS.
+MAX_RECOVERY_OFFERS = 1
 
 
 class OfferError(Exception):
@@ -53,12 +57,17 @@ class AcceptanceOutcome:
     plan: RoutePlanVersion | None
     idempotent: bool = False
     message: str = ""
+    # Set when accepting moved the customer off a day they already held -- that day is republished
+    # too, since it now has one fewer stop.
+    vacated_date: object | None = None
+    vacated_plan: RoutePlanVersion | None = None
 
 
 def create_offer(
     repo: JobsRepository,
     order: JobRecord,
     evaluations: list[CandidateSlotEvaluation],
+    purpose: OfferPurpose = OfferPurpose.BOOKING,
 ) -> AppointmentOffer:
     """Put the best feasible slots to a customer.
 
@@ -66,8 +75,11 @@ def create_offer(
     none, or when the round cap is reached -- both cases are a human's problem, and inventing a
     slot outside what the customer offered is never the answer.
     """
-    previous = repo.offers_for_order(order.id)
-    if len(previous) >= MAX_OFFER_ROUNDS:
+    # Counted per purpose. Asking a confirmed customer whether they would come forward is not a
+    # round of negotiating their original booking, and must not consume one.
+    previous = [o for o in repo.offers_for_order(order.id) if o.purpose is purpose]
+    cap = MAX_OFFER_ROUNDS if purpose is OfferPurpose.BOOKING else MAX_RECOVERY_OFFERS
+    if len(previous) >= cap:
         raise OfferError(
             f"already made {len(previous)} offer rounds for this order -- escalating rather than "
             f"asking the customer again",
@@ -94,6 +106,7 @@ def create_offer(
 
     offer = AppointmentOffer(
         order_id=order.id,
+        purpose=purpose,
         round_number=len(previous) + 1,
         status=OfferStatus.SENT,
         options=[
@@ -108,8 +121,13 @@ def create_offer(
     )
     repo.save_offer(offer)
 
-    order.set_planning_status(PlanningStatus.OFFERED)
-    repo.save_job(order)
+    if purpose is OfferPurpose.BOOKING:
+        order.set_planning_status(PlanningStatus.OFFERED)
+        repo.save_job(order)
+    # A recovery target stays CONFIRMED on the day they already hold. Being asked is not being
+    # moved -- and OFFERED cannot legally carry the locked window they still have, so setting it
+    # here would raise, and without the model validator it would silently drop them off their
+    # current route just for being asked.
     return offer
 
 
@@ -218,6 +236,30 @@ def accept_offer(
             "sorry -- that slot was taken while we were confirming. Our team will call you."
         ) from exc
 
+    # The customer has left the day they were on, so it has one fewer stop and must be
+    # republished. Done AFTER the target day succeeds, so a target-day failure still rolls back
+    # through the path above without having already torn up a second day.
+    vacated_plan = None
+    if previous_date is not None and previous_date != slot.date:
+        try:
+            vacated_plan = plan_service.replan_day(
+                repo,
+                previous_date,
+                reason=f"{job.customer_name} moved to {slot.date}",
+                routing_client=routing_client,
+            )
+        except (LockedPlanInfeasibleError, UnsolvableDayError) as exc:
+            # Removing a stop should only make a day easier, so this means something else is
+            # wrong with it. The move stands; a human is told about the day left behind.
+            plan_service.raise_coordinator_exception(
+                repo,
+                f"{job.customer_name} moved off {previous_date} but that day could not be "
+                f"republished: {exc}",
+                kind="vacated_day_replan_failed",
+                order_id=job.id,
+                delivery_date=previous_date,
+            )
+
     offer.status = OfferStatus.ACCEPTED
     offer.accepted_slot_id = slot.id
     offer.resulting_plan_id = plan.id
@@ -236,7 +278,14 @@ def accept_offer(
     )
     record_message(repo, job.id, confirmation)
 
-    return AcceptanceOutcome(offer=offer, job=job, plan=plan, message=confirmation)
+    return AcceptanceOutcome(
+        offer=offer,
+        job=job,
+        plan=plan,
+        message=confirmation,
+        vacated_date=previous_date if previous_date and previous_date != slot.date else None,
+        vacated_plan=vacated_plan,
+    )
 
 
 def reject_offer(repo: JobsRepository, offer_id: str) -> AppointmentOffer:

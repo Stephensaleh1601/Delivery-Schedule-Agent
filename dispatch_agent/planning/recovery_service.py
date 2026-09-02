@@ -24,6 +24,8 @@ from dispatch_agent.db import JobsRepository
 from dispatch_agent.geo.routing_client import RoutingClient
 from dispatch_agent.models import (
     AvailabilityOption,
+    OfferPurpose,
+    TimeWindow,
     CandidateSlotEvaluation,
     JobRecord,
     Notification,
@@ -31,11 +33,75 @@ from dispatch_agent.models import (
     ReadinessStatus,
     RoutePlanVersion,
 )
-from dispatch_agent.planning import plan_service
+from dispatch_agent.planning import offer_service, plan_service
 from dispatch_agent.planning.candidate_service import CandidateService
 from dispatch_agent.solver import LockedPlanInfeasibleError, UnsolvableDayError
 
 MAX_REPLACEMENT_OFFERS = 2
+
+
+def offer_freed_slot(
+    repo: JobsRepository,
+    order_id: str,
+    freed_date: Date,
+    window: TimeWindow | None = None,
+    routing_client: RoutingClient | None = None,
+):
+    """Put a slot that has just opened up to a customer who agreed to come forward.
+
+    This mints an offer for a date the customer never listed, which is only legitimate because
+    `can_deliver_early` is an explicit opt-in and because it is an OFFER: nothing about their
+    existing appointment changes unless they accept it themselves.
+
+    The synthetic availability option is persisted rather than invented on the fly, so the offer's
+    availability_option_id points at something real -- and so the freed date becomes evaluable for
+    that customer afterwards.
+    """
+    job = repo.get_job(order_id)
+    if job is None:
+        raise offer_service.OfferError("that order no longer exists", kind="unknown_order")
+    if not job.can_deliver_early:
+        raise offer_service.OfferError(
+            f"{job.customer_name} has not agreed to an earlier delivery", kind="no_consent"
+        )
+    if job.readiness_status is not ReadinessStatus.READY:
+        raise offer_service.OfferError(
+            f"{job.customer_name}'s goods are not ready", kind="not_ready"
+        )
+    if job.delivery_date is None or job.delivery_date <= freed_date:
+        raise offer_service.OfferError(
+            "recovery moves a customer forward, never back", kind="not_earlier"
+        )
+
+    quoted = window or job.locked_window or (job.availability[0] if job.availability else None)
+    if quoted is None:
+        raise offer_service.OfferError("no window to offer", kind="no_window")
+
+    option = next(
+        (o for o in job.availability_options if o.date == freed_date and o.window == quoted), None
+    )
+    if option is None:
+        option = AvailabilityOption(date=freed_date, window=quoted, preference_rank=1)
+        job.availability_options = [*job.availability_options, option]
+        repo.save_job(job)
+
+    evaluation = CandidateService(repo=repo, routing_client=routing_client).evaluate(job, option)
+    if not evaluation.feasible:
+        raise offer_service.OfferError(
+            f"that slot cannot be served: {evaluation.infeasible_reason}", kind="no_feasible_slot"
+        )
+
+    offer = offer_service.create_offer(
+        repo, job, [evaluation], purpose=OfferPurpose.RECOVERY
+    )
+    message = (
+        f"Hi {job.customer_name} -- a slot has opened up on "
+        f"{offer_service.format_date(freed_date)}, {offer_service.format_window(quoted)}. "
+        f"You mentioned an earlier delivery would suit you. Your existing booking on "
+        f"{offer_service.format_date(job.delivery_date)} stands unless you take this one."
+    )
+    offer_service.record_message(repo, job.id, message)
+    return offer, message, evaluation
 
 
 @dataclass

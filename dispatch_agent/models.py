@@ -123,6 +123,15 @@ class OfferStatus(str, Enum):
     EXPIRED = "expired"
 
 
+class OfferPurpose(str, Enum):
+    """Why an offer was made. Booking rounds and recovery approaches are capped separately -- a
+    customer being asked whether they'd come forward has not used up a round of negotiating their
+    own delivery date."""
+
+    BOOKING = "booking"
+    RECOVERY = "recovery"
+
+
 class PlanStatus(str, Enum):
     DRAFT = "draft"
     ACTIVE = "active"
@@ -434,6 +443,7 @@ class AppointmentOffer(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     order_id: str
     options: list[OfferedSlot] = Field(default_factory=list)
+    purpose: OfferPurpose = OfferPurpose.BOOKING
     round_number: int = 1
     status: OfferStatus = OfferStatus.PENDING
     accepted_slot_id: Optional[str] = None
