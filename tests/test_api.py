@@ -70,10 +70,15 @@ def test_a_date_outside_the_horizon_is_rejected_with_an_explanation(client):
 
 
 def test_an_address_outside_singapore_is_refused(client, monkeypatch):
+    from dispatch_agent.geo.geocoder import GeocodeResult
     from dispatch_agent.models import Coordinates
     import dispatch_agent.webapp.jobs_service as service
 
-    monkeypatch.setattr(service, "postal_code_to_coords", lambda c: Coordinates(lat=3.139, lng=101.687))
+    monkeypatch.setattr(
+        service,
+        "geocode_postal_code",
+        lambda c: GeocodeResult(Coordinates(lat=3.139, lng=101.687), "onemap", "Kuala Lumpur"),
+    )
     response = client.post("/api/orders", json=_order_payload())
     assert response.status_code == 400
     assert "delivery area" in response.json()["detail"]

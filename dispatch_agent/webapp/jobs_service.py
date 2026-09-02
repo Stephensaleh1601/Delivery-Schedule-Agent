@@ -9,7 +9,7 @@ from datetime import date as Date, time as Time
 from pydantic import BaseModel, Field
 
 from dispatch_agent.db import JobsRepository
-from dispatch_agent.geo.postal_codes import postal_code_to_coords
+from dispatch_agent.geo.geocoder import geocode_postal_code
 from dispatch_agent.geo.sanity import OutsideServiceAreaError, validate_delivery_location
 from dispatch_agent.models import (
     DEFAULT_DURATION_MINUTES_BY_JOB_TYPE,
@@ -77,9 +77,10 @@ def _validated_fields(payload: JobSubmission) -> dict:
     if payload.window_end <= payload.window_start:
         raise JobSubmissionError("Preferred window end must be after start.")
     try:
-        coordinates = postal_code_to_coords(payload.postal_code)
+        located = geocode_postal_code(payload.postal_code)
     except ValueError as exc:
         raise JobSubmissionError(str(exc)) from exc
+    coordinates = located.coordinates
     # Reject an out-of-area address here rather than letting it reach the router, which would
     # happily return a cross-border drive time for a job nobody can service. Every front door
     # (REST, chat booking, admin edit) goes through this function, so one check covers them all.
@@ -91,7 +92,13 @@ def _validated_fields(payload: JobSubmission) -> dict:
     return {
         "customer_name": payload.customer_name,
         "phone": payload.phone,
-        "address": Address(raw_text=payload.address_raw, postal_code=payload.postal_code, coordinates=coordinates),
+        "address": Address(
+            raw_text=payload.address_raw,
+            postal_code=payload.postal_code,
+            coordinates=coordinates,
+            geocode_source=located.source,
+            formatted_address=located.formatted_address,
+        ),
         "job_type": payload.job_type,
         "availability": [TimeWindow(start=payload.window_start, end=payload.window_end)],
         "duration_minutes": payload.duration_minutes or DEFAULT_DURATION_MINUTES_BY_JOB_TYPE[payload.job_type],
@@ -127,8 +134,8 @@ def create_order(payload: OrderSubmission, raw_message: str) -> JobRecord:
         raise JobSubmissionError("Please give us at least one date and time that works for you.")
 
     try:
-        coordinates = postal_code_to_coords(payload.postal_code)
-        validate_delivery_location(coordinates, label=f"Postal code {payload.postal_code}")
+        located = geocode_postal_code(payload.postal_code)
+        validate_delivery_location(located.coordinates, label=f"Postal code {payload.postal_code}")
     except (ValueError, OutsideServiceAreaError) as exc:
         raise JobSubmissionError(str(exc)) from exc
 
@@ -154,7 +161,11 @@ def create_order(payload: OrderSubmission, raw_message: str) -> JobRecord:
         customer_name=payload.customer_name,
         phone=payload.phone,
         address=Address(
-            raw_text=payload.address_raw, postal_code=payload.postal_code, coordinates=coordinates
+            raw_text=payload.address_raw,
+            postal_code=payload.postal_code,
+            coordinates=located.coordinates,
+            geocode_source=located.source,
+            formatted_address=located.formatted_address,
         ),
         job_type=payload.job_type,
         availability_options=options,

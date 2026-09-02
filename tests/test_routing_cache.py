@@ -144,13 +144,15 @@ def test_out_of_singapore_location_is_rejected_at_booking():
     kuala_lumpur = Coordinates(lat=3.1390, lng=101.6869)
 
     import dispatch_agent.webapp.jobs_service as service
-    original = service.postal_code_to_coords
-    service.postal_code_to_coords = lambda code: kuala_lumpur
+    from dispatch_agent.geo.geocoder import GeocodeResult
+
+    original = service.geocode_postal_code
+    service.geocode_postal_code = lambda code: GeocodeResult(kuala_lumpur, "onemap", "Somewhere else")
     try:
         with pytest.raises(JobSubmissionError, match="outside our Singapore delivery area"):
             _validated_fields(payload)
     finally:
-        service.postal_code_to_coords = original
+        service.geocode_postal_code = original
 
 
 def test_singapore_location_passes_validation():

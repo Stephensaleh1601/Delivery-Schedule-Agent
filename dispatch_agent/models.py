@@ -160,6 +160,16 @@ class Address(BaseModel):
     raw_text: str
     postal_code: Optional[str] = None
     coordinates: Optional[Coordinates] = None
+    # Where `coordinates` came from: "onemap" and "google" are real building locations,
+    # "district_centroid" is the ~1-2km fallback. Stored so the UI can mark an approximate pin
+    # rather than implying a precision it does not have. Defaulted, so pre-existing rows -- which
+    # were all centroids -- describe themselves correctly without a migration.
+    geocode_source: str = "district_centroid"
+    formatted_address: Optional[str] = None
+
+    @property
+    def precisely_located(self) -> bool:
+        return self.geocode_source in ("onemap", "google")
 
     @field_validator("postal_code")
     @classmethod

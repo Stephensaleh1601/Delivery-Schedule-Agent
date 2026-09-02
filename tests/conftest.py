@@ -62,6 +62,9 @@ def offline_routing(monkeypatch):
     monkeypatch.setattr(config.settings, "routing_provider", "haversine")
     for field in ("google_maps_api_key", "onemap_token", "onemap_email", "onemap_password"):
         monkeypatch.setattr(config.settings, field, "")
+    # Postal codes resolve to district centres in tests. Disabling the lookup rather than letting
+    # it fail keeps the no_network guard meaningful: an accidental call still trips it loudly.
+    monkeypatch.setattr(config.settings, "geocoding_enabled", False)
     # The drive-time cache is a module singleton, so without this one test's fetched legs would
     # silently satisfy another's, and cost assertions would depend on test ordering.
     MATRIX_CACHE.clear()

@@ -69,6 +69,11 @@ class Settings:
     # border crossing). Generous on purpose: congestion must never trip it, a trip through
     # another country always should.
     max_drive_time_ratio: float = float(os.getenv("MAX_DRIVE_TIME_RATIO", "4.0"))
+    # Whether to resolve postal codes against OneMap/Google. Off means every lookup falls back to
+    # the postal district's centre, marked as such. Tests turn this off so they never ATTEMPT a
+    # call -- catching the failure instead would let a genuinely accidental network call pass
+    # unnoticed, which is the thing the offline fixture exists to prevent.
+    geocoding_enabled: bool = os.getenv("GEOCODING_ENABLED", "1") != "0"
     db_path: str = os.getenv("DB_PATH", "./data/dispatch.db")
     # Pins "today" so a recorded demo and the test suite behave identically every run. Blank
     # means use the real date. ISO format, e.g. 2026-09-02.
