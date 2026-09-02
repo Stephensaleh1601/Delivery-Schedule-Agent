@@ -258,8 +258,18 @@ python scripts/run_demo.py
 # 3. Interactive -- the web app. Needs jobs in the DB: run scripts/seed_test_clients.py, run
 #    step 2 above, or book one through the chat.
 uvicorn dispatch_agent.webapp.main:app --reload
-#   -> http://localhost:8000/       WhatsApp-style client chat (public) -- book or reschedule
-#   -> http://localhost:8000/admin  back-office dashboard: orders + "Generate Route Plan"
+#   -> http://localhost:8000/       WhatsApp-style client chat (legacy, single-slot booking)
+#   -> http://localhost:8000/admin  back-office dashboard (legacy)
+#
+# 4. The Next.js console -- the six demo screens, in a second terminal. It proxies /api to
+#    FastAPI, so both processes must be running.
+cd frontend && npm install && npm run dev
+#   -> http://localhost:3000/              operations overview
+#   -> http://localhost:3000/conversation  customer booking, wired to the live agent
+#   -> http://localhost:3000/planning      slot evaluation with the score breakdown
+#   -> http://localhost:3000/routes        route plan and v1/v2 comparison
+#   -> http://localhost:3000/recovery      mark an order delayed, see the slot recovered
+#   -> http://localhost:3000/activity      the agent's persisted tool calls
 
 ```
 

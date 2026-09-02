@@ -326,6 +326,9 @@ def _offer_to_dict(offer) -> dict:
         "options": [
             {
                 "id": slot.id,
+                # Lets a client line an offered slot up with its evaluation, so the UI can show
+                # the reasoning behind the offer rather than just the offer.
+                "availability_option_id": slot.availability_option_id,
                 "date": slot.date.isoformat(),
                 "window": {
                     "start": slot.window.start.strftime("%H:%M"),

@@ -1,0 +1,149 @@
+@import "tailwindcss";
+
+/*
+  Design tokens for the dispatch console.
+
+  The organising idea is that visual weight encodes commitment. A confirmed appointment is a
+  promise the system will not break, so it renders as something settled: recessed surface, a solid
+  pin rail, muted ink. Anything still provisional -- a candidate slot, an unanswered offer --
+  renders raised and light, as though it could still be picked up and moved. Hierarchy therefore
+  carries meaning rather than decorating it.
+*/
+@theme {
+  /* Surfaces. A cool near-white ground, not a warm cream, so the slate accent stays calm on it. */
+  --color-canvas: #f6f7f8;
+  --color-surface: #ffffff;
+  --color-sunk: #eceef0;
+  --color-rail: #e2e5e8;
+  --color-rail-strong: #cdd2d7;
+
+  /* Ink. Never pure black -- a slight blue bias keeps long tables from looking harsh. */
+  --color-ink: #14181c;
+  --color-ink-soft: #3f4a54;
+  --color-ink-muted: #6b7783;
+  --color-ink-faint: #93a0ab;
+
+  /* Accent: operational slate blue. Used for navigation, focus and the agent's own voice. */
+  --color-accent: #2f5d7c;
+  --color-accent-hover: #26506d;
+  --color-accent-wash: #eaf1f6;
+  --color-accent-edge: #c3d8e6;
+
+  /* Semantics, deliberately separate from the accent hue. */
+  --color-locked: #2a6a4f;
+  --color-locked-wash: #e6f1eb;
+  --color-locked-edge: #bcdccb;
+
+  --color-pending: #8a5f24;
+  --color-pending-wash: #f8f0e2;
+  --color-pending-edge: #e6d5b4;
+
+  --color-alert: #a34a3c;
+  --color-alert-wash: #f9ebe8;
+  --color-alert-edge: #eec9c1;
+
+  /* Type. Instrument Serif appears only on figures that carry weight. */
+  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Instrument Serif", ui-serif, Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+
+  /* Shadows stay restrained: enough to lift a card off the ground, never a glow. */
+  --shadow-raise: 0 1px 2px rgba(20, 24, 28, 0.05), 0 4px 12px -6px rgba(20, 24, 28, 0.12);
+  --shadow-lift: 0 1px 2px rgba(20, 24, 28, 0.06), 0 12px 28px -14px rgba(20, 24, 28, 0.22);
+
+  --radius-card: 14px;
+  --radius-field: 9px;
+
+  --ease-out-soft: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.55;
+    font-feature-settings: "cv05" 1;
+  }
+
+  /* Digits that sit in columns must line up. This is a table-heavy interface. */
+  table,
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: var(--color-accent-wash);
+  }
+}
+
+@layer utilities {
+  /* One orchestrated enter per screen. Content is visible at rest -- the animation starts from
+     a nearly-settled state, so a screenshot or a reduced-motion viewer loses nothing. */
+  .enter {
+    animation: enter 0.42s var(--ease-out-soft) both;
+  }
+
+  @keyframes enter {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  /* The lock micro-interaction: a confirmed slot settles rather than appearing. */
+  .settle {
+    animation: settle 0.5s var(--ease-out-soft) both;
+  }
+
+  @keyframes settle {
+    0% {
+      transform: scale(1.015);
+      box-shadow: var(--shadow-lift);
+    }
+    100% {
+      transform: none;
+      box-shadow: none;
+    }
+  }
+
+  .stripe-pending {
+    background-image: repeating-linear-gradient(
+      -45deg,
+      transparent 0 6px,
+      rgba(138, 95, 36, 0.09) 6px 12px
+    );
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Scrollbars, restrained to match the surfaces they sit on. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-rail-strong) transparent;
+}
