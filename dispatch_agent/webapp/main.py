@@ -28,8 +28,9 @@ from dispatch_agent.models import (
     PlanningEvent,
     PlanningEventType,
     PlanningStatus,
+    ReadinessStatus,
 )
-from dispatch_agent.planning import offer_service, plan_service
+from dispatch_agent.planning import offer_service, plan_service, recovery_service
 from dispatch_agent.planning.candidate_service import CandidateService
 from dispatch_agent.planning.clock import PlanningClock
 from dispatch_agent.solver import UnsolvableDayError, sequence_day
@@ -555,6 +556,150 @@ def plan_agentically(order_id: str) -> dict:
     )
     offers = repo.offers_for_order(order_id)
     return {"run": _run_to_dict(run), "offer": _offer_to_dict(offers[-1]) if offers else None}
+
+
+class ReadinessUpdate(BaseModel):
+    readiness_status: str
+
+
+@app.post("/api/orders/{order_id}/readiness")
+def update_readiness(order_id: str, payload: ReadinessUpdate) -> dict:
+    """The mock ERP signal. Marking an order delayed takes it off the route and looks for a
+    customer who would take the freed slot."""
+    try:
+        readiness = ReadinessStatus(payload.readiness_status)
+    except ValueError as exc:
+        raise HTTPException(400, f"unknown readiness status {payload.readiness_status!r}") from exc
+
+    repo = JobsRepository()
+    try:
+        outcome = recovery_service.mark_readiness(repo, order_id, readiness)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    return {
+        "order_id": outcome.job.id,
+        "readiness_status": outcome.job.readiness_status.value,
+        "freed_date": outcome.freed_date.isoformat() if outcome.freed_date else None,
+        "plan_version": outcome.plan.version if outcome.plan else None,
+        "error": outcome.error,
+        "replacements": [
+            {
+                "order_id": c.job.id,
+                "customer_name": c.job.customer_name,
+                "currently_scheduled": c.job.delivery_date.isoformat() if c.job.delivery_date else None,
+                "score": c.score,
+                "window": {
+                    "start": c.evaluation.window.start.strftime("%H:%M"),
+                    "end": c.evaluation.window.end.strftime("%H:%M"),
+                },
+            }
+            for c in outcome.replacements
+        ],
+    }
+
+
+@app.post("/api/events/morning-run")
+def morning_run(payload: RoutePlanRequest | None = None) -> dict:
+    """Finalise a day for dispatch: republish the route from what is confirmed and ready, mark
+    those stops dispatched, and draft a reminder for each customer.
+
+    A button rather than a scheduler on purpose -- it calls exactly the service a cron job would,
+    so nothing about the flow is demo-only scaffolding.
+    """
+    repo = JobsRepository()
+    target = payload.date if payload else PlanningClock.today()
+
+    jobs = plan_service.routable_jobs(repo, target)
+    if not jobs:
+        return {"date": target.isoformat(), "dispatched": 0, "reminders": 0,
+                "plan_version": None, "error": "nothing confirmed and ready for that date"}
+
+    try:
+        plan = plan_service.replan_day(repo, target, reason="morning run")
+    except (UnsolvableDayError, ValueError) as exc:
+        plan_service.raise_coordinator_exception(
+            repo, f"Morning run could not publish {target}: {exc}",
+            kind="morning_run_failed", delivery_date=target,
+        )
+        return {"date": target.isoformat(), "dispatched": 0, "reminders": 0,
+                "plan_version": None, "error": str(exc)}
+
+    reminders = 0
+    jobs_by_id = {j.id: j for j in jobs}
+    for stop in plan.sequence.stops:
+        job = jobs_by_id.get(stop.job_id)
+        if job is None:
+            continue
+        if job.planning_status in (PlanningStatus.CONFIRMED, PlanningStatus.SEQUENCED):
+            job.set_planning_status(PlanningStatus.DISPATCHED)
+            repo.save_job(job)
+        offer_service.record_message(
+            repo,
+            job.id,
+            f"Good morning! Your {job.job_type.value} delivery is today between "
+            f"{offer_service.format_time(stop.arrival_window.start)} and "
+            f"{offer_service.format_time(stop.arrival_window.end)}.",
+        )
+        reminders += 1
+
+    return {
+        "date": target.isoformat(),
+        "dispatched": len(plan.sequence.stops),
+        "reminders": reminders,
+        "plan_version": plan.version,
+        "error": None,
+    }
+
+
+@app.get("/api/metrics")
+def metrics() -> dict:
+    """Impact figures, computed from what is actually stored.
+
+    Nothing here is estimated or assumed. "Confirmed appointments moved" is a real count taken by
+    comparing every published stop against the window that customer was promised, which is the
+    number the whole design exists to keep at zero.
+    """
+    repo = JobsRepository()
+    dates = PlanningClock.horizon_dates()
+
+    appointments_moved = 0
+    plan_versions = 0
+    scheduled_stops = 0
+    drive_minutes = 0
+    for day in dates:
+        versions = repo.plan_versions(day)
+        plan_versions += len(versions)
+        active = repo.active_plan(day)
+        if active is None:
+            continue
+        scheduled_stops += len(active.sequence.stops)
+        drive_minutes += active.sequence.round_trip_drive_minutes
+        for stop in active.sequence.stops:
+            job = repo.get_job(stop.job_id)
+            if job is None or not job.is_locked:
+                continue
+            lock = job.locked_window
+            if not (lock.start <= stop.arrival_window.start and stop.arrival_window.end <= lock.end):
+                appointments_moved += 1
+
+    outbound = [m for m in repo.messages() if m.direction.value == "outbound"]
+    delayed = [
+        j for j in repo.all_jobs() if j.readiness_status is ReadinessStatus.DELAYED
+    ]
+
+    return {
+        "horizon": {"first": dates[0].isoformat(), "last": dates[-1].isoformat()},
+        "scheduled_stops": scheduled_stops,
+        "round_trip_drive_minutes": drive_minutes,
+        "plan_versions": plan_versions,
+        "confirmed_appointments_moved": appointments_moved,
+        "customers_contacted": len({m.order_id for m in outbound if m.order_id}),
+        "messages_sent": len(outbound),
+        "coordinator_interventions": len(repo.open_exceptions()),
+        "delayed_orders": len(delayed),
+        "agent_runs": len(repo.agent_runs(limit=500)),
+    }
 
 
 @app.get("/api/exceptions")

@@ -69,10 +69,19 @@ class DecisionAgent(Protocol):
 
 class LLMDecisionAgent:
     def __init__(self, llm: LLMClient | None = None):
-        self._llm = llm or build_llm_client()
+        # Built lazily. Constructing a Bedrock client validates credentials and an AWS profile,
+        # and doing that in __init__ meant a misconfigured environment raised before the loop
+        # could fall back -- turning a degraded run into a 500. Failure now happens inside
+        # decide(), where it is caught and handled.
+        self._llm = llm
+
+    def _client(self) -> LLMClient:
+        if self._llm is None:
+            self._llm = build_llm_client()
+        return self._llm
 
     def decide(self, state: "SchedulingState", allowed: list[str]) -> ActionDecision:
-        raw = self._llm.extract_structured(
+        raw = self._client().extract_structured(
             system=SCHEDULING_DECISION_SYSTEM_PROMPT,
             user=render_state_digest(state),
             tool_name="choose_next_action",
@@ -337,7 +346,11 @@ def handle_planning_event(
     repo.save_agent_run(run)
 
     ctx = tools.ToolContext(repo=repo, routing_client=routing_client)
-    decider = decider or LLMDecisionAgent()
+    if decider is None:
+        try:
+            decider = LLMDecisionAgent()
+        except Exception:  # noqa: BLE001 -- a missing provider must degrade, not 500
+            decider = RuleDecisionAgent()
     fallback = RuleDecisionAgent() if use_fallback else None
     graph = build_graph(ctx, decider, fallback)
 

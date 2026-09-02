@@ -199,3 +199,68 @@ def test_no_feasible_slot_raises_a_coordinator_exception(client):
     assert body["offer"] is None and body["error"]
     exceptions = client.get("/api/exceptions").json()
     assert any(e["order_id"] == order_id for e in exceptions)
+
+
+# -- disruption, morning run, metrics ------------------------------------------
+
+
+def _confirm_an_order(client, name="Mrs Tan", postal="018956"):
+    order_id = client.post("/api/orders", json=_order_payload(name, postal)).json()["id"]
+    offer = client.post(f"/api/orders/{order_id}/plan-options").json()["offer"]
+    slot = offer["options"][0]
+    client.post(f"/api/offers/{offer['id']}/respond", json={"accepted": True, "slot_id": slot["id"]})
+    return order_id, slot["date"]
+
+
+def test_marking_an_order_delayed_takes_it_off_the_route(client):
+    order_id, day = _confirm_an_order(client)
+
+    body = client.post(f"/api/orders/{order_id}/readiness", json={"readiness_status": "delayed"}).json()
+
+    assert body["readiness_status"] == "delayed"
+    assert body["freed_date"] == day
+    plan = client.get(f"/api/plans/{day}").json()
+    assert order_id not in {s["job_id"] for s in plan["stops"]}
+
+
+def test_an_unknown_readiness_value_is_rejected(client):
+    order_id, _ = _confirm_an_order(client)
+    response = client.post(f"/api/orders/{order_id}/readiness", json={"readiness_status": "exploded"})
+    assert response.status_code == 400
+
+
+def test_morning_run_dispatches_the_day_and_drafts_reminders(client):
+    order_id, day = _confirm_an_order(client)
+
+    body = client.post("/api/events/morning-run", json={"date": day}).json()
+
+    assert body["error"] is None
+    assert body["dispatched"] >= 1 and body["reminders"] == body["dispatched"]
+    order = next(o for o in client.get("/api/orders").json() if o["id"] == order_id)
+    assert order["planning_status"] == "dispatched"
+    assert order["locked_window"] is not None, "dispatching must not discard the promise"
+
+
+def test_metrics_come_from_stored_data_and_count_moved_appointments(client):
+    """The headline number. It is computed by comparing every published stop against the window
+    that customer was actually promised -- not asserted, and not assumed to be zero."""
+    _confirm_an_order(client, "Alice", "018956")
+    _confirm_an_order(client, "Bob", "486123")
+
+    body = client.get("/api/metrics").json()
+
+    assert body["confirmed_appointments_moved"] == 0
+    assert body["scheduled_stops"] >= 2
+    assert body["customers_contacted"] >= 2
+    assert body["plan_versions"] >= 2
+
+
+def test_agent_runs_expose_the_real_tool_sequence(client):
+    order_id = client.post("/api/orders", json=_order_payload()).json()["id"]
+    client.post(f"/api/orders/{order_id}/plan-agentic")
+
+    runs = client.get("/api/agent-runs").json()
+    assert runs, "the agent run was not recorded"
+    tools_called = [a["tool"] for a in runs[0]["actions"]]
+    assert "evaluate_slots" in tools_called and "create_offer" in tools_called
+    assert all(a["reason"] for a in runs[0]["actions"]), "every step needs a coordinator-facing reason"
