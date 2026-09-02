@@ -1,0 +1,238 @@
+"""Offering slots to a customer, and turning an acceptance into a locked appointment.
+
+The lifecycle this implements is the product: nothing is promised until the customer picks
+something, and once they have, that promise is protected.
+
+Guardrails live here rather than in a prompt. The two-round cap is enforced by counting the
+offers already made, not by asking a model to remember; and acceptance is made idempotent by a
+conditional UPDATE whose row count decides whether any work happens, not by a read-then-write
+that two clicks can both pass.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import timezone, datetime
+
+from dispatch_agent.db import JobsRepository
+from dispatch_agent.geo.routing_client import RoutingClient
+from dispatch_agent.models import (
+    AppointmentOffer,
+    CandidateSlotEvaluation,
+    CustomerMessage,
+    JobRecord,
+    MessageDirection,
+    OfferedSlot,
+    OfferStatus,
+    PlanningStatus,
+    RoutePlanVersion,
+)
+from dispatch_agent.planning import plan_service
+from dispatch_agent.solver import LockedPlanInfeasibleError, UnsolvableDayError
+
+MAX_OFFER_ROUNDS = 2
+MAX_SLOTS_PER_OFFER = 2
+
+
+class OfferError(Exception):
+    """A request that cannot be honoured -- the caller turns this into a customer-facing reply."""
+
+
+@dataclass
+class AcceptanceOutcome:
+    offer: AppointmentOffer
+    job: JobRecord
+    plan: RoutePlanVersion | None
+    idempotent: bool = False
+    message: str = ""
+
+
+def create_offer(
+    repo: JobsRepository,
+    order: JobRecord,
+    evaluations: list[CandidateSlotEvaluation],
+) -> AppointmentOffer:
+    """Put the best feasible slots to a customer.
+
+    Offers the best two when there are two, one when that is all there is. Raises when there are
+    none, or when the round cap is reached -- both cases are a human's problem, and inventing a
+    slot outside what the customer offered is never the answer.
+    """
+    previous = repo.offers_for_order(order.id)
+    if len(previous) >= MAX_OFFER_ROUNDS:
+        raise OfferError(
+            f"already made {len(previous)} offer rounds for this order -- escalating rather than "
+            f"asking the customer again"
+        )
+
+    already_offered = {slot.availability_option_id for offer in previous for slot in offer.options}
+    feasible = [
+        e for e in evaluations if e.feasible and e.availability_option_id not in already_offered
+    ]
+    if not feasible:
+        raise OfferError("none of the windows you gave us can be fitted into the schedule")
+
+    offer = AppointmentOffer(
+        order_id=order.id,
+        round_number=len(previous) + 1,
+        status=OfferStatus.SENT,
+        options=[
+            OfferedSlot(
+                availability_option_id=e.availability_option_id,
+                date=e.date,
+                window=e.window,
+                score=e.total_score,
+            )
+            for e in feasible[:MAX_SLOTS_PER_OFFER]
+        ],
+    )
+    repo.save_offer(offer)
+
+    order.set_planning_status(PlanningStatus.OFFERED)
+    repo.save_job(order)
+    return offer
+
+
+def format_date(value) -> str:
+    """"Friday, 5 September". Built by hand rather than with strftime because the no-padding
+    directives (%-d on POSIX, %#d on Windows) are platform-specific and crash on the other."""
+    return f"{value:%A}, {value.day} {value:%B}"
+
+
+def format_time(value) -> str:
+    """"9:00am" / "2:30pm", same portability reason as format_date."""
+    hour = value.hour % 12 or 12
+    meridiem = "am" if value.hour < 12 else "pm"
+    return f"{hour}:{value.minute:02d}{meridiem}"
+
+
+def format_window(window) -> str:
+    return f"{format_time(window.start)}-{format_time(window.end)}"
+
+
+def offer_message(offer: AppointmentOffer) -> str:
+    """Customer-facing wording. Deliberately says nothing about scores, penalties, or how
+    convenient their preference was for us -- that is our problem, not theirs."""
+    if len(offer.options) == 1:
+        slot = offer.options[0]
+        return (
+            f"We can deliver on {format_date(slot.date)}, between "
+            f"{format_time(slot.window.start)} and {format_time(slot.window.end)}. "
+            f"That's the only one of your preferred times we can fit -- does it work?"
+        )
+
+    lines = ["We can deliver on:"]
+    for i, slot in enumerate(offer.options, start=1):
+        lines.append(f"{i}. {format_date(slot.date)}, {format_window(slot.window)}")
+    lines.append("Please choose whichever suits you best.")
+    return "\n".join(lines)
+
+
+def record_message(repo: JobsRepository, order_id: str, body: str, direction=MessageDirection.OUTBOUND) -> None:
+    repo.save_message(CustomerMessage(order_id=order_id, direction=direction, body=body))
+
+
+def accept_offer(
+    repo: JobsRepository,
+    offer_id: str,
+    slot_id: str,
+    routing_client: RoutingClient | None = None,
+) -> AcceptanceOutcome:
+    """Lock in a slot the customer chose, then republish that day's plan.
+
+    Replaying the same acceptance is harmless: the conditional claim below fails the second
+    time, and the recorded outcome is returned rather than a second identical plan version.
+    """
+    offer = repo.get_offer(offer_id)
+    if offer is None:
+        raise OfferError("that offer no longer exists")
+
+    slot = next((s for s in offer.options if s.id == slot_id), None)
+    if slot is None:
+        raise OfferError("that slot was not part of this offer")
+
+    if not repo.claim_offer_response(offer_id, OfferStatus.ACCEPTED.value):
+        # Someone already responded. Return what happened then, without re-solving.
+        settled = repo.get_offer(offer_id)
+        job = repo.get_job(settled.order_id)
+        plan = repo.active_plan(job.delivery_date) if job and job.delivery_date else None
+        return AcceptanceOutcome(
+            offer=settled, job=job, plan=plan, idempotent=True,
+            message="That booking is already confirmed.",
+        )
+
+    job = repo.get_job(offer.order_id)
+    if job is None:
+        raise OfferError("that order no longer exists")
+
+    previous_date = job.delivery_date
+    job.delivery_date = slot.date
+    job.availability = [slot.window]
+    job.locked_window = slot.window
+    job.set_planning_status(PlanningStatus.CONFIRMED)
+    repo.save_job(job)
+
+    try:
+        plan = plan_service.replan_day(
+            repo, slot.date, reason=f"{job.customer_name} confirmed {slot.date}", routing_client=routing_client
+        )
+    except (LockedPlanInfeasibleError, UnsolvableDayError) as exc:
+        # The day was quoted as feasible moments ago, so this means something else changed in
+        # between. Roll the order back rather than leaving it confirmed against a plan that does
+        # not exist, and let a human sort it out.
+        job.delivery_date = previous_date
+        job.locked_window = None
+        job.availability = []
+        job.set_planning_status(PlanningStatus.EXCEPTION)
+        repo.save_job(job)
+        offer.status = OfferStatus.CLOSED
+        repo.save_offer(offer)
+        plan_service.raise_coordinator_exception(
+            repo,
+            f"{job.customer_name} accepted {slot.date} but the day could no longer be routed: {exc}",
+            kind="acceptance_failed",
+            order_id=job.id,
+            delivery_date=slot.date,
+        )
+        raise OfferError(
+            "sorry -- that slot was taken while we were confirming. Our team will call you."
+        ) from exc
+
+    offer.status = OfferStatus.ACCEPTED
+    offer.accepted_slot_id = slot.id
+    offer.resulting_plan_id = plan.id
+    offer.responded_at = datetime.now(timezone.utc)
+    repo.save_offer(offer)
+
+    # Any other outstanding offer for this order is now moot.
+    for other in repo.offers_for_order(job.id):
+        if other.id != offer.id and other.status in (OfferStatus.PENDING, OfferStatus.SENT):
+            other.status = OfferStatus.CLOSED
+            repo.save_offer(other)
+
+    confirmation = (
+        f"You're confirmed for {format_date(slot.date)}, between "
+        f"{format_time(slot.window.start)} and {format_time(slot.window.end)}. See you then!"
+    )
+    record_message(repo, job.id, confirmation)
+
+    return AcceptanceOutcome(offer=offer, job=job, plan=plan, message=confirmation)
+
+
+def reject_offer(repo: JobsRepository, offer_id: str) -> AppointmentOffer:
+    """Record that a customer turned an offer down, freeing the order to be offered again."""
+    offer = repo.get_offer(offer_id)
+    if offer is None:
+        raise OfferError("that offer no longer exists")
+
+    if not repo.claim_offer_response(offer_id, OfferStatus.REJECTED.value):
+        return repo.get_offer(offer_id)
+
+    offer.status = OfferStatus.REJECTED
+    offer.responded_at = datetime.now(timezone.utc)
+    repo.save_offer(offer)
+
+    job = repo.get_job(offer.order_id)
+    if job is not None:
+        job.set_planning_status(PlanningStatus.PENDING_PLANNING)
+        repo.save_job(job)
+    return offer
