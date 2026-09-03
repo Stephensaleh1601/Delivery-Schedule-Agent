@@ -156,7 +156,12 @@ function CandidateCard({ candidate }: { candidate: DecisionCandidate }) {
     >
       <div className="flex flex-col gap-1">
         <span className="text-[13.5px] font-semibold text-ink">{candidate.label}</span>
-        <Pill tone={candidate.kind === "route" ? "locked" : "neutral"}>{candidate.badge}</Pill>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Pill tone={candidate.kind === "route" ? "locked" : "neutral"}>{candidate.badge}</Pill>
+          {/* Worth comparing is not the same as put to the customer. Saying "offered" about a
+              window nobody was shown is the panel being confidently wrong. */}
+          {!candidate.offered && <Pill tone="neutral">Compared, not offered</Pill>}
+        </div>
       </div>
 
       <ul className="flex flex-col gap-0.5">

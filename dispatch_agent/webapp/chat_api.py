@@ -251,6 +251,13 @@ def _decision_for(repo: JobsRepository, order_id: str, extra_run, evaluations, s
     from dispatch_agent.planning import decision_record
 
     order = repo.get_job(order_id)
+    # What the customer can accept right now. A run that made no offer cannot know this, and
+    # guessing labelled a compared-only alternative as though it had been put to them.
+    live = conversation.open_offer(repo, order_id)
+    on_the_table = {
+        (slot.date.isoformat(), slot.window.start.strftime("%H:%M"))
+        for slot in (live.options if live else [])
+    }
     candidates = []
     if extra_run is not None:
         candidates.append(extra_run)
@@ -267,6 +274,7 @@ def _decision_for(repo: JobsRepository, order_id: str, extra_run, evaluations, s
             order=order,
             evaluations=evaluations if run is extra_run else None,
             suggestions=suggestions if run is extra_run else None,
+            on_the_table=on_the_table,
         )
         if record.meaningful:
             return {"decision": record.to_dict(), "decision_run_id": run.id}

@@ -601,7 +601,12 @@ def finish(args: NoArgs, ctx: ToolContext) -> ToolResult:
 INTENT_TOOLS: dict[str, frozenset[str]] = {
     # Read-only with respect to the booking. `evaluate_slots` solves and reports; it writes
     # nothing, which is what makes it safe to answer a question with.
-    "explain": frozenset({"evaluate_slots", "explain_choice", "send_message", "finish"}),
+    # `suggest_route_aware_windows` is here because it is genuinely read-only -- it solves days and
+    # returns them, and writes nothing. Without it "why Tuesday?" could only see the customer's own
+    # dates, so it answered by explaining Saturday.
+    "explain": frozenset({
+        "evaluate_slots", "suggest_route_aware_windows", "explain_choice", "send_message", "finish",
+    }),
     # Nothing here may offer, re-solve or reject. The customer said yes to a specific slot.
     "accept": frozenset({"lock_appointment", "send_message", "finish"}),
     "reject": frozenset({

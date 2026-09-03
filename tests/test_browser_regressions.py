@@ -165,7 +165,12 @@ def test_asking_why_runs_only_read_only_tools(client):
     turn = _say(client, order_id, "Why this timing?")
 
     assert turn["intent"] == "explain"
-    allowed = {"evaluate_slots", "explain_choice", "send_message", "finish"}
+    # suggest_route_aware_windows is on this list because it is genuinely read-only: it solves
+    # days and returns them, and writes nothing. Without it "why Tuesday?" could only see the
+    # customer's own dates, and answered by explaining Saturday.
+    allowed = {
+        "evaluate_slots", "suggest_route_aware_windows", "explain_choice", "send_message", "finish",
+    }
     assert set(_ok_tools(turn)) <= allowed, _tools(turn)
 
 
@@ -731,3 +736,70 @@ def test_a_confirmation_names_the_window_not_a_database_row(client, temp_db):
     assert "Customer selected" in changed
     assert "2026-" not in changed, f"raw ISO date in the panel: {changed}"
     assert "am" in changed or "pm" in changed, changed
+
+
+def test_the_panel_never_claims_to_offer_something_it_did_not(client, temp_db):
+    """"Offer both. Recommend Tuesday" while only Saturday was sent is a lie the panel tells
+    confidently.
+
+    A candidate can be worth comparing and still not be offered: when the time the customer asked
+    for works and is not materially worse, we honour it rather than negotiate. The panel has to say
+    which of those happened.
+    """
+    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    order_id = _order(client, postal_code="828761")
+
+    turn = _say(client, order_id, "Saturday morning works.")
+
+    decision = turn["decision"]
+    offered_labels = [
+        f"{o['date']}" for o in turn["offers"][turn["open_offer_id"]]["options"]
+    ]
+    for candidate in decision["candidates"]:
+        if candidate["offered"]:
+            assert candidate["date"] in offered_labels, (
+                f"panel says {candidate['label']} was offered; the offer holds {offered_labels}"
+            )
+
+    shown_as_offered = [c for c in decision["candidates"] if c["offered"]]
+    if len(shown_as_offered) < 2:
+        assert "Offer both" not in decision["decision"], decision["decision"]
+
+
+def test_an_explanation_can_compare_the_alternative_it_is_asked_about(client, temp_db):
+    """"Why Tuesday?" answered by explaining Saturday, because the explain flow could only see the
+    customer's own dates. Searching for the alternative is read-only, so it is allowed."""
+    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    order_id = _order(client, postal_code="828761")
+    _say(client, order_id, "Saturday morning works.")
+
+    turn = _say(client, order_id, "Why Tuesday?")
+
+    assert "suggest_route_aware_windows" in _ok_tools(turn), _tools(turn)
+    # ...and it still changed nothing.
+    assert turn["open_offer_id"]
+    assert client.get("/api/exceptions").json() == []
+
+
+def test_a_compared_only_alternative_is_not_labelled_as_offered(client, temp_db):
+    """An explanation makes no offer, so it cannot know what is open -- and defaulting to "offered"
+    labelled a compared-only alternative as though it had been put to the customer.
+
+    The live offer is passed in instead, so the label is a fact rather than an inference.
+    """
+    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    order_id = _order(client, postal_code="828761")
+    opened = _say(client, order_id, "Saturday morning works.")
+    on_offer = {
+        (o["date"], o["window"]["start"])
+        for o in opened["offers"][opened["open_offer_id"]]["options"]
+    }
+
+    turn = _say(client, order_id, "Why Tuesday?")
+
+    for candidate in turn["decision"]["candidates"]:
+        expected = (candidate["date"], candidate["start"]) in on_offer
+        assert candidate["offered"] is expected, (
+            f"{candidate['label']} marked offered={candidate['offered']} but the live offer holds "
+            f"{sorted(on_offer)}"
+        )

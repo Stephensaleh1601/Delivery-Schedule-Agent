@@ -58,6 +58,13 @@ class Candidate:
     stops_before: int | None = None
     position: int | None = None
     chosen: bool = False
+    # 24-hour start, for matching against the live offer without re-parsing prose.
+    start: str = ""
+    # Whether this window was actually put to the customer. A candidate can be worth comparing and
+    # still not be offered -- when the time they asked for works and is not materially worse, we
+    # honour it rather than negotiate. Saying "offer both" when one was offered is a lie the panel
+    # tells confidently.
+    offered: bool = True
     date: str = ""
     window: str = ""
 
@@ -118,8 +125,16 @@ def _clock(hhmm: str) -> str:
     return f"{shown}:{minute:02d}{suffix}" if minute else f"{shown}{suffix}"
 
 
-def build(run: AgentRunLog, order=None, evaluations=None, suggestions=None) -> DecisionRecord:
-    """Assemble the decision from what the run actually did."""
+def build(
+    run: AgentRunLog, order=None, evaluations=None, suggestions=None, on_the_table=None
+) -> DecisionRecord:
+    """Assemble the decision from what the run actually did.
+
+    `on_the_table` is the set of (date, start) pairs the customer can currently accept. Passed in
+    rather than inferred, because a run that made no offer -- an explanation, say -- has no way to
+    know what is open, and defaulting to "offered" labelled a compared-only alternative as though
+    it had been put to the customer.
+    """
     record = DecisionRecord()
     intent = _intent_of(run)
 
@@ -139,7 +154,7 @@ def build(run: AgentRunLog, order=None, evaluations=None, suggestions=None) -> D
     _what_the_customer_asked(record, run, intent)
     # Candidates first: the last step of "what changed" names the window that was found, and
     # reading it off the candidate is exact where scraping it out of a summary string was not.
-    record.candidates = _candidates(run, evaluations, suggestions)
+    record.candidates = _candidates(run, evaluations, suggestions, on_the_table)
     _what_changed(record, run, intent)
     _decide(record, run, intent)
 
@@ -238,7 +253,7 @@ def _what_changed(record: DecisionRecord, run: AgentRunLog, intent: str) -> None
         )
 
 
-def _candidates(run: AgentRunLog, evaluations, suggestions) -> list[Candidate]:
+def _candidates(run: AgentRunLog, evaluations, suggestions, on_the_table=None) -> list[Candidate]:
     """At most two, and never the same answer twice.
 
     The panel used to list every evaluated window, including the customer's broad availability
@@ -287,9 +302,16 @@ def _candidates(run: AgentRunLog, evaluations, suggestions) -> list[Candidate]:
 
     _label(found)
     offered = _step(run, "create_offer")
+    counteroffered = bool(offered and offered.data.get("counteroffered"))
     for candidate in found:
         if offered and candidate.date in (offered.summary or ""):
             candidate.chosen = True
+        if on_the_table is not None:
+            # What the customer can actually accept right now, from the live offer.
+            candidate.offered = (candidate.date, candidate.start) in on_the_table
+        elif candidate.kind == "route" and offered and not counteroffered:
+            # Alternatives only reach the customer when the counteroffer policy says they should.
+            candidate.offered = False
     return found[:MAX_CANDIDATES]
 
 
@@ -304,6 +326,7 @@ def _candidate_from(evaluation, kind: str) -> Candidate:
         kind=kind,
         date=evaluation.date.isoformat(),
         window=f"{_clock(window.start.strftime('%H:%M'))}–{_clock(window.end.strftime('%H:%M'))}",
+        start=window.start.strftime("%H:%M"),
         added_drive_minutes=evaluation.incremental_drive_minutes,
         added_distance_km=round(
             evaluation.proposed_distance_km - evaluation.baseline_distance_km, 1
@@ -380,10 +403,19 @@ def _decide(record: DecisionRecord, run: AgentRunLog, intent: str) -> None:
     if len(record.candidates) == 2:
         route = next((c for c in record.candidates if c.kind == "route"), None)
         customer = next((c for c in record.candidates if c.kind == "customer"), None)
-        if route and customer:
+        if route and customer and route.offered:
             record.decision = (
                 f"Offer both. Recommend {route.label} for the lowest route impact, keeping "
                 f"{customer.label} as the customer-friendly option."
+            )
+        elif route and customer:
+            # We looked, and the alternative was not enough better to be worth asking about. The
+            # customer asked for a time we can serve, so we serve it.
+            reason = (offered.data or {}).get("counteroffer_reason", "")
+            record.decision = (
+                f"Offer {customer.label}. {route.label} was checked and is not enough better to "
+                f"be worth asking them to move"
+                + (f" ({reason.replace('_', ' ')})." if reason and reason != "honour_request" else ".")
             )
     elif record.candidates:
         only = record.candidates[0]

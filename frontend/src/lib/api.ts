@@ -390,8 +390,13 @@ export interface DecisionCandidate {
   stops_before: number | null;
   position: number | null;
   chosen: boolean;
+  /** Whether this window is actually on the table. A candidate can be worth comparing and still
+   *  not be offered -- when the requested time works and is not materially worse, we honour it. */
+  offered: boolean;
   date: string;
   window: string;
+  /** 24-hour start, for matching against the live offer without re-parsing prose. */
+  start: string;
 }
 
 /** The agent's decision, in the shape a judge can read in five seconds.

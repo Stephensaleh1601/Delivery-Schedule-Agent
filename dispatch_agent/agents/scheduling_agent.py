@@ -293,6 +293,14 @@ class RuleDecisionAgent:
                         reason_summary="Re-checking the route so the answer is the current one.",
                         arguments={"order_id": event.order_id},
                     )
+                # The alternative is usually the thing being asked about -- "why Tuesday?" is a
+                # question about a day we proposed, not about the day they requested.
+                if "suggest_route_aware_windows" not in done:
+                    return ActionDecision(
+                        action="suggest_route_aware_windows",
+                        reason_summary="Re-checking the alternative so the comparison is current.",
+                        arguments={"order_id": event.order_id},
+                    )
                 if "explain_choice" not in done:
                     return ActionDecision(
                         action="explain_choice",
