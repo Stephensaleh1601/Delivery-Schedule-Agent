@@ -15,6 +15,7 @@ Two properties matter more than the list itself:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import date as Date
 from typing import Callable, NamedTuple
@@ -82,6 +83,38 @@ def sanitise_for_log(value, _depth: int = 0):
     return sanitise_for_log(str(value), _depth)
 
 
+# Anything shaped like a credential inside a provider exception. Bedrock and OpenAI errors quote
+# the request they failed on, which carries keys, bearer tokens, account ids and ARNs -- and a
+# fallback reason is persisted and then rendered in the inspector, so this is a leak with a UI.
+_SECRET_PATTERNS = [
+    re.compile(r"(?i)\b(?:sk|rk)-[A-Za-z0-9_\-]{12,}"),      # OpenAI-style keys
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),            # AWS access key ids
+    re.compile(r"(?i)\barn:aws[^\s\"']{6,}"),                # ARNs carry the account number
+    re.compile(
+        r"(?i)\b(?:api[_-]?key|secret|token|password|authorization|bearer)"
+        r"\s*[=:]?\s*[^\s,;)\"']{8,}"
+    ),
+    re.compile(r"\b\d{12}\b"),                               # bare AWS account ids
+]
+
+MAX_FALLBACK_REASON = 300
+
+
+def redact_secrets(text: str | None) -> str | None:
+    """A provider failure, with anything credential-shaped removed.
+
+    "No AWS credentials found" and "the model returned garbage" are different problems and the
+    inspector has to be able to tell them apart -- but the exception that says so must not carry
+    the credential itself into the database.
+    """
+    if not text:
+        return text
+    cleaned = str(text)
+    for pattern in _SECRET_PATTERNS:
+        cleaned = pattern.sub("[redacted]", cleaned)
+    return cleaned[:MAX_FALLBACK_REASON]
+
+
 def capped_for_log(value: dict) -> dict:
     """sanitise_for_log, plus a hard ceiling on the whole payload."""
     cleaned = sanitise_for_log(value)
@@ -113,6 +146,10 @@ class ToolContext:
     order: JobRecord | None = None
     evaluations: list[CandidateSlotEvaluation] = field(default_factory=list)
     offer_id: str | None = None
+    # The run these tools are executing inside. Carried on the context so anything a tool creates
+    # -- an offer, a message -- can record which run produced it, instead of a later reader having
+    # to guess from timestamps.
+    run_id: str | None = None
     scratch: dict = field(default_factory=dict)
 
     def candidate_service(self) -> CandidateService:
@@ -228,6 +265,16 @@ def evaluate_slots(args: OrderArgs, ctx: ToolContext) -> ToolResult:
 
 @tool("create_offer", OrderArgs)
 def create_offer(args: OrderArgs, ctx: ToolContext) -> ToolResult:
+    """Put times to the customer -- theirs first, and ours only when there is a reason.
+
+    The counteroffer policy lives here rather than in the model, because "is this worth arguing
+    with the customer about" is a business rule with a number in it, not a judgement call. A time
+    they asked for that we can serve is served; alternatives are added only when
+    `negotiation.should_counteroffer` says the request is infeasible, causes overtime, opens an
+    otherwise-empty day, or is beaten by a materially shorter route.
+    """
+    from dispatch_agent.planning import conversation, negotiation
+
     order = ctx.order or ctx.repo.get_job(args.order_id)
     if order is None:
         return ToolResult(ok=False, tool="create_offer", error="unknown_order",
@@ -235,10 +282,27 @@ def create_offer(args: OrderArgs, ctx: ToolContext) -> ToolResult:
     if not ctx.evaluations:
         return ToolResult(ok=False, tool="create_offer", error="no_evaluations",
                           summary="Cannot offer slots before evaluating them.")
+
+    requested = next((e for e in ctx.evaluations if e.feasible), None)
+    suggestions = ctx.scratch.get("suggestions") or []
+    decision = negotiation.should_counteroffer(
+        requested, suggestions, customer_says_fixed=conversation.is_only_option(order)
+    )
+
+    offerable = list(ctx.evaluations)
+    if decision.should_ask:
+        # The suggestions' evaluations join the pool. They are still not the customer's
+        # availability -- nothing is written to the order here; that happens only if one is
+        # accepted (see offer_service.accept_offer).
+        seen = {(e.date, e.promise_window) for e in offerable if e.feasible}
+        for suggestion in suggestions:
+            if (suggestion.date, suggestion.window) not in seen:
+                offerable.append(suggestion.evaluation)
+
     try:
-        offer = offer_service.create_offer(ctx.repo, order, ctx.evaluations)
+        offer = offer_service.create_offer(ctx.repo, order, offerable, run_id=ctx.run_id)
     except offer_service.OfferError as exc:
-        return ToolResult(ok=False, tool="create_offer", error="no_feasible_slot", summary=str(exc))
+        return ToolResult(ok=False, tool="create_offer", error=exc.kind, summary=str(exc))
 
     ctx.offer_id = offer.id
     ctx.scratch["offer_message"] = offer_service.offer_message(offer)
@@ -248,8 +312,18 @@ def create_offer(args: OrderArgs, ctx: ToolContext) -> ToolResult:
     )
     return ToolResult(
         ok=True, tool="create_offer",
-        summary=f"Offered {order.customer_name} {len(offer.options)} slot(s): {slots}.",
-        data={"offer_id": offer.id, "round": offer.round_number},
+        summary=(
+            f"Offered {order.customer_name} {len(offer.options)} slot(s): {slots}. "
+            + (f"Suggested an alternative because {decision.reason}."
+               if decision.should_ask
+               else f"Honoured what they asked for -- {decision.reason}.")
+        ),
+        data={
+            "offer_id": offer.id,
+            "round": offer.round_number,
+            "counteroffered": decision.should_ask,
+            "counteroffer_reason": decision.kind,
+        },
     )
 
 
@@ -257,11 +331,16 @@ def create_offer(args: OrderArgs, ctx: ToolContext) -> ToolResult:
 def send_message(args: MessageArgs, ctx: ToolContext) -> ToolResult:
     """Simulated send. Recorded with a direction so "how many customers did we contact?" is a
     query rather than a guess."""
-    offer_service.record_message(ctx.repo, args.order_id, args.body, MessageDirection.OUTBOUND)
+    # Linked to the run that produced it and, when this message is presenting an offer, to that
+    # offer -- so the inspector under this bubble opens THESE calls after a refresh.
+    message = offer_service.record_message(
+        ctx.repo, args.order_id, args.body,
+        MessageDirection.OUTBOUND, run_id=ctx.run_id, offer_id=ctx.offer_id,
+    )
     return ToolResult(
         ok=True, tool="send_message",
         summary=f"Message sent to the customer ({len(args.body)} chars).",
-        data={"order_id": args.order_id},
+        data={"order_id": args.order_id, "message_id": message.id},
     )
 
 
@@ -270,7 +349,8 @@ def lock_appointment(args: AcceptArgs, ctx: ToolContext) -> ToolResult:
     """Turn an accepted slot into a protected promise, and republish the day."""
     try:
         outcome = offer_service.accept_offer(
-            ctx.repo, args.offer_id, args.slot_id, routing_client=ctx.routing_client
+            ctx.repo, args.offer_id, args.slot_id,
+            routing_client=ctx.routing_client, run_id=ctx.run_id,
         )
     except offer_service.OfferError as exc:
         return ToolResult(ok=False, tool="lock_appointment", error="acceptance_failed", summary=str(exc))
@@ -472,3 +552,10 @@ def dispatch(action: str, arguments: dict | None, ctx: ToolContext) -> ToolResul
 
 def allowed_actions() -> list[str]:
     return sorted(TOOL_REGISTRY)
+
+
+# Registers the natural-language negotiation tools into TOOL_REGISTRY above. A bottom import
+# deliberately: that module imports `tool`, `ToolResult` and `_Args` from here, so it can only be
+# loaded once this module is fully defined. Importing either module now yields the whole allow-list,
+# which matters because `allowed_actions()` is what the model is shown.
+from dispatch_agent.planning import negotiation_tools as _negotiation_tools  # noqa: E402,F401

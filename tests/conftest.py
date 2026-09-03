@@ -71,6 +71,19 @@ def offline_routing(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_live_model(monkeypatch):
+    """No test may reach a real LLM provider.
+
+    `no_network` below blocks `requests`, but botocore talks to AWS through urllib3 directly and
+    would slip past it -- and even a failing Bedrock call costs several seconds of credential
+    discovery per test. Setting the provider to "none" makes the conversation use its deterministic
+    reader, which is what the language tests are asserting on anyway. A test that wants the model
+    path injects a FakeLLM into MessageReader explicitly.
+    """
+    monkeypatch.setattr(config.settings, "llm_provider", "none")
+
+
+@pytest.fixture(autouse=True)
 def no_network(monkeypatch):
     """Turn "we happen to be offline" into "we cannot reach the network". Any test that grows a
     real HTTP call fails loudly here instead of quietly billing someone's API account."""

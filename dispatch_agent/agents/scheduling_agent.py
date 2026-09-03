@@ -40,7 +40,11 @@ from dispatch_agent.models import (
 from dispatch_agent.planning import plan_service, tools
 from dispatch_agent.planning.clock import PlanningClock
 
-MAX_TOOL_STEPS = 6
+# The bound on one run. Raised from 6 when the conversation became natural-language: a single
+# customer message can now legitimately need record_availability -> evaluate_slots ->
+# suggest_route_aware_windows -> create_offer -> send_message -> finish, which is already six. The
+# guard exists to stop a loop, not to make the longest honest path fail one step from the end.
+MAX_TOOL_STEPS = 8
 
 
 class ActionDecision(BaseModel):
@@ -124,10 +128,51 @@ class RuleDecisionAgent:
         done = {a.tool for a in state.get("actions", [])}
 
         if event.event_type is PlanningEventType.NEW_ORDER:
+            # A conversational turn carries the windows the customer just stated. Writing them down
+            # is the first thing that happens, so the evaluation below prices what they actually
+            # said rather than whatever the order happened to hold before this message.
+            stated = event.payload.get("stated_windows")
+            if stated and "record_availability" not in done:
+                return ActionDecision(
+                    action="record_availability",
+                    reason_summary="Noting the times the customer gave.",
+                    arguments={
+                        "order_id": event.order_id,
+                        "windows": stated,
+                        "is_fixed": bool(event.payload.get("is_fixed")),
+                    },
+                )
+            if stated and _last_failed(state, "record_availability"):
+                # Nothing usable was recorded -- an out-of-horizon date, or a window we could not
+                # read. The tool has already put the explanation in `customer_message`; send that
+                # and stop, rather than evaluating an order with nothing on it.
+                if "send_message" not in done and state.get("customer_message"):
+                    return ActionDecision(
+                        action="send_message",
+                        reason_summary="Explaining why that date cannot be booked.",
+                        arguments={"order_id": event.order_id, "body": state["customer_message"]},
+                    )
+                return ActionDecision(action="finish",
+                                      reason_summary="Waiting for a date we can actually book.")
             if "evaluate_slots" not in done:
                 return ActionDecision(action="evaluate_slots",
                                       reason_summary="Checking which of the requested windows we can serve.",
                                       arguments={"order_id": event.order_id})
+            # Look for a route-friendly alternative before offering. This is what lets the reply be
+            # "Saturday works, but Tuesday we'll already be in your area" rather than a flat yes --
+            # and whether any of it is put to the customer is decided by the counteroffer policy in
+            # create_offer, not here. Skipped when they have said their timing is fixed: there is
+            # nothing to ask, and solving the horizon to ask it anyway is waste.
+            if (
+                stated
+                and not event.payload.get("is_fixed")
+                and "suggest_route_aware_windows" not in done
+            ):
+                return ActionDecision(
+                    action="suggest_route_aware_windows",
+                    reason_summary="Checking whether another day suits the route better.",
+                    arguments={"order_id": event.order_id},
+                )
             if "create_offer" not in done:
                 return ActionDecision(action="create_offer",
                                       reason_summary="Offering the workable slots to the customer.",
@@ -190,6 +235,16 @@ class RuleDecisionAgent:
                         "message": "Customer declined every slot we could offer; needs a call to agree a new time.",
                     },
                 )
+            # Actually send it. Until the conversation was read back from the database this branch
+            # got away with finishing here, because the frontend rendered the offer straight from
+            # the response -- so the second round existed for the customer on screen and nowhere in
+            # the thread, and vanished on refresh.
+            if "send_message" not in done and state.get("customer_message"):
+                return ActionDecision(
+                    action="send_message",
+                    reason_summary="Sending the new time to the customer.",
+                    arguments={"order_id": event.order_id, "body": state["customer_message"]},
+                )
             return ActionDecision(action="finish", reason_summary="Second offer sent.")
 
         if event.event_type is PlanningEventType.ORDER_READINESS_CHANGED:
@@ -204,6 +259,55 @@ class RuleDecisionAgent:
                                       reason_summary="Looking for a customer who would take the freed slot.",
                                       arguments={"delivery_date": date_str})
             return ActionDecision(action="finish", reason_summary="Recovery options identified.")
+
+        if event.event_type is PlanningEventType.MANUAL_RETRY:
+            intent = event.payload.get("intent")
+
+            if intent == "explain":
+                # The figures must come from a solve, so re-evaluate before answering. Explaining
+                # from memory is how an agent ends up confidently quoting a route it no longer has.
+                if "evaluate_slots" not in done:
+                    return ActionDecision(
+                        action="evaluate_slots",
+                        reason_summary="Re-checking the route so the answer is the current one.",
+                        arguments={"order_id": event.order_id},
+                    )
+                if "explain_choice" not in done:
+                    return ActionDecision(
+                        action="explain_choice",
+                        reason_summary="Answering from the solved route.",
+                        arguments={"order_id": event.order_id,
+                                   "question": event.payload.get("message", "")},
+                    )
+                if _last_failed(state, "explain_choice") and "ask_clarification" not in done:
+                    return ActionDecision(
+                        action="ask_clarification",
+                        reason_summary="Nothing solved to explain; asking what they need.",
+                        arguments={
+                            "order_id": event.order_id,
+                            "question": "Sorry -- which delivery time would you like me to explain?",
+                        },
+                    )
+            elif "ask_clarification" not in done:
+                # Unclear or unrelated. One question, never a guess: a wrong date costs the
+                # customer a delivery day, and there is no way for them to see it coming.
+                return ActionDecision(
+                    action="ask_clarification",
+                    reason_summary="Message unclear; asking one question rather than guessing.",
+                    arguments={
+                        "order_id": event.order_id,
+                        "question": event.payload.get("question")
+                        or "Sorry, I didn't catch that -- which day and roughly what time would suit you?",
+                    },
+                )
+
+            if "send_message" not in done and state.get("customer_message"):
+                return ActionDecision(
+                    action="send_message",
+                    reason_summary="Replying to the customer.",
+                    arguments={"order_id": event.order_id, "body": state["customer_message"]},
+                )
+            return ActionDecision(action="finish", reason_summary="Replied.")
 
         return ActionDecision(action="finish", reason_summary="No action defined for this event.")
 
@@ -224,6 +328,9 @@ class SchedulingState(TypedDict, total=False):
     error: Optional[str]
     # Set when a decision fell back to the standard procedure, so the run can say why.
     decider_error: Optional[str]
+    # Who produced the decision currently pending, carried from decide to act so the step it
+    # becomes records its own provider rather than the run's.
+    step_provenance: Optional[dict]
 
 
 def _observe_node(ctx: tools.ToolContext):
@@ -269,17 +376,38 @@ def _observe_node(ctx: tools.ToolContext):
 
 def _decide_node(decider: DecisionAgent, fallback: DecisionAgent | None):
     def node(state: SchedulingState) -> SchedulingState:
+        primary = type(decider).__name__
+        model_id = settings.bedrock_model_id if isinstance(decider, LLMDecisionAgent) else None
         try:
             decision = decider.decide(state, tools.allowed_actions())
         except Exception as exc:  # noqa: BLE001
             if fallback is None:
-                return {"error": f"could not decide what to do next: {exc}", "completed": True}
+                return {
+                    "error": f"could not decide what to do next: "
+                             f"{tools.redact_secrets(str(exc))}",
+                    "completed": True,
+                }
             # Recorded, not hidden: the log should say the model was unavailable rather than
-            # implying it made these calls.
+            # implying it made these calls. Redacted because a provider exception quotes the
+            # request it failed on, and this string is persisted and then rendered.
             decision = fallback.decide(state, tools.allowed_actions())
             decision.reason_summary = f"[model unavailable, using standard procedure] {decision.reason_summary}"
-            return {"pending_decision": decision, "decider_error": f"{type(exc).__name__}: {exc}"}
-        return {"pending_decision": decision}
+            reason = tools.redact_secrets(f"{type(exc).__name__}: {exc}")
+            return {
+                "pending_decision": decision,
+                "decider_error": reason,
+                # Per STEP, because the fallback happens per decision -- a run can be part-model,
+                # part-standard-procedure, and one run-level flag would misdescribe half of it.
+                "step_provenance": {
+                    "decider": type(fallback).__name__,
+                    "model_id": None,
+                    "fallback_reason": reason,
+                },
+            }
+        return {
+            "pending_decision": decision,
+            "step_provenance": {"decider": primary, "model_id": model_id, "fallback_reason": None},
+        }
 
     return node
 
@@ -301,14 +429,20 @@ def _act_node(ctx: tools.ToolContext):
             reason_summary=decision.reason_summary,
             error=result.error,
             data=tools.capped_for_log(result.data),
+            **(state.get("step_provenance") or {}),
         )
         update: SchedulingState = {
             "actions": state.get("actions", []) + [entry],
             "step_count": step,
             "last_tool_result": result.model_dump(),
         }
-        if ctx.scratch.get("offer_message"):
-            update["customer_message"] = ctx.scratch["offer_message"]
+        # Two tools write something to say: `create_offer` produces the list of times, and the
+        # conversational tools (ask_clarification, explain_choice, an out-of-horizon
+        # record_availability) produce a sentence. The offer wins where both exist -- a customer
+        # being given times does not also need the question that preceded them.
+        reply = ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")
+        if reply:
+            update["customer_message"] = reply
         if decision.action == "finish":
             update["completed"] = True
         return update
@@ -380,6 +514,9 @@ def handle_planning_event(
     repo.save_agent_run(run)
 
     ctx = ctx if ctx is not None else tools.ToolContext(repo=repo, routing_client=routing_client)
+    # The run row is created just above, so the context can carry its id from the first tool call
+    # -- which is what lets offers and messages record their own provenance as they are written.
+    ctx.run_id = run.id
     if decider is None:
         try:
             decider = LLMDecisionAgent()

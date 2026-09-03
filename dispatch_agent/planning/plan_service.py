@@ -23,7 +23,7 @@ from pathlib import Path
 from dispatch_agent.config import settings
 from dispatch_agent.db import JobsRepository
 from dispatch_agent.geo.routing_client import RoutingClient
-from dispatch_agent.geo.zones import COMPANY_DEPOT
+from dispatch_agent.geo.zones import company_depot
 from dispatch_agent.models import (
     Coordinates,
     CoordinatorException,
@@ -90,7 +90,7 @@ def annotate_distances(
     sequence: DaySequence,
     jobs_by_id: dict[str, JobRecord],
     routing_client: RoutingClient,
-    depot: Coordinates = COMPANY_DEPOT,
+    depot: Coordinates | None = None,
 ) -> DaySequence:
     """Attach per-leg distance to a solved sequence, including the drive home.
 
@@ -103,6 +103,7 @@ def annotate_distances(
     The trailing depot is deliberate: /api/route-plan's own distance total omitted the return leg,
     which made a distant final stop look free.
     """
+    depot = depot or company_depot()
     if not sequence.stops:
         return sequence.model_copy(update={"distance_recorded": True})
 
@@ -128,10 +129,11 @@ def solve_day(
     repo: JobsRepository,
     delivery_date: Date,
     routing_client: RoutingClient | None = None,
-    depot: Coordinates = COMPANY_DEPOT,
+    depot: Coordinates | None = None,
 ) -> DaySequence:
     """Solve a date from what is currently committed to it, verifying every promise survives."""
     jobs = routable_jobs(repo, delivery_date)
+    depot = depot or company_depot()
     client = routing_client or RoutingClient()
     sequence = sequence_day(
         jobs,
@@ -234,7 +236,7 @@ def replan_day(
     delivery_date: Date,
     reason: str,
     routing_client: RoutingClient | None = None,
-    depot: Coordinates = COMPANY_DEPOT,
+    depot: Coordinates | None = None,
 ) -> RoutePlanVersion:
     """Re-solve a date and publish the result. Raises rather than publishing a plan that would
     break a promise -- the caller turns that into a coordinator exception."""

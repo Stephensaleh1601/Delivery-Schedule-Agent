@@ -514,6 +514,9 @@ class AppointmentOffer(BaseModel):
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     order_id: str
+    # The agent run that created this offer. The authoritative link between what the customer was
+    # shown and the tool calls that chose it.
+    run_id: Optional[str] = None
     options: list[OfferedSlot] = Field(default_factory=list)
     purpose: OfferPurpose = OfferPurpose.BOOKING
     round_number: int = 1
@@ -567,6 +570,14 @@ class AgentActionLog(BaseModel):
     reason_summary: str = ""
     error: Optional[str] = None
     data: dict = Field(default_factory=dict)
+    # Who chose THIS step. Per-step rather than per-run because the fallback happens per decision:
+    # a run can be part-model, part-standard-procedure, and a single run-level flag would have to
+    # pick one of those and be wrong about the other.
+    decider: str = "unknown"
+    model_id: Optional[str] = None
+    # Set when this particular step fell back. Redacted at the write site -- see
+    # planning/tools.redact_secrets -- because provider exceptions carry keys and ARNs.
+    fallback_reason: Optional[str] = None
     timestamp: datetime = Field(default_factory=_utcnow)
 
 
@@ -601,6 +612,12 @@ class CustomerMessage(BaseModel):
     direction: MessageDirection = MessageDirection.OUTBOUND
     channel: str = "chat"
     body: str = ""
+    # The run that produced this message, and the offer it is presenting. Stored rather than
+    # inferred: joining on (order_id, created_at) proximity or "the newest run" puts the wrong
+    # trace under a message the moment there are two, which after a page refresh is always.
+    # Null on messages created outside an agent run -- a first-class case, not an error.
+    run_id: Optional[str] = None
+    offer_id: Optional[str] = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 

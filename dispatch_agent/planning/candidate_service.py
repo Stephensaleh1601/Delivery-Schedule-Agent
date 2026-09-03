@@ -26,7 +26,7 @@ from datetime import date as Date
 from dispatch_agent.config import settings
 from dispatch_agent.db import JobsRepository
 from dispatch_agent.geo.routing_client import RoutingClient
-from dispatch_agent.geo.zones import COMPANY_DEPOT
+from dispatch_agent.geo.zones import company_depot
 from dispatch_agent.models import (
     AvailabilityOption,
     CandidateSlotEvaluation,
@@ -74,12 +74,12 @@ class CandidateService:
         self,
         repo: JobsRepository | None = None,
         routing_client: RoutingClient | None = None,
-        depot: Coordinates = COMPANY_DEPOT,
+        depot: Coordinates | None = None,
         scoring: ScoringConfig | None = None,
     ):
         self._repo = repo or JobsRepository()
         self._routing = routing_client or RoutingClient()
-        self._depot = depot
+        self._depot = depot or company_depot()
         self._scoring = scoring or ScoringConfig.from_settings()
         self._contexts: dict[Date, DayContext] = {}
 

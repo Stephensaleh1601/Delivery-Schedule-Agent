@@ -48,9 +48,10 @@ class AvailabilityChoice(BaseModel):
 class OrderSubmission(BaseModel):
     """A booking under the multi-day flow: no date is chosen, only acceptable windows.
 
-    Two options are asked for on the form, but only one is required here. A customer messaging
-    in free text may genuinely only give one, and refusing to record that would lose the order
-    -- they are told their flexibility is limited instead.
+    `availability` may be empty. The conversation is natural-language first, so an order is created
+    the moment we know who and where, and the customer says when in their own words afterwards --
+    "I'm free Saturday morning" arrives as a message, not as a form field. One stated timing is
+    enough to book; there is no minimum, and nothing asks for two or three.
     """
 
     customer_name: str
@@ -58,14 +59,10 @@ class OrderSubmission(BaseModel):
     address_raw: str
     postal_code: str
     job_type: JobType = JobType.SOFA
-    availability: list[AvailabilityChoice] = Field(min_length=1)
+    availability: list[AvailabilityChoice] = Field(default_factory=list)
     duration_minutes: int | None = Field(default=None, gt=0)
     can_deliver_early: bool = False
     notes: str | None = None
-
-
-MIN_OPTIONS_ON_FORM = 2  # what the booking form asks for
-MIN_OPTIONS_ACCEPTED = 1  # what the system will still record
 
 
 class JobSubmissionError(ValueError):
@@ -130,9 +127,6 @@ def create_order(payload: OrderSubmission, raw_message: str) -> JobRecord:
     before feasibility can be evaluated -- but nothing has been promised, and the model's
     validator enforces that a pending order carries no lock.
     """
-    if not payload.availability:
-        raise JobSubmissionError("Please give us at least one date and time that works for you.")
-
     try:
         located = geocode_postal_code(payload.postal_code)
         validate_delivery_location(located.coordinates, label=f"Postal code {payload.postal_code}")
@@ -172,7 +166,12 @@ def create_order(payload: OrderSubmission, raw_message: str) -> JobRecord:
         duration_minutes=payload.duration_minutes
         or DEFAULT_DURATION_MINUTES_BY_JOB_TYPE[payload.job_type],
         can_deliver_early=payload.can_deliver_early,
-        planning_status=PlanningStatus.PENDING_PLANNING,
+        # No windows yet means we are waiting to hear when they are free, which is a different
+        # state from having windows we have not yet priced -- and the difference is what tells the
+        # conversation whether to ask or to offer.
+        planning_status=(
+            PlanningStatus.PENDING_PLANNING if options else PlanningStatus.PENDING_AVAILABILITY
+        ),
         raw_message=raw_message,
         notes=payload.notes,
     )

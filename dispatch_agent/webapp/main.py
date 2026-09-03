@@ -18,7 +18,8 @@ from pydantic import BaseModel
 from dispatch_agent.config import settings
 from dispatch_agent.db import JobsRepository, init_db
 from dispatch_agent.geo.routing_client import RoutingClient
-from dispatch_agent.geo.zones import COMPANY_DEPOT, COMPANY_DEPOT_ADDRESS
+from dispatch_agent import config
+from dispatch_agent.geo.zones import company_depot, company_depot_address
 from dispatch_agent.agents.scheduling_agent import handle_planning_event
 from dispatch_agent.models import (
     DaySequence,
@@ -47,6 +48,10 @@ from dispatch_agent.webapp.jobs_service import (
 )
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# Before anything else. A depot outside Singapore, or RETURN_TO_DEPOT=false against a solver that
+# has no open-route model, must stop the process here rather than silently produce wrong routes.
+config.validate()
 
 app = FastAPI(title="Dispatch Sequencing")
 init_db()
@@ -227,7 +232,7 @@ def frontend_config() -> dict:
     referrer restriction in Cloud Console, not secrecy) and the depot location/address."""
     return {
         "google_maps_api_key": settings.google_maps_api_key,
-        "depot": {"lat": COMPANY_DEPOT.lat, "lng": COMPANY_DEPOT.lng, "address": COMPANY_DEPOT_ADDRESS},
+        "depot": {"lat": company_depot().lat, "lng": company_depot().lng, "address": company_depot_address()},
     }
 
 
@@ -296,6 +301,15 @@ def generate_route_plan(payload: RoutePlanRequest) -> dict:
     }
 
 
+# The natural-language conversation lives in its own module: it is the only endpoint with real
+# conversational state, and the "exactly one agent run per customer message" guarantee is easier to
+# hold onto when that whole path is on one screen. Registered late so the helpers it imports from
+# here are defined.
+from dispatch_agent.webapp import chat_api  # noqa: E402
+
+app.include_router(chat_api.router)
+
+
 # -- Multi-day planning --------------------------------------------------------
 
 
@@ -311,6 +325,8 @@ def _offer_to_dict(offer) -> dict:
     return {
         "id": offer.id,
         "order_id": offer.order_id,
+        # The run that produced this offer. Lets a client open exactly those calls.
+        "run_id": offer.run_id,
         "round_number": offer.round_number,
         "status": offer.status.value,
         "accepted_slot_id": offer.accepted_slot_id,
@@ -433,9 +449,9 @@ def bootstrap() -> dict:
         "map": {
             "google_maps_api_key": settings.google_maps_api_key,
             "depot": {
-                "lat": COMPANY_DEPOT.lat,
-                "lng": COMPANY_DEPOT.lng,
-                "address": COMPANY_DEPOT_ADDRESS,
+                "lat": company_depot().lat,
+                "lng": company_depot().lng,
+                "address": company_depot_address(),
             },
         },
         "operating": {
@@ -633,7 +649,7 @@ def get_plan(plan_date: Date) -> dict:
     jobs_by_id = {job.id: job for job in repo.jobs_for_date(plan_date)}
     return {
         **_plan_to_dict(plan),
-        "depot": {"lat": COMPANY_DEPOT.lat, "lng": COMPANY_DEPOT.lng, "address": COMPANY_DEPOT_ADDRESS},
+        "depot": {"lat": company_depot().lat, "lng": company_depot().lng, "address": company_depot_address()},
         "stops": [_stop_to_dict(stop, jobs_by_id.get(stop.job_id)) for stop in plan.sequence.stops],
     }
 
@@ -702,10 +718,62 @@ def _run_to_dict(run) -> dict:
                 "summary": a.summary,
                 "reason": a.reason_summary,
                 "error": a.error,
+                # Per step, because a run can be part-model and part-standard-procedure.
+                "decider": a.decider,
+                "model_id": a.model_id,
+                "fallback_reason": a.fallback_reason,
                 "timestamp": a.timestamp.isoformat(),
             }
             for a in run.actions
         ],
+    }
+
+
+@app.get("/api/agent-runs/{run_id}")
+def get_agent_run(run_id: str) -> dict:
+    """One run by id -- what the inspector under a given message opens."""
+    run = JobsRepository().get_agent_run(run_id)
+    if run is None:
+        raise HTTPException(404, "Agent run not found")
+    return _run_to_dict(run)
+
+
+@app.get("/api/orders/{order_id}/conversation")
+def conversation(order_id: str) -> dict:
+    """The whole thread as persisted, with the exact run and offer behind each message.
+
+    This is what makes a refresh honest. The frontend previously held the conversation in React
+    state and pinned one `run` to every bubble, so reloading lost the thread and, worse, showed the
+    newest trace under every message. Here each message names its own run, resolved by id.
+    """
+    repo = JobsRepository()
+    order = repo.get_job(order_id)
+    if order is None:
+        raise HTTPException(404, "Order not found")
+
+    messages = repo.messages(order_id)
+    runs = repo.agent_runs_by_id([m.run_id for m in messages if m.run_id])
+    offers = {o.id: o for o in repo.offers_for_order(order_id)}
+
+    return {
+        "order_id": order_id,
+        "messages": [
+            {
+                "id": m.id,
+                "direction": m.direction.value,
+                "body": m.body,
+                "created_at": m.created_at.isoformat(),
+                # Null is a first-class case: a message written outside an agent run (a customer's
+                # own words, a coordinator note) has no trace, and must not borrow one.
+                "run_id": m.run_id,
+                "offer_id": m.offer_id,
+            }
+            for m in messages
+        ],
+        # Only the runs this thread actually references, so a client cannot accidentally render a
+        # run belonging to a different message.
+        "runs": {rid: _run_to_dict(run) for rid, run in runs.items()},
+        "offers": {oid: _offer_to_dict(o) for oid, o in offers.items()},
     }
 
 

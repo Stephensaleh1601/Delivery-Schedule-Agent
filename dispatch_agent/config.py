@@ -5,7 +5,7 @@ Not frozen: tests monkeypatch individual fields (e.g. db_path) to point at a tem
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import time as Time
 
 from dotenv import load_dotenv
@@ -31,6 +31,14 @@ try:
     truststore.inject_into_ssl()
 except ImportError:
     pass
+
+
+def _flag(env_var: str, default: bool) -> bool:
+    """A boolean from the environment, accepting the words people actually write in a .env."""
+    raw = os.getenv(env_var)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
 
 
 def _time(env_var: str, default: str) -> Time:
@@ -95,6 +103,27 @@ class Settings:
     # floor on how much room a later re-solve keeps.
     promise_min_slack_minutes: int = int(os.getenv("PROMISE_MIN_SLACK_MINUTES", "30"))
     default_job_duration_minutes: int = int(os.getenv("DEFAULT_JOB_DURATION_MINUTES", "60"))
+    # How much driving another day must save before we ask the customer to move. The policy this
+    # encodes: a time the customer asked for and we can serve is served. Counteroffering to save a
+    # minute is haggling, and a coordinator who does it is one nobody wants to deal with. Fifteen
+    # minutes is about a stop's worth of slack on this operation. Infeasibility, overtime and
+    # opening an otherwise-empty day justify a counteroffer regardless of this number --
+    # see planning/negotiation.should_counteroffer.
+    counteroffer_saving_minutes: int = int(os.getenv("COUNTEROFFER_SAVING_MINUTES", "15"))
+    # Where every route starts and ends. SUTD is the demo default; in production this is the
+    # company's warehouse, and the only thing that changes is these three values.
+    # default_factory, not a plain default: a dataclass evaluates field defaults once, when the
+    # class body runs at import. With `= os.getenv(...)` a later environment change -- a test, or
+    # anything that loads .env after this module -- would be read correctly by nothing.
+    depot_lat: float = field(default_factory=lambda: float(os.getenv("DEPOT_LAT", "1.34085")))
+    depot_lng: float = field(default_factory=lambda: float(os.getenv("DEPOT_LNG", "103.9624851")))
+    depot_address: str = field(
+        default_factory=lambda: os.getenv("DEPOT_ADDRESS", "8 Somapah Rd, Singapore 487372 (SUTD)")
+    )
+    # Closed routes only. See validate() below -- a false here fails at startup rather than being
+    # quietly ignored, because the solver has no open-route model and a flag that silently does
+    # nothing is worse than no flag.
+    return_to_depot: bool = field(default_factory=lambda: _flag("RETURN_TO_DEPOT", True))
     work_day_start: Time = _time("WORK_DAY_START", "09:00")
     # Hard end of the working day: the solver will not schedule past it, so a route that would
     # run late is infeasible rather than expensive.
@@ -117,3 +146,36 @@ class Settings:
 
 
 settings = Settings()
+
+
+class ConfigurationError(RuntimeError):
+    """A setting that cannot be honoured. Raised at startup, never swallowed."""
+
+
+def validate(s: "Settings" = None) -> None:
+    """Fail loudly on configuration the code cannot actually deliver.
+
+    Called from the application entry points (webapp, scripts), not at import time, so tests can
+    construct a deliberately invalid Settings and assert on the message.
+    """
+    s = s or settings
+
+    if not s.return_to_depot:
+        raise ConfigurationError(
+            "RETURN_TO_DEPOT=false is not supported. solver._solve builds a closed route: the "
+            "depot is node 0 and is both the start and the end of the single vehicle, and every "
+            "distance matrix, the return leg in DaySequence.round_trip_drive_minutes and the "
+            "completion time all assume the van comes home. An open route needs a different "
+            "OR-Tools model -- a dummy end node with zero cost to every stop -- which is a "
+            "deliberate change, not a flag. Set RETURN_TO_DEPOT=true, or make that change first."
+        )
+
+    # Singapore's actual bounding box, near enough: 1.15-1.48 N, 103.6-104.1 E. Deliberately tight
+    # at the top -- Sembawang is 1.46 and Johor Bahru is 1.49, and a depot across the causeway is
+    # exactly the mistake that would otherwise produce plausible-looking, entirely wrong routes.
+    if not (1.15 <= s.depot_lat <= 1.48 and 103.6 <= s.depot_lng <= 104.1):
+        raise ConfigurationError(
+            f"DEPOT_LAT/DEPOT_LNG ({s.depot_lat}, {s.depot_lng}) is outside Singapore. Every "
+            f"drive time is measured from here, so a depot in the wrong country silently makes "
+            f"every route and every promise wrong rather than failing."
+        )

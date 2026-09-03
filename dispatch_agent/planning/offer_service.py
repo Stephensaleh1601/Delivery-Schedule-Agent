@@ -17,6 +17,7 @@ from dispatch_agent.db import JobsRepository
 from dispatch_agent.geo.routing_client import RoutingClient
 from dispatch_agent.models import (
     AppointmentOffer,
+    AvailabilityOption,
     CandidateSlotEvaluation,
     CustomerMessage,
     JobRecord,
@@ -68,6 +69,7 @@ def create_offer(
     order: JobRecord,
     evaluations: list[CandidateSlotEvaluation],
     purpose: OfferPurpose = OfferPurpose.BOOKING,
+    run_id: str | None = None,
 ) -> AppointmentOffer:
     """Put the best feasible slots to a customer.
 
@@ -119,6 +121,8 @@ def create_offer(
 
     offer = AppointmentOffer(
         order_id=order.id,
+        # The authoritative link from what the customer was shown to the calls that chose it.
+        run_id=run_id,
         purpose=purpose,
         round_number=len(previous) + 1,
         status=OfferStatus.SENT,
@@ -189,8 +193,25 @@ def offer_message(offer: AppointmentOffer) -> str:
     return "\n".join(lines)
 
 
-def record_message(repo: JobsRepository, order_id: str, body: str, direction=MessageDirection.OUTBOUND) -> None:
-    repo.save_message(CustomerMessage(order_id=order_id, direction=direction, body=body))
+def record_message(
+    repo: JobsRepository,
+    order_id: str,
+    body: str,
+    direction=MessageDirection.OUTBOUND,
+    run_id: str | None = None,
+    offer_id: str | None = None,
+) -> CustomerMessage:
+    """Persist a message with its provenance attached.
+
+    `run_id` and `offer_id` are written here rather than reconstructed later. The alternative --
+    joining a message to "the newest run for this order" -- puts the wrong trace under a message
+    as soon as there are two runs, which after a page refresh is every time.
+    """
+    message = CustomerMessage(
+        order_id=order_id, direction=direction, body=body, run_id=run_id, offer_id=offer_id
+    )
+    repo.save_message(message)
+    return message
 
 
 def accept_offer(
@@ -198,6 +219,7 @@ def accept_offer(
     offer_id: str,
     slot_id: str,
     routing_client: RoutingClient | None = None,
+    run_id: str | None = None,
 ) -> AcceptanceOutcome:
     """Lock in a slot the customer chose, then republish that day's plan.
 
@@ -225,6 +247,21 @@ def accept_offer(
     job = repo.get_job(offer.order_id)
     if job is None:
         raise OfferError("that order no longer exists")
+
+    # A slot we suggested was never the customer's availability -- it was a question. Accepting it
+    # is the moment it becomes one, and this is the only place that conversion happens. Recording it
+    # here keeps the order's history honest: afterwards it shows a window the customer agreed to,
+    # not one we quietly added on their behalf while they were still deciding.
+    if not any(o.id == slot.availability_option_id for o in job.availability_options):
+        job.availability_options = [
+            *job.availability_options,
+            AvailabilityOption(
+                id=slot.availability_option_id,
+                date=slot.date,
+                window=slot.window,
+                preference_rank=len(job.availability_options) + 1,
+            ),
+        ]
 
     previous_date = job.delivery_date
     job.delivery_date = slot.date
@@ -300,7 +337,7 @@ def accept_offer(
         f"You're confirmed for {format_date(slot.date)}, between "
         f"{format_time(slot.window.start)} and {format_time(slot.window.end)}. See you then!"
     )
-    record_message(repo, job.id, confirmation)
+    record_message(repo, job.id, confirmation, run_id=run_id, offer_id=offer.id)
 
     return AcceptanceOutcome(
         offer=offer,

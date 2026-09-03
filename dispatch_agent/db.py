@@ -540,6 +540,26 @@ class JobsRepository:
             ).fetchall()
         return [AgentRunLog.model_validate_json(r[0]) for r in rows]
 
+    def get_agent_run(self, run_id: str) -> AgentRunLog | None:
+        """One run by id. The only correct way to fetch the trace behind a message -- "the newest
+        run" is what this replaces."""
+        with _connect() as conn:
+            row = conn.execute("SELECT data FROM agent_runs WHERE id = ?", (run_id,)).fetchone()
+        return AgentRunLog.model_validate_json(row[0]) if row else None
+
+    def agent_runs_by_id(self, run_ids: list[str]) -> dict[str, AgentRunLog]:
+        """Several runs in one query, so rendering a conversation is not N+1 requests."""
+        wanted = [r for r in dict.fromkeys(run_ids) if r]
+        if not wanted:
+            return {}
+        placeholders = ",".join("?" * len(wanted))
+        with _connect() as conn:
+            rows = conn.execute(
+                f"SELECT data FROM agent_runs WHERE id IN ({placeholders})", wanted
+            ).fetchall()
+        runs = [AgentRunLog.model_validate_json(r[0]) for r in rows]
+        return {run.id: run for run in runs}
+
     def agent_run_for_event(self, event_id: str) -> AgentRunLog | None:
         with _connect() as conn:
             row = conn.execute(

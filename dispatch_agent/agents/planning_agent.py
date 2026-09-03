@@ -14,7 +14,7 @@ from langgraph.graph import END, StateGraph
 
 from dispatch_agent.agents.prompts import DRAFT_MESSAGE_SYSTEM_PROMPT
 from dispatch_agent.geo.routing_client import RoutingClient
-from dispatch_agent.geo.zones import COMPANY_DEPOT
+from dispatch_agent.geo.zones import company_depot
 from dispatch_agent.llm import LLMClient, build_llm_client
 from dispatch_agent.models import DaySequence, JobRecord
 from dispatch_agent.solver import sequence_day
@@ -32,7 +32,7 @@ def _solve_node(routing_client: RoutingClient):
     def node(state: PlanningState) -> PlanningState:
         try:
             sequence = sequence_day(
-                state["jobs"], state["delivery_date"], depot=COMPANY_DEPOT, routing_client=routing_client
+                state["jobs"], state["delivery_date"], depot=company_depot(), routing_client=routing_client
             )
         except Exception as exc:  # noqa: BLE001 -- surfaced to the coordinator, not swallowed
             return {"error": str(exc), "sequence": None}

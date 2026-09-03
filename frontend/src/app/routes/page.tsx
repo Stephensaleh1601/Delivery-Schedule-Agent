@@ -196,7 +196,12 @@ export default function RoutesPage() {
                 className="h-[420px]"
               />
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-ink-muted">
-                <Legend colour="var(--color-accent)">Depot</Legend>
+                {/* Named, not just coloured. The depot is where every route starts and ends, and
+                    until now the address only existed in a Google Maps hover tooltip -- so a viewer
+                    could not tell what the orange pin was, or that the route is a round trip. */}
+                <Legend colour="var(--color-accent)">
+                  Demo depot: {depotName(plan.data?.depot?.address ?? boot.data?.map.depot.address)}
+                </Legend>
                 <Legend colour="var(--color-ink-soft)">Stop, in sequence</Legend>
                 {highlight && <Legend colour="var(--color-locked)">Just added</Legend>}
                 {(plan.data?.stops ?? []).some((s) => !s.precise_location) && (
@@ -490,6 +495,16 @@ function DayTab({
       </span>
     </button>
   );
+}
+
+/** "8 Somapah Rd, Singapore 487372 (SUTD)" -> "SUTD, 8 Somapah Road". The configured address is
+ *  the authoritative string; this only makes it read as a place rather than a postal record. */
+function depotName(address?: string): string {
+  if (!address) return "loading…";
+  const named = address.match(/\(([^)]+)\)\s*$/);
+  const street = address.replace(/\s*\([^)]*\)\s*$/, "").replace(/,\s*Singapore\s*\d{6}\s*$/i, "");
+  const expanded = street.replace(/Rd/, "Road").replace(/St/, "Street").replace(/Ave/, "Avenue");
+  return named ? `${named[1]}, ${expanded}` : expanded;
 }
 
 function Legend({ colour, children }: { colour: string; children: React.ReactNode }) {

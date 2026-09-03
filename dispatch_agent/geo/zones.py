@@ -6,17 +6,33 @@ definitions if the two systems draw zone boundaries differently.
 """
 from __future__ import annotations
 
+from dispatch_agent.config import settings
 from dispatch_agent.geo.postal_codes import DISTRICT_CENTROIDS
 from dispatch_agent.models import Coordinates
 
 # Generic island centroid -- used only as a map-default / fallback, not as the depot.
 SINGAPORE_CENTROID = Coordinates(lat=1.3521, lng=103.8198)
 
-# Company office / route start-end point: 8 Somapah Rd, Singapore 487372 (SUTD). Rooftop-precision
-# coordinates from the Google Geocoding API (2026-08-27), not the coarse district placeholder --
-# this is a single fixed real-world point, worth resolving exactly rather than to ~1-2km.
-COMPANY_DEPOT_ADDRESS = "8 Somapah Rd, Singapore 487372 (SUTD)"
-COMPANY_DEPOT = Coordinates(lat=1.34085, lng=103.9624851)
+def company_depot() -> Coordinates:
+    """Where every route starts and ends, read from settings on each call.
+
+    A function rather than a module constant because a Coordinates bound at import time would be
+    captured by every `depot: Coordinates = COMPANY_DEPOT` default argument in the codebase, and
+    those defaults are evaluated once -- so a DEPOT_LAT override, or a test monkeypatching
+    settings, would change the constant and change nothing that uses it. Reading here is the only
+    version that actually honours the environment.
+    """
+    return Coordinates(lat=settings.depot_lat, lng=settings.depot_lng)
+
+
+def company_depot_address() -> str:
+    return settings.depot_address
+
+
+# Kept for the handful of read-only call sites that only ever want the demo default (map centring,
+# the /api/config payload). New code should call company_depot(): this one is frozen at import.
+COMPANY_DEPOT_ADDRESS = settings.depot_address
+COMPANY_DEPOT = Coordinates(lat=settings.depot_lat, lng=settings.depot_lng)
 
 
 def zone_for_postal_code(postal_code: str) -> int:
