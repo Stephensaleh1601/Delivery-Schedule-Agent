@@ -86,8 +86,23 @@ def resolve_accepted_slot(offer: AppointmentOffer, said: language.Interpretation
         raise AmbiguousAcceptance("there is nothing on the table to accept")
 
     if len(offer.options) == 1:
-        # Only one thing was proposed, so "okay" is unambiguous whatever words they used.
-        return offer.options[0]
+        only = offer.options[0]
+        # ...unless they named a time that is not the time on offer. "11am okay?" against a
+        # 9am-11am window is a question about a DIFFERENT time -- 11 is when that slot ends -- and
+        # confirming it books a van for two hours before they asked. A single option makes "okay"
+        # unambiguous; it does not make every message an acceptance.
+        # The CUSTOMER's own words, not the model's `refers_to`. gpt-4o-mini answered "11am" for a
+        # message reading "ok that works" -- carried over from earlier in the thread -- and reading
+        # that as a time they had just named turned a plain acceptance into a counter-proposal.
+        # A guard against booking the wrong time must not itself invent one.
+        named = language.parse_time(said.note or "", assume_afternoon=True)
+        if named and not (only.window.start <= named < only.window.end):
+            raise AmbiguousAcceptance(
+                f"they said {named:%H:%M}, which is not inside the "
+                f"{only.window.start:%H:%M}-{only.window.end:%H:%M} we offered",
+                [f"{offer_service.format_date(only.date)}, {offer_service.format_window(only.window)}"],
+            )
+        return only
 
     if said.accepted_ordinal is not None:
         index = said.accepted_ordinal - 1
@@ -189,9 +204,19 @@ def open_offer(repo: JobsRepository, order_id: str) -> AppointmentOffer | None:
     return max(live, key=lambda o: o.round_number)
 
 
-def context_date(offer: AppointmentOffer | None) -> Date | None:
-    """The date under discussion, so "after 2 instead" attaches to the right day."""
-    return offer.options[0].date if offer and offer.options else None
+def context_date(offer: AppointmentOffer | None, order: JobRecord | None = None) -> Date | None:
+    """The date under discussion, so a bare time attaches to the right day.
+
+    The open offer first -- that is what "after 2 instead" is about. Failing that, the last date
+    the customer themselves named: they said "5th Sept", we asked a question, and their reply
+    "11am okay?" is obviously still about the 5th. Without this the time is dropped, the message
+    reads as unclear, and they are asked the same question again.
+    """
+    if offer and offer.options:
+        return offer.options[0].date
+    if order and order.availability_options:
+        return max(option.date for option in order.availability_options)
+    return None
 
 
 def record_inbound(

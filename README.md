@@ -339,7 +339,8 @@ python scripts/run_demo.py
 
 # 3. Interactive -- the web app. Needs jobs in the DB: run scripts/seed_test_clients.py, run
 #    step 2 above, or book one through the chat.
-uvicorn dispatch_agent.webapp.main:app --reload
+# Run Uvicorn through Python so this works even when the `uvicorn` executable is not on PATH.
+python -m uvicorn dispatch_agent.webapp.main:app --reload
 #   -> http://localhost:8000/       WhatsApp-style client chat (legacy, single-slot booking)
 #   -> http://localhost:8000/admin  back-office dashboard (legacy)
 #

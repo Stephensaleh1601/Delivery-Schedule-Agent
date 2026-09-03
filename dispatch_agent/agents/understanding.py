@@ -222,6 +222,15 @@ class MessageReader:
         if deterministic.intent == "general_support" and not deterministic.windows:
             intent = "general_support"
 
+        # ...and the same rule in the other direction, which matters more. A message the parser
+        # resolved to a real date IS about scheduling, whatever the model called it. "5th Sept what
+        # time avail" came back as `general_support`, and the customer -- asking about delivery
+        # times, which is the only thing this system does -- was told a colleague would call them
+        # back. Twice. A resolved date is a fact the regex established; a model calling it "not
+        # about timing" is simply wrong, and the reply is the worst one available.
+        if intent in ("general_support", "unclear") and deterministic.windows:
+            intent = deterministic.intent
+
         result = language.Interpretation(
             intent=intent,
             support_topic=deterministic.support_topic,

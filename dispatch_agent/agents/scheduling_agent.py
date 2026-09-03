@@ -200,6 +200,21 @@ class RuleDecisionAgent:
                         "message": "None of the windows this customer gave us can be served; needs a call.",
                     },
                 )
+            if _last_failed(state, "create_offer") and "send_message" not in done:
+                # Escalating is not an answer to the person waiting. Handing the order to a
+                # coordinator and saying nothing leaves them staring at a thread that stopped
+                # replying -- which is how the round cap looked in a live run.
+                return ActionDecision(
+                    action="send_message",
+                    reason_summary="Telling the customer a colleague will take it from here.",
+                    arguments={
+                        "order_id": event.order_id,
+                        "body": (
+                            "Sorry — I can't fit any more times in myself. One of our team will "
+                            "call you shortly to sort out a slot that works."
+                        ),
+                    },
+                )
             if "send_message" not in done and state.get("customer_message"):
                 return ActionDecision(action="send_message",
                                       reason_summary="Sending the options to the customer.",
@@ -254,6 +269,20 @@ class RuleDecisionAgent:
                         "order_id": event.order_id,
                         "kind": "no_remaining_slot",
                         "message": "Customer declined every slot we could offer; needs a call to agree a new time.",
+                    },
+                )
+            if _last_failed(state, "create_offer") and "send_message" not in done:
+                # The same silence as the new-order branch: escalating without telling them leaves
+                # the customer watching a thread that simply stopped answering.
+                return ActionDecision(
+                    action="send_message",
+                    reason_summary="Telling the customer a colleague will take it from here.",
+                    arguments={
+                        "order_id": event.order_id,
+                        "body": (
+                            "Sorry — I can't fit any more times in myself. One of our team will "
+                            "call you shortly to sort out a slot that works."
+                        ),
                     },
                 )
             # Actually send it. Until the conversation was read back from the database this branch

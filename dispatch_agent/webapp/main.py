@@ -2,7 +2,7 @@
 (static/client.html) and a back-office dispatch dashboard (static/admin.html), talking to the
 JSON API below over plain fetch() -- no build step, no frontend framework.
 
-Run with: uvicorn dispatch_agent.webapp.main:app --reload
+Run with: python -m uvicorn dispatch_agent.webapp.main:app --reload
 """
 from __future__ import annotations
 

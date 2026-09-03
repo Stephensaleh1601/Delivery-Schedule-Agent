@@ -84,7 +84,7 @@ def receive_message(order_id: str, payload: InboundMessage) -> dict:
     understanding = reader.read(
         body,
         has_open_offer=live_offer is not None,
-        context_date=conversation.context_date(live_offer),
+        context_date=conversation.context_date(live_offer, order),
         offered=_slot_labels(live_offer),
         already_stated=_stated_labels(order),
     )
@@ -134,8 +134,33 @@ def _event_for(order_id: str, said, live_offer, order):
     if said.intent == "accept" and live_offer is not None:
         try:
             slot = conversation.resolve_accepted_slot(live_offer, said)
-        except conversation.AmbiguousAcceptance:
-            return None
+        except conversation.AmbiguousAcceptance as unclear:
+            # They agreed to something we cannot identify. Two honest readings, and silence is
+            # neither: if they named a usable time, treat it as a new suggestion of theirs and
+            # re-solve; otherwise ask which of the offered times they meant.
+            counter = _counter_proposal(said, live_offer)  # only from their own words
+            if counter:
+                return PlanningEvent(
+                    event_type=PlanningEventType.NEW_ORDER,
+                    order_id=order_id,
+                    payload={
+                        "intent": "provide_availability",
+                        "stated_windows": counter,
+                        "is_fixed": conversation.is_only_option(order),
+                    },
+                )
+            return PlanningEvent(
+                event_type=PlanningEventType.MANUAL_RETRY,
+                order_id=order_id,
+                payload={
+                    "intent": "unclear",
+                    "question": (
+                        "Just to be sure — did you mean "
+                        + " or ".join(unclear.options or _slot_labels(live_offer))
+                        + "?"
+                    ),
+                },
+            )
         return PlanningEvent(
             event_type=PlanningEventType.CUSTOMER_ACCEPTED_OFFER,
             order_id=order_id,
@@ -211,6 +236,37 @@ def _support_question(said) -> str:
     if said.support_topic == "cancel":
         return "I'll pass that to a colleague, who will call you to sort it out."
     return "I can help with the delivery timing. For anything else a colleague will call you back."
+
+
+def _counter_proposal(said, live_offer) -> list[dict] | None:
+    """A time they named that is not one we offered, as availability on the day under discussion.
+
+    "11am okay?" against a 9-11 slot is the customer proposing 11, not accepting 9. Read that way
+    the day is re-solved around what they actually asked for, which is a far better answer than
+    asking them to repeat themselves.
+    """
+    from dispatch_agent.planning import language
+
+    if not live_offer or not live_offer.options:
+        return None
+    phrase = said.accepted_phrase or said.note or ""
+    named = language.parse_time(phrase, assume_afternoon=True)
+    if not named:
+        return None
+
+    day = live_offer.options[0].date
+    window = language.clamp_to_working_day(
+        language.TimeWindow(start=named, end=__import__("datetime").time(23, 59))
+    )
+    if window is None:
+        return None
+    return [{
+        "date": day.isoformat(),
+        "start": window.start.strftime("%H:%M"),
+        "end": window.end.strftime("%H:%M"),
+        "phrase": phrase,
+        "preference_rank": 1,
+    }]
 
 
 def _windows_payload(said) -> list[dict]:

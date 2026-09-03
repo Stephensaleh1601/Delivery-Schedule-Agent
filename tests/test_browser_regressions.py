@@ -803,3 +803,168 @@ def test_a_compared_only_alternative_is_not_labelled_as_offered(client, temp_db)
             f"{candidate['label']} marked offered={candidate['offered']} but the live offer holds "
             f"{sorted(on_offer)}"
         )
+
+
+# -- a scheduling question must never be answered as "support" -------------------
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "5th Sept what time avail",
+        "what time is available on Saturday?",
+        "5 Sept",
+        "Saturday please",
+    ],
+)
+def test_a_message_with_a_real_date_is_scheduling_whatever_the_model_calls_it(message):
+    """gpt-4o-mini filed "5th Sept what time avail" as `general_support`, so a customer asking
+    about delivery times -- the only thing this system does -- was told a colleague would call them
+    back. Twice, because the same reply came again.
+
+    A date the parser resolved is a fact it established. A model calling that "not about timing" is
+    simply wrong, and the resulting reply is the worst one available.
+    """
+    from dispatch_agent.agents.understanding import MessageReader
+    from tests.conftest import FakeLLM
+
+    misreading = FakeLLM(structured_response={"intent": "general_support"})
+
+    understood = MessageReader(llm=misreading).read(message, has_open_offer=False)
+
+    assert understood.interpretation.intent == "provide_availability", message
+    assert understood.interpretation.windows, message
+
+
+def test_a_genuine_support_question_is_still_support():
+    """The override must not swallow the case it was built around: no date, no windows."""
+    from dispatch_agent.agents.understanding import MessageReader
+    from tests.conftest import FakeLLM
+
+    understood = MessageReader(
+        llm=FakeLLM(structured_response={"intent": "general_support"})
+    ).read("Can I change my delivery address?", has_open_offer=True)
+
+    assert understood.interpretation.intent == "general_support"
+
+
+def test_asking_what_is_available_on_a_date_produces_an_offer(client):
+    """End to end: the exact message from the browser session."""
+    order_id = _order(client)
+
+    turn = _say(client, order_id, "5th Sept what time avail")
+
+    assert turn["intent"] == "provide_availability"
+    assert turn["open_offer_id"], "a question about a specific day must produce times"
+    reply = _outbound(turn)[-1]["body"]
+    assert "colleague will call you back" not in reply, reply
+
+
+def test_a_bare_time_attaches_to_the_day_they_just_named(client):
+    """"11am okay?" right after "5th Sept" is obviously still about the 5th. Without the
+    conversation's own date the time was dropped, the message read as unclear, and they were asked
+    the same question again."""
+    order_id = _order(client)
+    _say(client, order_id, "5th Sept what time avail")
+
+    turn = _say(client, order_id, "11am okay?")
+
+    assert turn["intent"] in ("provide_availability", "accept"), turn["intent"]
+    reply = _outbound(turn)[-1]["body"]
+    assert "colleague will call you back" not in reply, reply
+
+
+def test_the_agent_never_repeats_the_same_reply_twice_running(client):
+    """The visible symptom: two identical "a colleague will call you back" bubbles in a row."""
+    order_id = _order(client)
+    _say(client, order_id, "5th Sept what time avail")
+    turn = _say(client, order_id, "yea what time is available 11am okay?")
+
+    replies = [m["body"] for m in _outbound(turn)]
+    assert len(replies) == len(set(replies)) or replies[-1] != replies[-2], replies
+
+
+def test_a_time_outside_the_offered_window_is_not_an_acceptance(client):
+    """"11am okay?" against a 9am-11am offer is a question about a DIFFERENT time -- 11 is when
+    that slot ends. Confirming it books a van two hours before they asked for one.
+
+    A single option makes a bare "okay" unambiguous. It does not make every message an acceptance.
+    """
+    order_id = _order(client)
+    opened = _say(client, order_id, "I'm free Saturday morning.")
+    offered = opened["offers"][opened["open_offer_id"]]["options"][0]
+    if offered["window"]["end"] != "11:00":
+        pytest.skip("this assertion needs the 9-11 window to be the one offered")
+
+    turn = _say(client, order_id, "yea 11am okay?")
+
+    assert turn["confirmed"] is False, "booked a time the customer did not ask for"
+
+
+def test_an_ambiguous_acceptance_always_gets_a_reply(client):
+    """It used to get silence: the endpoint returned the thread unchanged with no agent message,
+    so the customer's screen simply stopped responding."""
+    order_id = _order(client)
+    before = _say(client, order_id, "Saturday morning or Tuesday morning both work.")
+
+    turn = _say(client, order_id, "okay")
+
+    assert len(_outbound(turn)) > len(_outbound(before)), "the agent said nothing at all"
+    assert turn["confirmed"] is False
+
+
+def test_a_named_time_becomes_a_counter_proposal_rather_than_a_question(client):
+    """Better than asking them to repeat themselves: read the time they named as their own
+    suggestion and re-solve the day around it."""
+    order_id = _order(client)
+    opened = _say(client, order_id, "I'm free Saturday, any time.")
+    first = opened["offers"][opened["open_offer_id"]]["options"][0]
+
+    turn = _say(client, order_id, "how about 2pm?")
+
+    reply = _outbound(turn)[-1]["body"]
+    assert "colleague will call you back" not in reply
+    if turn["open_offer_id"]:
+        now = turn["offers"][turn["open_offer_id"]]["options"][0]
+        assert (now["date"], now["window"]["start"]) != (first["date"], first["window"]["start"]) \
+            or turn["intent"] == "provide_availability"
+
+
+def test_a_plain_acceptance_is_not_turned_into_a_counter_proposal(client):
+    """gpt-4o-mini answered `refers_to: "11am"` for a message reading "ok that works" -- carried
+    over from earlier in the thread. Reading that as a time the customer had just named turned a
+    plain acceptance into a counter-proposal, which then hit the round cap and replied with
+    silence.
+
+    A guard against booking the wrong time must not itself invent one, so it reads their words.
+    """
+    from dispatch_agent.planning import conversation, language
+    from dispatch_agent.models import AppointmentOffer, OfferedSlot
+
+    offer = AppointmentOffer(order_id="x", options=[
+        OfferedSlot(availability_option_id="a", date=SATURDAY,
+                    window=TimeWindow(start=time(11, 30), end=time(13, 30)))])
+    said = language.interpret("ok that works", has_open_offer=True)
+    said.accepted_phrase = "11am"  # what the model volunteered, not what they wrote
+
+    chosen = conversation.resolve_accepted_slot(offer, said)
+
+    assert chosen.window.start == time(11, 30)
+
+
+def test_the_customer_is_never_met_with_silence(client):
+    """Every message gets a reply. Escalating is not an answer to the person waiting -- handing
+    the order to a coordinator and saying nothing leaves them staring at a thread that stopped."""
+    order_id = _order(client)
+    seen = 0
+    for message in [
+        "5th Sept what time avail",
+        "yea what time is available 11am okay?",
+        "hmm what about later",
+        "no that's no good either",
+        "ok fine",
+    ]:
+        turn = _say(client, order_id, message)
+        replies = _outbound(turn)
+        assert len(replies) > seen, f"no reply to {message!r}"
+        seen = len(replies)

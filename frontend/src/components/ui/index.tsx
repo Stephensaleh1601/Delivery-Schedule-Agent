@@ -282,7 +282,7 @@ export function ErrorPanel({ error, onRetry }: { error: unknown; onRetry?: () =>
         <p className="max-w-[62ch] text-[13px] text-ink-soft">{message}</p>
         {unreachable && (
           <p className="mt-1 font-mono text-[11.5px] text-ink-muted">
-            uvicorn dispatch_agent.webapp.main:app --reload
+            python -m uvicorn dispatch_agent.webapp.main:app --reload
           </p>
         )}
       </div>
