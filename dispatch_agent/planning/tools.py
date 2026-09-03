@@ -319,7 +319,15 @@ def create_offer(args: OrderArgs, ctx: ToolContext) -> ToolResult:
                 offerable.append(suggestion.evaluation)
 
     try:
-        offer = offer_service.create_offer(ctx.repo, order, offerable, run_id=ctx.run_id)
+        offer = offer_service.create_offer(
+            ctx.repo,
+            order,
+            offerable,
+            run_id=ctx.run_id,
+            # A concrete new time from the customer can be checked even after the automatic
+            # two-round cap. The cap limits our suggestions, not their ability to counter-propose.
+            customer_initiated=bool(ctx.scratch.get("stated_windows")),
+        )
     except offer_service.OfferError as exc:
         return ToolResult(ok=False, tool="create_offer", error=exc.kind, summary=str(exc))
 

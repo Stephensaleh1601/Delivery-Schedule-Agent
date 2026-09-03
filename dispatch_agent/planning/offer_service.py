@@ -70,6 +70,7 @@ def create_offer(
     evaluations: list[CandidateSlotEvaluation],
     purpose: OfferPurpose = OfferPurpose.BOOKING,
     run_id: str | None = None,
+    customer_initiated: bool = False,
 ) -> AppointmentOffer:
     """Put the best feasible slots to a customer.
 
@@ -81,12 +82,6 @@ def create_offer(
     # round of negotiating their original booking, and must not consume one.
     previous = [o for o in repo.offers_for_order(order.id) if o.purpose is purpose]
     cap = MAX_OFFER_ROUNDS if purpose is OfferPurpose.BOOKING else MAX_RECOVERY_OFFERS
-    if len(previous) >= cap:
-        raise OfferError(
-            f"already made {len(previous)} offer rounds for this order -- escalating rather than "
-            f"asking the customer again",
-            kind="round_cap_reached",
-        )
 
     # Keyed on the window, not the option. Declining 10-12 on Friday does not decline Friday, so
     # the same availability option may legitimately be offered again with a different window
@@ -109,6 +104,22 @@ def create_offer(
         if (e.availability_option_id, e.promise_window.start, e.promise_window.end)
         not in already_offered
     ]
+
+    # The cap prevents the AGENT from pestering someone with endless alternatives. It must not
+    # prevent the CUSTOMER from proposing a concrete new time after those rounds. Only a genuinely
+    # new window tied to their recorded availability earns another offer; rerunning the old solve
+    # or generating another agent suggestion still stops at the cap.
+    current_option_ids = {option.id for option in order.availability_options}
+    fresh_customer_choice = customer_initiated and any(
+        e.availability_option_id in current_option_ids
+        for e in feasible
+    )
+    if len(previous) >= cap and not fresh_customer_choice:
+        raise OfferError(
+            f"already made {len(previous)} offer rounds for this order -- escalating rather than "
+            f"asking the customer again",
+            kind="round_cap_reached",
+        )
     if not feasible:
         # The windows are fine; we have simply already put all of them to this customer. Saying
         # they "cannot be fitted" here would be false, and it used to raise a coordinator

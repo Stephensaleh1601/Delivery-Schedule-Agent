@@ -405,9 +405,41 @@ def test_a_candidate_is_labelled_customer_friendly_or_lowest_route_impact(client
     turn = _say(client, order_id, "Saturday morning works.")
 
     for candidate in turn["decision"]["candidates"]:
-        assert candidate["badge"] in ("Customer-friendly", "Lowest route impact"), candidate
+        assert candidate["badge"] in (
+            "Customer-friendly", "Lowest route impact", "Route alternative", "Avoids overtime"
+        ), candidate
         assert candidate["explanation"], candidate
         assert candidate["kind"] in ("customer", "route")
+
+
+def test_only_the_actual_lower_driving_option_claims_lower_route_impact():
+    """Regression for the judge-facing contradiction: +17 minutes / +6.6 km must never say it
+    adds less driving than +12 minutes / +1.4 km."""
+    from dispatch_agent.planning import decision_record
+
+    sunday = decision_record.Candidate(
+        label="Sunday 12pm–2pm",
+        kind="customer",
+        added_drive_minutes=12,
+        added_distance_km=1.4,
+        overtime_minutes=11,
+    )
+    tuesday = decision_record.Candidate(
+        label="Tuesday 12pm–2pm",
+        kind="route",
+        added_drive_minutes=17,
+        added_distance_km=6.6,
+        overtime_minutes=0,
+    )
+
+    decision_record._label([sunday, tuesday])
+
+    assert sunday.badge == "Lowest route impact"
+    assert "5 minutes less driving" in sunday.explanation
+    assert tuesday.badge == "Avoids overtime"
+    assert "5 minutes more driving" in tuesday.explanation
+    assert "5.2 km more" in tuesday.explanation
+    assert "adds less driving" not in tuesday.explanation.lower()
 
 
 def test_the_recommendation_matches_the_cheaper_candidate(client, temp_db):

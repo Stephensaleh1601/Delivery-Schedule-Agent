@@ -226,6 +226,24 @@ def test_the_customer_is_not_asked_a_third_time(client):
     assert max(rounds) <= 2, f"offered a third round: {rounds}"
 
 
+def test_customer_can_propose_a_concrete_time_after_automatic_round_cap(client):
+    """The cap limits agent-generated alternatives, not a customer's ability to say exactly when
+    they can receive a large delivery."""
+    order_id = _new_order(client)
+    _say(client, order_id, "I'm free Sunday after 2pm.")
+    _say(client, order_id, "That doesn't work, any other time?")
+    capped = _say(client, order_id, "No, that doesn't work either.")
+    assert "tell me" in _outbound(capped)[-1]["body"].lower()
+
+    turn = _say(client, order_id, "How about 5th Sept 10am?")
+
+    assert turn["intent"] == "provide_availability"
+    assert turn["open_offer_id"], turn["run"]
+    reply = _outbound(turn)[-1]["body"].lower()
+    assert "can't fit any more times" not in reply
+    assert "team will call" not in reply
+
+
 # -- explaining -----------------------------------------------------------------
 
 

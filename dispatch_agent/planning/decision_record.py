@@ -363,23 +363,58 @@ def _label(candidates: list[Candidate]) -> None:
     if not candidates:
         return
 
-    cheapest = min(candidates, key=lambda c: c.added_drive_minutes or 0)
+    def impact_key(candidate: Candidate) -> tuple[float, float]:
+        drive = (
+            float(candidate.added_drive_minutes)
+            if candidate.added_drive_minutes is not None
+            else float("inf")
+        )
+        distance = (
+            float(candidate.added_distance_km)
+            if candidate.added_distance_km is not None
+            else float("inf")
+        )
+        return drive, distance
+
+    lowest = min(candidates, key=impact_key)
     for candidate in candidates:
         if candidate.kind == "customer":
             candidate.badge = "Customer-friendly"
             candidate.explanation = "This is what the customer asked for."
         else:
-            candidate.badge = "Lowest route impact"
-            candidate.explanation = "This option adds less driving."
+            candidate.badge = "Route alternative"
+            candidate.explanation = "This option also fits the existing routes."
 
     if len(candidates) == 2:
-        other = next(c for c in candidates if c is not cheapest)
-        saving = (other.added_drive_minutes or 0) - (cheapest.added_drive_minutes or 0)
-        if saving >= 5:
-            cheapest.badge = "Lowest route impact"
-            cheapest.explanation = (
-                f"Fits an existing route — about {minutes_phrase(saving)} less driving than "
-                f"{other.label}."
+        other = next(c for c in candidates if c is not lowest)
+        drive_saving = (other.added_drive_minutes or 0) - (lowest.added_drive_minutes or 0)
+        distance_saving = (other.added_distance_km or 0) - (lowest.added_distance_km or 0)
+
+        lowest.badge = "Lowest route impact"
+        if drive_saving > 0:
+            lowest.explanation = (
+                f"Adds {minutes_phrase(drive_saving)} less driving than {other.label}."
+            )
+        elif distance_saving > 0:
+            lowest.explanation = (
+                f"Ties on driving time and adds {distance_saving:.1f} km less than {other.label}."
+            )
+        else:
+            lowest.explanation = "Tied for the lowest driving impact."
+
+        # A route can trade a little more driving for avoiding overtime. Name that trade-off
+        # instead of falsely calling both cards "lowest" or saying the slower option adds less.
+        if other.overtime_minutes == 0 and (lowest.overtime_minutes or 0) > 0:
+            other.badge = "Avoids overtime"
+            tradeoff = f"Avoids {minutes_phrase(lowest.overtime_minutes or 0)} of overtime"
+            if drive_saving > 0:
+                tradeoff += f", but adds {minutes_phrase(drive_saving)} more driving"
+            if distance_saving > 0:
+                tradeoff += f" and {distance_saving:.1f} km more"
+            other.explanation = tradeoff + f" than {lowest.label}."
+        elif other.kind == "route" and drive_saving > 0:
+            other.explanation = (
+                f"Adds {minutes_phrase(drive_saving)} more driving than {lowest.label}."
             )
 
 
@@ -404,19 +439,43 @@ def _decide(record: DecisionRecord, run: AgentRunLog, intent: str) -> None:
         route = next((c for c in record.candidates if c.kind == "route"), None)
         customer = next((c for c in record.candidates if c.kind == "customer"), None)
         if route and customer and route.offered:
-            record.decision = (
-                f"Offer both. Recommend {route.label} for the lowest route impact, keeping "
-                f"{customer.label} as the customer-friendly option."
+            lowest = min(
+                record.candidates,
+                key=lambda c: (
+                    c.added_drive_minutes if c.added_drive_minutes is not None else float("inf"),
+                    c.added_distance_km if c.added_distance_km is not None else float("inf"),
+                ),
             )
+            other = next(c for c in record.candidates if c is not lowest)
+            if (lowest.overtime_minutes or 0) > (other.overtime_minutes or 0):
+                record.decision = (
+                    f"Offer both. {lowest.label} adds the least driving; {other.label} avoids "
+                    f"{minutes_phrase((lowest.overtime_minutes or 0) - (other.overtime_minutes or 0))} "
+                    "of overtime."
+                )
+            else:
+                record.decision = (
+                    f"Offer both. Recommend {lowest.label} for the lowest route impact; "
+                    f"{other.label} remains available."
+                )
         elif route and customer:
             # We looked, and the alternative was not enough better to be worth asking about. The
             # customer asked for a time we can serve, so we serve it.
             reason = (offered.data or {}).get("counteroffer_reason", "")
-            record.decision = (
-                f"Offer {customer.label}. {route.label} was checked and is not enough better to "
-                f"be worth asking them to move"
-                + (f" ({reason.replace('_', ' ')})." if reason and reason != "honour_request" else ".")
+            drive_difference = (route.added_drive_minutes or 0) - (
+                customer.added_drive_minutes or 0
             )
+            if drive_difference >= 0:
+                record.decision = (
+                    f"Offer {customer.label}. {route.label} was checked, but it adds "
+                    f"{minutes_phrase(drive_difference)} more driving."
+                )
+            else:
+                record.decision = (
+                    f"Offer {customer.label}. {route.label} was checked and is not enough better to "
+                    f"be worth asking them to move"
+                    + (f" ({reason.replace('_', ' ')})." if reason and reason != "honour_request" else ".")
+                )
     elif record.candidates:
         only = record.candidates[0]
         record.decision = f"Offer {only.label} — {only.explanation[0].lower()}{only.explanation[1:]}"

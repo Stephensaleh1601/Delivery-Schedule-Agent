@@ -201,7 +201,14 @@ _BETWEEN = re.compile(
     r"(?P<b>\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)?)",
     re.I,
 )
-_AT = re.compile(r"\b(?:at|around|about)\s+(?P<t>\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)?)", re.I)
+_AT = re.compile(
+    r"\b(?:at|around|about)\s+"
+    r"(?P<t>\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)?)\b",
+    re.I,
+)
+_BARE_MERIDIEM_TIME = re.compile(
+    r"\b(?P<t>\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.))\b", re.I
+)
 
 
 def parse_window(text: str) -> TimeWindow | None:
@@ -251,6 +258,17 @@ def parse_window(text: str) -> TimeWindow | None:
         if moment:
             # A point in time is not a window. Read it as the two hours around it, which is the
             # width we would promise anyway, then let the solver narrow it.
+            start = max(settings.work_day_start, moment)
+            end = min(settings.work_day_end, Time(min(23, start.hour + 2), start.minute))
+            if start < end:
+                return TimeWindow(start=start, end=end)
+
+    # A date followed directly by a clock time is ordinary chat: "5th Sept 10am". Require the
+    # am/pm marker here so the date's "5th" is never mistaken for 5am.
+    bare_time = _BARE_MERIDIEM_TIME.search(lowered)
+    if bare_time:
+        moment = parse_time(bare_time.group("t"), assume_afternoon=True)
+        if moment:
             start = max(settings.work_day_start, moment)
             end = min(settings.work_day_end, Time(min(23, start.hour + 2), start.minute))
             if start < end:

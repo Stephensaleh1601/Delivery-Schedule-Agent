@@ -127,6 +127,11 @@ def _last_failed(state, tool_name: str) -> bool:
     return bool(attempts) and not attempts[-1].ok
 
 
+def _last_error(state, tool_name: str) -> str | None:
+    attempts = [a for a in state.get("actions", []) if a.tool == tool_name]
+    return attempts[-1].error if attempts else None
+
+
 class RuleDecisionAgent:
     """A deterministic policy over the same state the model sees.
 
@@ -204,14 +209,23 @@ class RuleDecisionAgent:
                 # Escalating is not an answer to the person waiting. Handing the order to a
                 # coordinator and saying nothing leaves them staring at a thread that stopped
                 # replying -- which is how the round cap looked in a live run.
+                round_cap = _last_error(state, "create_offer") == "round_cap_reached"
                 return ActionDecision(
                     action="send_message",
-                    reason_summary="Telling the customer a colleague will take it from here.",
+                    reason_summary=(
+                        "Asking for a concrete counter-proposal after the automatic options."
+                        if round_cap
+                        else "Telling the customer a colleague will take it from here."
+                    ),
                     arguments={
                         "order_id": event.order_id,
                         "body": (
-                            "Sorry — I can't fit any more times in myself. One of our team will "
-                            "call you shortly to sort out a slot that works."
+                            "I've shown the best automatic options I found. If you have another "
+                            "day or time in mind, tell me and I'll check that exact time; otherwise "
+                            "one of our team can help."
+                            if round_cap
+                            else "Sorry — I can't fit those times in. One of our team will call "
+                                 "you shortly to sort out a slot that works."
                         ),
                     },
                 )
@@ -262,26 +276,44 @@ class RuleDecisionAgent:
             if _last_failed(state, "create_offer") and "create_exception" not in done:
                 # Nothing left we can offer -- every window the customer gave us has now been
                 # tried. Ending here would silently abandon the order, so hand it to a human.
+                round_cap = _last_error(state, "create_offer") == "round_cap_reached"
                 return ActionDecision(
                     action="create_exception",
-                    reason_summary="No remaining window works; asking a coordinator to call the customer.",
+                    reason_summary=(
+                        "Automatic offer limit reached; keeping a coordinator available."
+                        if round_cap
+                        else "No remaining window works; asking a coordinator to call the customer."
+                    ),
                     arguments={
                         "order_id": event.order_id,
-                        "kind": "no_remaining_slot",
-                        "message": "Customer declined every slot we could offer; needs a call to agree a new time.",
+                        "kind": "offer_round_cap" if round_cap else "no_remaining_slot",
+                        "message": (
+                            "Automatic options exhausted; customer may still give a concrete time."
+                            if round_cap
+                            else "Customer declined every slot we could offer; needs a call to agree a new time."
+                        ),
                     },
                 )
             if _last_failed(state, "create_offer") and "send_message" not in done:
                 # The same silence as the new-order branch: escalating without telling them leaves
                 # the customer watching a thread that simply stopped answering.
+                round_cap = _last_error(state, "create_offer") == "round_cap_reached"
                 return ActionDecision(
                     action="send_message",
-                    reason_summary="Telling the customer a colleague will take it from here.",
+                    reason_summary=(
+                        "Asking for a concrete counter-proposal after the automatic options."
+                        if round_cap
+                        else "Telling the customer a colleague will take it from here."
+                    ),
                     arguments={
                         "order_id": event.order_id,
                         "body": (
-                            "Sorry — I can't fit any more times in myself. One of our team will "
-                            "call you shortly to sort out a slot that works."
+                            "I've shown the best automatic options I found. If you have another "
+                            "day or time in mind, tell me and I'll check that exact time; otherwise "
+                            "one of our team can help."
+                            if round_cap
+                            else "Sorry — I can't fit those times in. One of our team will call "
+                                 "you shortly to sort out a slot that works."
                         ),
                     },
                 )

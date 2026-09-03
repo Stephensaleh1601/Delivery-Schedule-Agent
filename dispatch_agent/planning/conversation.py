@@ -247,13 +247,27 @@ def merge_availability(
     existing = {o.date: o for o in order.availability_options}
     for said in stated:
         previous = existing.get(said.date)
+        # A new explicit proposal supersedes a previous rejection where they overlap. If someone
+        # first declines 9-11 and later says "how about 10am?", keeping the old exclusion makes
+        # the system claim their new proposal is impossible. Exclusions outside the newly stated
+        # window remain, because the customer has not revisited those.
+        remaining_exclusions = []
+        if previous:
+            remaining_exclusions = [
+                excluded
+                for excluded in previous.excluded_windows
+                if not (
+                    excluded.start < said.window.end
+                    and said.window.start < excluded.end
+                )
+            ]
         existing[said.date] = AvailabilityOption(
             # Keep the id where the date is unchanged, so any offer already referring to it, and
             # any exclusions recorded against it, still point at something real.
             id=previous.id if previous else AvailabilityOption(date=said.date, window=said.window).id,
             date=said.date,
             window=said.window,
-            excluded_windows=previous.excluded_windows if previous else [],
+            excluded_windows=remaining_exclusions,
             preference_rank=said.preference_rank,
         )
 
