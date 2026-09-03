@@ -139,6 +139,11 @@ _DAY_MONTH = re.compile(
     r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b",
     re.IGNORECASE,
 )
+_MONTH_DAY = re.compile(
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+"
+    r"(\d{1,2})(?:st|nd|rd|th)?\b",
+    re.IGNORECASE,
+)
 _MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 
 
@@ -159,9 +164,15 @@ def parse_date(text: str, base: Date | None = None) -> Date | None:
         return base
 
     day_month = _DAY_MONTH.search(lowered)
-    if day_month:
-        day = int(day_month.group(1))
-        month = _MONTHS.index(day_month.group(2).lower()[:3]) + 1
+    month_day = _MONTH_DAY.search(lowered)
+    if day_month or month_day:
+        if day_month:
+            day = int(day_month.group(1))
+            month_name = day_month.group(2)
+        else:
+            day = int(month_day.group(2))
+            month_name = month_day.group(1)
+        month = _MONTHS.index(month_name.lower()[:3]) + 1
         year = base.year
         # A day/month already behind us means next year -- "3 January" said in December.
         if (month, day) < (base.month, base.day):

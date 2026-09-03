@@ -812,6 +812,7 @@ def test_a_compared_only_alternative_is_not_labelled_as_offered(client, temp_db)
     "message",
     [
         "5th Sept what time avail",
+        "Sept 5th, what timing is available",
         "what time is available on Saturday?",
         "5 Sept",
         "Saturday please",
