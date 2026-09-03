@@ -33,6 +33,10 @@ before.
 - `accept` -- they are agreeing to a time we already proposed.
 - `reject` -- they are turning down a time we proposed, with or without suggesting another.
 - `explain` -- they are asking why a time was chosen, or why another is not possible.
+- `general_support` -- they are asking about something that is not the timing at all: changing the \
+delivery ADDRESS, cancelling, what it costs, or wanting to speak to a person. These messages often \
+contain scheduling-looking words ("change", "can I", a question mark) and are still not about when \
+we deliver.
 - `unclear` -- anything else, including messages you are not confident about. Choosing this is \
 always better than guessing: a wrong date costs the customer a delivery day.
 
@@ -211,8 +215,16 @@ class MessageReader:
         if intent in ("accept", "reject", "explain") and not has_open_offer:
             intent = deterministic.intent if deterministic.intent == "provide_availability" else "unclear"
 
+        # A support topic the deterministic reader recognises wins, for the same reason `is_fixed`
+        # does: it is a narrow lexical question. A live run had gpt-4o-mini file "Can I change my
+        # delivery address?" as `unclear`, which was then answered with "which of those times would
+        # you like?" -- the original misreading, arriving by a different route.
+        if deterministic.intent == "general_support" and not deterministic.windows:
+            intent = "general_support"
+
         result = language.Interpretation(
             intent=intent,
+            support_topic=deterministic.support_topic,
             # NOT the model's answer. A live smoke test had gpt-4o-mini mark "I'm free Saturday
             # morning" as fixed -- a plain statement of availability, not a declaration that
             # nothing else is possible. Getting this wrong silently switches off counteroffers, so

@@ -524,3 +524,24 @@ def test_minute_is_singular_when_there_is_one_of_them():
     assert minutes_phrase(2) == "2 minutes"
     assert minutes_phrase(60) == "1 hour"
     assert minutes_phrase(226) == "3h 46m"
+
+
+def test_a_support_topic_survives_the_model_calling_it_unclear(temp_db):
+    """A live run had gpt-4o-mini file "Can I change my delivery address?" as `unclear`, and the
+    clarification branch then answered it with "which of those times would you like?" -- the
+    original misreading, arriving by a different route.
+
+    Whether a message is about an address is a narrow lexical question. The regex answers it
+    reliably, so it overrides the model, exactly as `is_fixed` does.
+    """
+    from dispatch_agent.agents.understanding import MessageReader
+    from tests.conftest import FakeLLM
+
+    confused = FakeLLM(structured_response={"intent": "unclear"})
+
+    understood = MessageReader(llm=confused).read(
+        "Can I change my delivery address?", has_open_offer=True
+    )
+
+    assert understood.interpretation.intent == "general_support"
+    assert understood.interpretation.support_topic == "address"
