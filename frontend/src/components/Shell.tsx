@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
-import { AgentDrawer } from "@/components/AgentDrawer";
 import { cx } from "@/components/ui";
 
 /**
@@ -25,7 +24,6 @@ const NAV = [
 
 export function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -59,23 +57,14 @@ export function Shell({ children }: { children: ReactNode }) {
             })}
           </nav>
 
-          <button
-            onClick={() => setDrawerOpen(true)}
-            className={cx(
-              "ml-auto inline-flex items-center gap-2 rounded-[9px] border border-rail-strong",
-              "bg-surface px-3 py-1.5 text-[13px] font-medium text-ink-soft",
-              "transition-colors hover:bg-sunk",
-            )}
-          >
-            <PulseDot />
-            Agent activity
-          </button>
+          {/* The global "Agent activity" drawer used to sit here. Removed rather than repaired:
+              it showed "the agent hasn't run yet" while several runs were persisted, and even
+              working it only duplicated the per-message inspector -- which is strictly better,
+              because a trace is only meaningful next to the message it produced. */}
         </div>
       </header>
 
       <main className="min-w-0 flex-1">{children}</main>
-
-      <AgentDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
     </div>
   );
 }

@@ -142,14 +142,27 @@ export function RouteImpactSummary({ evaluation }: { evaluation: Evaluation }) {
   );
 }
 
+export interface DaySummary {
+  drive_minutes: number;
+  stops: number;
+  distance_km: number;
+  finishes_at: string | null;
+  /** Minutes since midnight, so "Day finishes" can show a real delta rather than an em-dash. */
+  completion_minutes?: number | null;
+  /** Door to door, and how much of it is spent waiting. A "+1 driving minute" headline must not be
+   *  able to hide a multi-hour increase in the crew's day. */
+  working_span_minutes?: number;
+  idle_minutes?: number;
+}
+
 /** Before/after for a whole published day, used when a booking has just landed on it. */
 export function DayChange({
   before,
   after,
   label = "This day",
 }: {
-  before: { drive_minutes: number; stops: number; distance_km: number; finishes_at: string | null } | null;
-  after: { drive_minutes: number; stops: number; distance_km: number; finishes_at: string | null };
+  before: DaySummary | null;
+  after: DaySummary;
   label?: string;
 }) {
   const rows = [
@@ -178,8 +191,30 @@ export function DayChange({
       key: "Day finishes",
       before: before?.finishes_at ?? "—",
       after: after.finishes_at ?? "—",
-      delta: null,
-      unit: "",
+      // A real delta, from the minutes. This printed an em-dash because two "17:34"-shaped strings
+      // cannot be subtracted -- so a route that finished nearly four hours later looked unchanged
+      // next to a "+1 minute" driving row.
+      delta:
+        before?.completion_minutes != null && after.completion_minutes != null
+          ? after.completion_minutes - before.completion_minutes
+          : null,
+      unit: "m",
+    },
+    {
+      key: "Crew waiting",
+      before: before ? formatDuration(before.idle_minutes ?? 0) : "—",
+      after: formatDuration(after.idle_minutes ?? 0),
+      delta: before ? (after.idle_minutes ?? 0) - (before.idle_minutes ?? 0) : null,
+      unit: "m",
+    },
+    {
+      key: "Crew's day",
+      before: before ? formatDuration(before.working_span_minutes ?? 0) : "—",
+      after: formatDuration(after.working_span_minutes ?? 0),
+      delta: before
+        ? (after.working_span_minutes ?? 0) - (before.working_span_minutes ?? 0)
+        : null,
+      unit: "m",
     },
   ];
 

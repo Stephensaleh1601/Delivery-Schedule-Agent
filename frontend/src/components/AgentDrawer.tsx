@@ -23,7 +23,18 @@ export function AgentDrawer({
   /** When set, only this order's runs. Used from an order row. */
   orderId?: string;
 }) {
-  const runs = useResource(() => (open ? dispatch.agentRuns(30) : Promise.resolve([])), [open]);
+  // Fetched for THIS order rather than filtered out of the most recent thirty runs globally. The
+  // old version asked for a global page and then filtered it, so an order whose runs had scrolled
+  // off the end of that page showed "nothing recorded" while its runs sat in the database.
+  const runs = useResource(
+    () =>
+      !open
+        ? Promise.resolve([])
+        : orderId
+          ? dispatch.conversation(orderId).then((turn) => Object.values(turn.runs))
+          : dispatch.agentRuns(30),
+    [open, orderId],
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -32,8 +43,9 @@ export function AgentDrawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  const all = runs.data ?? [];
-  const shown = orderId ? all.filter((r) => r.order_id === orderId) : all;
+  const shown = [...(runs.data ?? [])].sort((a, b) =>
+    a.started_at.localeCompare(b.started_at),
+  );
 
   return (
     <>
@@ -90,8 +102,8 @@ export function AgentDrawer({
 
         <footer className="border-t border-rail bg-surface px-5 py-3">
           <p className="font-mono text-[10.5px] leading-[1.5] text-ink-faint">
-            Bounded at 6 tool calls per event. An action outside the approved list is refused and
-            logged, never executed.
+            Bounded server-side. An action outside the approved list — or outside what this
+            customer&apos;s message may do — is refused and logged, never executed.
           </p>
         </footer>
       </aside>

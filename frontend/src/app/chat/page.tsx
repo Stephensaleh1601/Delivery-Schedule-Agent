@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ActionRow } from "@/components/AgentTrace";
+import { AgentDecision } from "@/components/AgentDecision";
 import { FunctionCallsPill } from "@/components/FunctionCalls";
 import { DayChange } from "@/components/RouteImpact";
 import { RouteMap, stopsToPoints } from "@/components/RouteMap";
@@ -99,6 +99,9 @@ export default function ChatPage() {
   const openOffer = turn?.open_offer_id ? turn.offers[turn.open_offer_id] : null;
   const confirmed = turn?.confirmed ?? false;
   const lastRun = turn?.run ?? null;
+  // The last run that actually DECIDED something -- read from the server, so it survives a refresh
+  // and a confirmed booking keeps its explanation instead of reverting to "waiting".
+  const decision = turn?.decision ?? null;
 
   async function send(text: string) {
     const body = text.trim();
@@ -260,30 +263,26 @@ export default function ChatPage() {
                 ? "Nothing decided yet"
                 : busy
                   ? "Reading the message and solving the route…"
-                  : lastRun
-                    ? summarise(lastRun, turn)
-                    : "Waiting for the customer"}
+                  : decision?.meaningful
+                    ? headline(turn)
+                    : lastRun
+                      ? summarise(lastRun, turn)
+                      : "Waiting for the customer"}
             </h2>
             <p className="max-w-[68ch] text-[12.5px] text-ink-muted">
-              The customer sees none of this. It is here so you can see the offer was earned by a
-              solve rather than taken from their preference order.
+              The customer sees none of this. Every figure below comes from a solved route — open{" "}
+              <span className="font-medium text-ink-soft">Function calls &amp; results</span> under
+              any message for the tool calls behind it.
+              {lastRun && <> Understood by {providerLabel(lastRun)}.</>}
             </p>
           </div>
 
-          {lastRun && (
-            <Card className="overflow-hidden p-0">
-              <div className="flex items-center justify-between gap-3 border-b border-rail px-4 py-2.5">
-                <Eyebrow>Tools called</Eyebrow>
-                <span className="font-mono text-[11px] text-ink-faint tnum">
-                  {lastRun.actions.length} step{lastRun.actions.length === 1 ? "" : "s"} ·{" "}
-                  {providerLabel(lastRun)}
-                </span>
-              </div>
-              <ol className="flex flex-col">
-                {lastRun.actions.map((a) => (
-                  <ActionRow key={a.step} action={a} />
-                ))}
-              </ol>
+          {/* The tool calls live under the message that produced them, in "Function calls &
+              results". Repeating them here told a judge nothing the modal does not, and crowded
+              out the only question this panel should answer: why that time and not the other. */}
+          {decision?.meaningful && (
+            <Card className="px-4 py-4">
+              <AgentDecision decision={decision} />
             </Card>
           )}
 
@@ -324,6 +323,9 @@ export default function ChatPage() {
                             stops: before.stop_count,
                             distance_km: before.round_trip_distance_km,
                             finishes_at: before.finishes_at,
+                            completion_minutes: before.completion_minutes,
+                            working_span_minutes: before.working_span_minutes,
+                            idle_minutes: before.idle_minutes,
                           }
                         : null
                     }
@@ -332,6 +334,9 @@ export default function ChatPage() {
                       stops: after.stop_count,
                       distance_km: after.round_trip_distance_km,
                       finishes_at: after.finishes_at,
+                      completion_minutes: after.completion_minutes,
+                      working_span_minutes: after.working_span_minutes,
+                      idle_minutes: after.idle_minutes,
                     }}
                   />
                   <p className="text-[11.5px] leading-[1.45] text-ink-muted">
@@ -438,6 +443,17 @@ function providerLabel(run: AgentRun): string {
   return run.decider_error ? "standard procedure (model unavailable)" : "standard procedure";
 }
 
+/** The headline once a real decision exists. Reads the outcome rather than the tool count. */
+function headline(turn: ChatTurn | null): string {
+  if (turn?.confirmed) return "Appointment locked and the day republished";
+  const offer = turn?.open_offer_id ? turn.offers[turn.open_offer_id] : null;
+  if (offer) {
+    const n = offer.options.length;
+    return `${n} window${n === 1 ? "" : "s"} offered, derived from the solved route`;
+  }
+  return turn?.decision?.decision || "Decision recorded";
+}
+
 function summarise(run: AgentRun, turn: ChatTurn | null): string {
   const offer = turn?.open_offer_id ? turn.offers[turn.open_offer_id] : null;
   if (turn?.confirmed) return "Appointment locked and the day republished";
@@ -480,7 +496,10 @@ function IntroForm({
   onSubmit: (payload: IntroPayload) => void;
 }) {
   const [name, setName] = useState("Mrs Lee");
-  const [postal, setPostal] = useState("460216");
+  // Punggol: a real residential address in District 19, which no seeded customer occupies. The
+  // old default shared a district with a seeded stop, so the map drew a 0 km leg between them and
+  // the whole route looked fabricated.
+  const [postal, setPostal] = useState("828761");
   const [jobType, setJobType] = useState("sofa");
   const [early, setEarly] = useState(false);
 
@@ -492,7 +511,7 @@ function IntroForm({
         onSubmit({
           customer_name: name,
           phone: "91112222",
-          address_raw: `Blk ${postal.slice(0, 3)}`,
+          address_raw: `Blk ${postal.slice(0, 3)}, Singapore ${postal}`,
           postal_code: postal,
           job_type: jobType,
           can_deliver_early: early,

@@ -309,6 +309,34 @@ class RuleDecisionAgent:
                             "question": "Sorry -- which delivery time would you like me to explain?",
                         },
                     )
+            elif intent == "general_support":
+                # Not a scheduling question. Answer the one we can ("what's the new postal code?")
+                # and hand the rest to a person -- but never touch the booking, which the intent
+                # allow-list also enforces from the other side.
+                if "ask_clarification" not in done:
+                    return ActionDecision(
+                        action="ask_clarification",
+                        reason_summary=f"Customer asked about {event.payload.get('topic') or 'something else'}.",
+                        arguments={
+                            "order_id": event.order_id,
+                            "question": event.payload.get("question")
+                            or "A colleague will call you back about that.",
+                        },
+                    )
+                if "create_exception" not in done:
+                    return ActionDecision(
+                        action="create_exception",
+                        reason_summary="Passing a non-scheduling request to a coordinator.",
+                        arguments={
+                            "order_id": event.order_id,
+                            "kind": f"customer_{event.payload.get('topic') or 'request'}",
+                            "message": (
+                                f"Customer asked about "
+                                f"{event.payload.get('topic') or 'something outside scheduling'}: "
+                                f"{event.payload.get('message', '')[:160]}"
+                            ),
+                        },
+                    )
             elif "ask_clarification" not in done:
                 # Unclear or unrelated. One question, never a guess: a wrong date costs the
                 # customer a delivery day, and there is no way for them to see it coming.
@@ -552,6 +580,13 @@ def handle_planning_event(
         offer_id, slot_id = event.payload.get("offer_id"), event.payload.get("slot_id")
         if offer_id and slot_id:
             ctx.accepted = (offer_id, slot_id)
+    # Scope the run to what answering THIS message may do. Operational events -- a readiness delay,
+    # the morning run -- carry no intent and keep the whole registry, because they are not a reply
+    # to anybody.
+    intent = event.payload.get("intent")
+    if intent in tools.INTENT_TOOLS:
+        ctx.allowed_tools = tools.INTENT_TOOLS[intent]
+
     if decider is None:
         try:
             decider = LLMDecisionAgent()

@@ -147,6 +147,11 @@ class ToolContext:
     # The slot the CUSTOMER accepted, set by the loop from the event and by nothing else. While
     # this is None, no appointment can be locked -- see lock_appointment.
     accepted: tuple[str, str] | None = None
+    # Which tools this run may use, from the customer's intent. None means no scoping, for the
+    # operational events (a readiness delay, the morning run) that are not a reply to anybody.
+    allowed_tools: frozenset[str] | None = None
+    # Tools that have already succeeded in this run. Used to enforce once-only actions.
+    succeeded: set[str] = field(default_factory=set)
     evaluations: list[CandidateSlotEvaluation] = field(default_factory=list)
     offer_id: str | None = None
     # The run these tools are executing inside. Carried on the context so anything a tool creates
@@ -586,17 +591,65 @@ def finish(args: NoArgs, ctx: ToolContext) -> ToolResult:
 # -- dispatch -----------------------------------------------------------------
 
 
+# What each customer intent is allowed to do. The global registry says what the system CAN do;
+# this says what answering THIS message may do, which is a much smaller thing.
+#
+# Without it, asking "why this timing?" ran eight tools -- it rejected the offer it was explaining,
+# went looking for replacement customers, and raised a coordinator exception -- because every tool
+# was reachable from every intent and only the rule decider ever consulted what had already been
+# done. A question about a booking must not be able to change the booking.
+INTENT_TOOLS: dict[str, frozenset[str]] = {
+    # Read-only with respect to the booking. `evaluate_slots` solves and reports; it writes
+    # nothing, which is what makes it safe to answer a question with.
+    "explain": frozenset({"evaluate_slots", "explain_choice", "send_message", "finish"}),
+    # Nothing here may offer, re-solve or reject. The customer said yes to a specific slot.
+    "accept": frozenset({"lock_appointment", "send_message", "finish"}),
+    "reject": frozenset({
+        "record_rejection", "evaluate_slots", "suggest_route_aware_windows",
+        "create_offer", "send_message", "create_exception", "finish",
+    }),
+    "provide_availability": frozenset({
+        "record_availability", "evaluate_slots", "suggest_route_aware_windows",
+        "create_offer", "send_message", "create_exception", "finish",
+    }),
+    # A question we cannot answer from the schedule. It may ask, or hand over -- never book.
+    "general_support": frozenset({"ask_clarification", "create_exception", "send_message", "finish"}),
+    "unclear": frozenset({"ask_clarification", "create_exception", "send_message", "finish"}),
+}
+
+# Actions that must succeed at most once per run. A second `send_message` is a duplicate bubble in
+# the customer's thread; a second `lock_appointment` is a second attempt to book something already
+# booked. The live model did both -- three identical offer messages in one run -- because nothing
+# stopped it, and the idempotent second lock only looked harmless.
+ONCE_PER_RUN = frozenset({"send_message", "lock_appointment", "create_offer", "create_exception"})
+
+
 def dispatch(action: str, arguments: dict | None, ctx: ToolContext) -> ToolResult:
     """Run one allow-listed action.
 
-    An unknown action returns a failed result rather than raising. That is what makes the
-    guardrail observable: the run log shows the refusal, and nothing in the database moved.
+    Three separate refusals, each returning a failed result rather than raising -- which is what
+    makes the guardrails observable: the run log shows what was refused, and nothing moved.
     """
     spec = TOOL_REGISTRY.get(action)
     if spec is None:
         return ToolResult(
             ok=False, tool=action, error="action_not_allowed",
             summary=f"Refused an action that is not on the approved list: {action!r}.",
+        )
+
+    if ctx.allowed_tools is not None and action not in ctx.allowed_tools:
+        return ToolResult(
+            ok=False, tool=action, error="not_allowed_for_intent",
+            summary=(
+                f"Refused {action}: answering this message may only use "
+                f"{', '.join(sorted(ctx.allowed_tools))}."
+            ),
+        )
+
+    if action in ONCE_PER_RUN and action in ctx.succeeded:
+        return ToolResult(
+            ok=False, tool=action, error="already_done",
+            summary=f"Refused a second {action} in one run -- it has already succeeded.",
         )
 
     try:
@@ -621,9 +674,13 @@ def dispatch(action: str, arguments: dict | None, ctx: ToolContext) -> ToolResul
         )
 
     try:
-        return spec.fn(args, ctx)
+        result = spec.fn(args, ctx)
     except Exception as exc:  # noqa: BLE001 -- surfaced to the coordinator, never swallowed
         return ToolResult(ok=False, tool=action, error=type(exc).__name__, summary=str(exc))
+
+    if result.ok:
+        ctx.succeeded.add(action)
+    return result
 
 
 def allowed_actions() -> list[str]:

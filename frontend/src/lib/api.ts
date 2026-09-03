@@ -139,6 +139,11 @@ export interface RouteImpact {
   stops: { before: number; after: number };
   /** Real minutes worked past the soft day end -- a duration, unlike the penalties. */
   overtime_minutes: number;
+  /** Door to door: how long the crew is actually out. */
+  working_span_minutes: { before: number; after: number };
+  /** Out, not driving, not delivering. A van parked outside a block for three hours has driven
+   *  nowhere, which is exactly why this cannot be inferred from any driving figure. */
+  idle_minutes: { before: number; after: number };
   /** `before` is null when the day had no stops -- it did not exist yet. */
   finishes_at: { before: string | null; after: string };
   opens_empty_day: boolean;
@@ -223,6 +228,12 @@ export interface PlanVersion {
   /** False for plans published before distance was recorded. Show "not recorded", not 0 km. */
   distance_recorded: boolean;
   finishes_at: string | null;
+  /** Minutes since midnight as well as the clock string, so a real delta can be shown. The route
+   *  page printed an em-dash where "+3h 46m" belonged, because "17:34" cannot be subtracted. */
+  completion_minutes: number | null;
+  working_span_minutes: number;
+  idle_minutes: number;
+  service_minutes: number;
   generated_at: string;
 }
 
@@ -344,9 +355,43 @@ export interface ChatTurn {
   runs: Record<string, AgentRun>;
   offers: Record<string, Offer>;
   open_offer_id: string | null;
+  /** The last run that actually decided something -- not necessarily the most recent run. A
+   *  clarification question must not blank the panel explaining a confirmed booking. */
+  decision: Decision | null;
+  decision_run_id: string | null;
   /** The run this particular turn produced, or null when nothing ran. */
   run: AgentRun | null;
   error: string | null;
+}
+
+/** One candidate as it was evaluated, for the decision panel. */
+export interface DecisionOption {
+  label: string;
+  feasible: boolean;
+  reason: string | null;
+  added_drive_minutes: number | null;
+  added_distance_km: number | null;
+  finishes_before: string | null;
+  finishes_after: string | null;
+  day_extends_minutes: number | null;
+  idle_minutes: number | null;
+  overtime_minutes: number | null;
+  opens_new_day: boolean;
+  /** "requested" is the customer's own; "suggested" is a question we have not yet asked. */
+  origin: "requested" | "suggested";
+  chosen: boolean;
+}
+
+/** The business decision behind a run, rebuilt from persisted tool results.
+ *
+ *  Not chain-of-thought and structurally cannot be: every field comes from a typed tool result. */
+export interface Decision {
+  asked_for: string;
+  constraints: string[];
+  options: DecisionOption[];
+  decision: string;
+  outcome: string[];
+  meaningful: boolean;
 }
 
 export interface Metrics {

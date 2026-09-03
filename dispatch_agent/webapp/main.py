@@ -404,6 +404,17 @@ def _evaluation_to_dict(evaluation) -> dict:
             },
             # Real minutes worked past the soft day end, unlike the penalties above it.
             "overtime_minutes": evaluation.overtime_penalty_minutes,
+            # How long the crew is out, door to door, and how much of that is waiting. Without
+            # these a slot that added one driving minute and nearly four hours to the working day
+            # read as the efficient choice -- which is exactly what happened.
+            "working_span_minutes": {
+                "before": evaluation.baseline_span_minutes,
+                "after": evaluation.proposed_span_minutes,
+            },
+            "idle_minutes": {
+                "before": evaluation.baseline_idle_minutes,
+                "after": evaluation.proposed_idle_minutes,
+            },
             "finishes_at": {
                 # None when the day had no stops -- "this day did not exist yet" is the honest
                 # rendering, not 00:00.
@@ -635,6 +646,14 @@ def _plan_to_dict(plan) -> dict:
         # than a 0 km bar beside a real one.
         "distance_recorded": plan.sequence.distance_recorded,
         "finishes_at": _hhmm(plan.sequence.completion_minutes) if plan.sequence.stops else None,
+        # Minutes since midnight as well as the clock string, so a client can show a real delta.
+        # The route page printed a bare em-dash where "+3h 46m" belonged, because two "17:34"-style
+        # strings cannot be subtracted.
+        "completion_minutes": plan.sequence.completion_minutes if plan.sequence.stops else None,
+        # What the day costs the crew, not just the road.
+        "working_span_minutes": plan.sequence.working_span_minutes,
+        "idle_minutes": plan.sequence.idle_minutes,
+        "service_minutes": plan.sequence.service_minutes,
         "generated_at": plan.generated_at.isoformat(),
     }
 

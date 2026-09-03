@@ -197,14 +197,24 @@ class CandidateService:
         jobs_by_id = {job.id: job for job in context.jobs + [candidate]}
         proposed = self._with_distances(proposed, jobs_by_id)
         proposed_minutes = proposed.round_trip_drive_minutes
-        facts = route_facts(proposed, candidate, jobs_by_id)
+        added_idle = proposed.idle_minutes - (context.baseline.idle_minutes if context.baseline else 0)
+        overtime = overtime_minutes(proposed, jobs_by_id, self._depot, self._scoring)
+        # The consequences go into the facts, so the sentence the customer reads is about the day
+        # this creates rather than only about where the van happens to be.
+        facts = route_facts(
+            proposed, candidate, jobs_by_id,
+            added_idle_minutes=max(0, added_idle), overtime_minutes=overtime,
+        )
         total, breakdown = score_candidate(
             baseline_drive_minutes=context.baseline_drive_minutes,
             proposed_drive_minutes=proposed_minutes,
             is_empty_day=context.is_empty,
             preference_rank=option.preference_rank,
-            overtime=overtime_minutes(proposed, jobs_by_id, self._depot, self._scoring),
+            overtime=overtime,
             config=self._scoring,
+            # Extra waiting this insertion creates. A promise for later in the day than the route
+            # naturally reaches strands the crew, and no driving figure shows it.
+            incremental_idle_minutes=added_idle,
         )
 
         return CandidateSlotEvaluation(
@@ -222,6 +232,10 @@ class CandidateService:
             proposed_stop_count=len(proposed.stops),
             baseline_completion_minutes=context.baseline.completion_minutes if context.baseline else 0,
             proposed_completion_minutes=proposed.completion_minutes,
+            baseline_span_minutes=context.baseline.working_span_minutes if context.baseline else 0,
+            proposed_span_minutes=proposed.working_span_minutes,
+            baseline_idle_minutes=context.baseline.idle_minutes if context.baseline else 0,
+            proposed_idle_minutes=proposed.idle_minutes,
             opens_empty_day=context.is_empty,
             preference_rank=option.preference_rank,
             region=facts.region,

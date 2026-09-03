@@ -19,7 +19,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from dispatch_agent.agents.scheduling_agent import handle_planning_event
+from dispatch_agent.agents.scheduling_agent import RuleDecisionAgent, handle_planning_event
 from dispatch_agent.agents.understanding import MessageReader
 from dispatch_agent.db import JobsRepository
 from dispatch_agent.models import (
@@ -97,18 +97,33 @@ def receive_message(order_id: str, payload: InboundMessage) -> dict:
         return _turn(repo, order_id, extra_run=None)
 
     ctx = tools.ToolContext(repo=repo)
-    run = handle_planning_event(event, repo=repo, ctx=ctx)
+    # ONE model call per customer message: the reading above. Execution is then deterministic.
+    #
+    # It used to be one model call per step, which is where 30-40 seconds a message came from --
+    # six or seven round trips to decide things that were already implied ("you have just created
+    # an offer; now send it"). Worse, each of those was a fresh chance to choose something wrong:
+    # the three duplicate offer messages and the eight-tool "why this timing?" were both a model
+    # being asked to decide again when there was nothing left to decide.
+    #
+    # The model still makes the decision that matters -- what the customer wants. What follows from
+    # that is a procedure, and procedures do not need a language model.
+    run = handle_planning_event(
+        event, repo=repo, ctx=ctx, decider=RuleDecisionAgent(), use_fallback=False
+    )
 
-    # Provenance of the READING, which is a separate decision from the tool choices and has its own
-    # provider. Recorded on the run so the inspector can say the message was understood by the model
-    # even when the steps then ran from the standard procedure, or vice versa.
+    # Provenance of the READING, which is the decision that was actually made by a model. Recorded
+    # so the inspector says who understood the message rather than implying the steps were chosen
+    # by one.
+    run.decider = understanding.decider
+    run.model_id = understanding.model_id
     run.decider_error = run.decider_error or understanding.fallback_reason
-    if understanding.used_model:
-        run.model_id = run.model_id or understanding.model_id
     run.final_summary = run.final_summary or f"Read as: {said.intent}."
     repo.save_agent_run(run)
 
-    return _turn(repo, order_id, extra_run=run, intent=said.intent, inbound_id=inbound.id)
+    return _turn(
+        repo, order_id, extra_run=run, intent=said.intent,
+        inbound_id=inbound.id, evaluations=ctx.evaluations,
+    )
 
 
 def _event_for(order_id: str, said, live_offer, order):
@@ -121,7 +136,7 @@ def _event_for(order_id: str, said, live_offer, order):
         return PlanningEvent(
             event_type=PlanningEventType.CUSTOMER_ACCEPTED_OFFER,
             order_id=order_id,
-            payload={"offer_id": live_offer.id, "slot_id": slot.id},
+            payload={"offer_id": live_offer.id, "slot_id": slot.id, "intent": "accept"},
         )
 
     if said.intent == "reject" and live_offer is not None:
@@ -130,7 +145,7 @@ def _event_for(order_id: str, said, live_offer, order):
         slot_id = None if said.rejects_whole_day else (
             live_offer.options[0].id if live_offer.options else None
         )
-        payload = {"offer_id": live_offer.id, "slot_id": slot_id}
+        payload = {"offer_id": live_offer.id, "slot_id": slot_id, "intent": "reject"}
         # A counter-proposal in the same breath ("not 11, after 1?") is availability, and recording
         # it is what makes the re-solve land where they asked.
         if said.windows:
@@ -146,6 +161,7 @@ def _event_for(order_id: str, said, live_offer, order):
             event_type=PlanningEventType.NEW_ORDER,
             order_id=order_id,
             payload={
+                "intent": "provide_availability",
                 "stated_windows": _windows_payload(said),
                 "is_fixed": said.is_fixed or conversation.is_only_option(order),
             },
@@ -158,11 +174,40 @@ def _event_for(order_id: str, said, live_offer, order):
             payload={"intent": "explain", "message": said.note},
         )
 
+    if said.intent == "general_support":
+        return PlanningEvent(
+            event_type=PlanningEventType.MANUAL_RETRY,
+            order_id=order_id,
+            payload={
+                "intent": "general_support",
+                "topic": said.support_topic,
+                "message": said.note,
+                "question": _support_question(said),
+            },
+        )
+
     return PlanningEvent(
         event_type=PlanningEventType.MANUAL_RETRY,
         order_id=order_id,
         payload={"intent": "unclear", "question": _clarifying_question(said, live_offer)},
     )
+
+
+def _support_question(said) -> str:
+    """What to say to someone asking about something other than the timing.
+
+    A delivery address is not a scheduling question -- it changes where the van goes, which changes
+    every route it is on. "Which of those times would you like?" was the old answer, and it is the
+    kind of reply that makes people stop trusting an automated agent entirely.
+    """
+    if said.support_topic == "address":
+        return (
+            "Of course -- what's the new postal code? I'll need to re-check the route for it, and "
+            "a colleague will confirm the change with you."
+        )
+    if said.support_topic == "cancel":
+        return "I'll pass that to a colleague, who will call you to sort it out."
+    return "I can help with the delivery timing. For anything else a colleague will call you back."
 
 
 def _windows_payload(said) -> list[dict]:
@@ -193,6 +238,35 @@ def _clarifying_question(said, live_offer) -> str:
     return "Sorry, I didn't catch that -- which day and roughly what time would suit you?"
 
 
+def _decision_for(repo: JobsRepository, order_id: str, extra_run, evaluations) -> dict:
+    """The most recent run that decided something, as a rendered decision record.
+
+    Walks backwards through this order's runs. The side panel went blank -- "Waiting for the
+    customer" -- after a confirmed booking because it only ever showed the run from the current
+    request, and a page load has no current request.
+    """
+    from dispatch_agent.planning import decision_record
+
+    order = repo.get_job(order_id)
+    candidates = []
+    if extra_run is not None:
+        candidates.append(extra_run)
+    seen = {r.id for r in candidates}
+    messages = repo.messages(order_id)
+    for run in repo.agent_runs_by_id([m.run_id for m in messages if m.run_id]).values():
+        if run.id not in seen:
+            candidates.append(run)
+    candidates.sort(key=lambda r: r.started_at, reverse=True)
+
+    for run in candidates:
+        record = decision_record.build(
+            run, order=order, evaluations=evaluations if run is extra_run else None
+        )
+        if record.meaningful:
+            return {"decision": record.to_dict(), "decision_run_id": run.id}
+    return {"decision": None, "decision_run_id": None}
+
+
 def _turn(
     repo: JobsRepository,
     order_id: str,
@@ -200,6 +274,7 @@ def _turn(
     intent: str = "unclear",
     duplicate: bool = False,
     inbound_id: str | None = None,
+    evaluations=None,
 ) -> dict:
     """The conversation as it now stands, read back from the database.
 
@@ -207,7 +282,7 @@ def _turn(
     what a refresh would show. If those two could differ, the refresh test would be the only place
     anyone found out.
     """
-    from dispatch_agent.webapp.main import _offer_to_dict, _run_to_dict, _evaluation_to_dict  # noqa
+    from dispatch_agent.webapp.main import _offer_to_dict, _run_to_dict  # noqa
 
     order = repo.get_job(order_id)
     messages = repo.messages(order_id)
@@ -240,6 +315,11 @@ def _turn(
         "offers": {oid: _offer_to_dict(o) for oid, o in offers.items()},
         "open_offer_id": live.id if live else None,
         "run": _run_to_dict(extra_run) if extra_run is not None else None,
+        # The business decision, rebuilt from the persisted run rather than from whatever a
+        # browser tab was holding. `decision_run_id` is the last run that actually decided
+        # something -- a clarification question is not a decision, and after a confirmation the
+        # panel must keep showing the confirmation rather than reverting to "waiting".
+        **_decision_for(repo, order_id, extra_run, evaluations),
         "error": (
             extra_run.final_summary
             if extra_run is not None and extra_run.status is not AgentRunStatus.COMPLETED

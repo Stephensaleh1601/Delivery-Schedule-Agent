@@ -42,7 +42,7 @@ export function RunHeader({ run, compact = false }: { run: AgentRun; compact?: b
       <div className="flex shrink-0 flex-col items-end gap-0.5">
         <span className="font-mono text-[11px] text-ink-faint">{formatRelative(run.started_at)}</span>
         <span className="font-mono text-[11px] text-ink-faint tnum">
-          {run.actions.length}/6 steps
+          {run.actions.length} step{run.actions.length === 1 ? '' : 's'}
         </span>
       </div>
     </div>

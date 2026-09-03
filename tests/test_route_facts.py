@@ -165,9 +165,15 @@ def test_the_customer_sentence_quotes_no_score_or_penalty():
 
 
 def test_morning_and_afternoon_follow_the_promised_window():
-    jobs = [_job(f"C{i}", pc) for i, pc in enumerate(EAST)]
-    sequence = _solve(jobs)
-    facts = route_facts(sequence, jobs[0], {j.id: j for j in jobs})
+    """A reason that names the time of day must name the RIGHT one.
+
+    Uses a lone stop, because the "we'll already be nearby" branch deliberately says "around then"
+    instead: that sentence is a claim about the hour the van is in the area, and pinning it to
+    "Tuesday afternoon" is how it came to be said about a route whose only eastern stop was 9am.
+    """
+    job = _job("Only", EAST[0])
+    sequence = _solve([job])
+    facts = route_facts(sequence, job, {job.id: job})
 
     morning = customer_reason(facts, DAY, TimeWindow(start=time(9, 30), end=time(11, 30)))
     afternoon = customer_reason(facts, DAY, TimeWindow(start=time(14, 0), end=time(16, 0)))
@@ -185,7 +191,7 @@ def test_the_coordinator_sentence_states_the_real_position_and_driving():
     reason = coordinator_reason(route_facts(sequence, middle, jobs_by_id), added_drive_minutes=8)
 
     assert "Stop 2 of 3" in reason
-    assert "adding 8 driving minutes" in reason
+    assert "adding 8 minutes of driving" in reason
 
 
 def test_no_extra_driving_is_said_plainly_rather_than_as_zero_minutes():

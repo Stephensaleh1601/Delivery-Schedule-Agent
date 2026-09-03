@@ -22,6 +22,7 @@ class ScoringConfig:
     day_opening_penalty_minutes: int = 60
     preference_penalty_per_rank: int = 10
     soft_day_end: Time = Time(17, 0)
+    idle_penalty_per_hour: int = 20
 
     @classmethod
     def from_settings(cls) -> "ScoringConfig":
@@ -29,6 +30,7 @@ class ScoringConfig:
             day_opening_penalty_minutes=settings.day_opening_penalty_minutes,
             preference_penalty_per_rank=settings.preference_penalty_per_rank,
             soft_day_end=settings.soft_day_end,
+            idle_penalty_per_hour=settings.idle_penalty_per_hour,
         )
 
 
@@ -60,6 +62,15 @@ def overtime_minutes(
     return max(0, sequence.completion_minutes - _minutes_since_midnight(config.soft_day_end))
 
 
+def idle_minutes(sequence: DaySequence) -> int:
+    """Time the crew spends waiting -- out, not driving, not delivering.
+
+    Lives on DaySequence so there is one definition; re-exported here because scoring is where
+    anyone looks for what a day costs.
+    """
+    return sequence.idle_minutes
+
+
 def score_candidate(
     *,
     baseline_drive_minutes: int,
@@ -68,17 +79,23 @@ def score_candidate(
     preference_rank: int,
     overtime: int,
     config: ScoringConfig,
+    incremental_idle_minutes: int = 0,
 ) -> tuple[int, dict[str, int]]:
     """Returns (total, breakdown). The breakdown is what the UI shows a coordinator -- the total
     alone is not explainable, and an unexplainable number is one nobody trusts."""
     incremental = proposed_drive_minutes - baseline_drive_minutes
     opening = config.day_opening_penalty_minutes if is_empty_day else 0
     preference = config.preference_penalty_per_rank * max(0, preference_rank - 1)
+    # The term the old score was missing. A slot that added one driving minute and stranded the
+    # crew for three and three-quarter hours scored as almost free, and the product then called it
+    # "the time we can promise most reliably". Waiting is cheaper than driving, not free.
+    idling = round(max(0, incremental_idle_minutes) * config.idle_penalty_per_hour / 60)
 
     breakdown = {
         "incremental_drive_minutes": incremental,
         "day_opening_penalty_minutes": opening,
         "preference_penalty_minutes": preference,
         "overtime_penalty_minutes": overtime,
+        "idle_penalty_minutes": idling,
     }
-    return incremental + opening + preference + overtime, breakdown
+    return incremental + opening + preference + overtime + idling, breakdown

@@ -110,6 +110,13 @@ class Settings:
     # opening an otherwise-empty day justify a counteroffer regardless of this number --
     # see planning/negotiation.should_counteroffer.
     counteroffer_saving_minutes: int = int(os.getenv("COUNTEROFFER_SAVING_MINUTES", "15"))
+    # What an hour of the crew sitting idle is worth, against an hour of driving. A slot that adds
+    # one driving minute but strands the van for three hours is not a cheap slot, and scoring that
+    # counted only driving said it was. Weighted below driving because waiting is genuinely less
+    # costly than moving -- no fuel, no risk -- but nothing like free.
+    idle_penalty_per_hour: int = int(os.getenv("IDLE_PENALTY_PER_HOUR", "20"))
+    # An idle gap big enough to be worth raising with the customer.
+    material_idle_minutes: int = int(os.getenv("MATERIAL_IDLE_MINUTES", "60"))
     # Where every route starts and ends. SUTD is the demo default; in production this is the
     # company's warehouse, and the only thing that changes is these three values.
     # default_factory, not a plain default: a dataclass evaluates field defaults once, when the

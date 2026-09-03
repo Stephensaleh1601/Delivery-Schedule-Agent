@@ -440,6 +440,9 @@ function toDay(v: PlanVersion) {
     stops: v.stop_count,
     distance_km: v.round_trip_distance_km,
     finishes_at: v.finishes_at,
+    completion_minutes: v.completion_minutes,
+    working_span_minutes: v.working_span_minutes,
+    idle_minutes: v.idle_minutes,
   };
 }
 

@@ -286,13 +286,38 @@ class Interpretation:
     # "can you do later?" / "anything earlier?" -- a direction without a time. Enough to re-solve
     # the same day usefully, and not enough to pretend they named a window.
     direction: str | None = None
+    # For general_support: what they are actually asking about, so the reply can be specific
+    # rather than a generic apology. "address", "cancel", "price", "contact" or None.
+    support_topic: str | None = None
     # Free-text the caller may quote back when asking for clarification.
     note: str = ""
 
 
 INTENTS = frozenset(
-    {"provide_availability", "accept", "reject", "explain", "unclear"}
+    {"provide_availability", "accept", "reject", "explain", "general_support", "unclear"}
 )
+
+# Things customers ask about that are not the timing. Kept separate from `unclear` because they
+# are perfectly clear -- we simply cannot answer them by moving a van. "Can I change my delivery
+# address?" was being answered with "which of those times would you like?", which is the kind of
+# reply that makes someone give up on an automated agent for good.
+_SUPPORT_TOPICS: list[tuple[str, "re.Pattern[str]"]] = [
+    ("address", re.compile(
+        r"\b(?:change|update|correct|wrong|different|new|move)\b[^.?!]*\b"
+        r"(?:address|postal\s*code|postcode|location|unit|block|flat)\b"
+        r"|\b(?:address|postal\s*code|postcode)\b[^.?!]*\b(?:change|updated?|wrong|different)\b",
+        re.I)),
+    ("cancel", re.compile(r"\b(?:cancel|call it off|don'?t want|no longer need)\b", re.I)),
+    ("price", re.compile(r"\b(?:how much|price|cost|fee|charge|payment|pay)\b", re.I)),
+    ("contact", re.compile(r"\b(?:speak|talk|call me|phone|human|someone|manager|agent)\b", re.I)),
+]
+
+
+def support_topic(text: str) -> str | None:
+    for name, pattern in _SUPPORT_TOPICS:
+        if pattern.search(text):
+            return name
+    return None
 
 _ACCEPT = re.compile(
     r"\b(ok(ay)?|sure|yes|yep|yeah|confirm(ed|s)?|book|take|works?|fine|good|great|"
@@ -366,6 +391,17 @@ def interpret(
     )
 
     windows = _extract_windows(raw, context_date=context_date)
+
+    # Something other than the timing. Tested FIRST, and whether or not an offer is open, because
+    # these messages are full of words that look like scheduling: "Can I change my delivery
+    # address?" contains "change" and a question mark, "I don't want the old one" contains a
+    # refusal. It was being answered with "which of those times would you like?".
+    topic = support_topic(raw)
+    if topic and not windows:
+        result.intent = "general_support"
+        result.support_topic = topic
+        result.note = raw
+        return result
 
     # An explanation request is a question about a proposal, so it only exists while one is open,
     # and it must be tested before rejection: "can't you come on Saturday?" contains "can't".

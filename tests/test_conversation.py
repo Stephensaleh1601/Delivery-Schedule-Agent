@@ -172,10 +172,43 @@ def test_cant_you_come_on_saturday_is_a_question_not_a_refusal():
 
 
 def test_an_unrelated_message_is_unclear_rather_than_guessed():
-    for noise in ("lol", "ok thanks bye", "how much does it cost?"):
+    """Noise gets a question, never a date."""
+    for noise in ("lol", "ok thanks bye", "hello?"):
         said = language.interpret(noise, has_open_offer=False)
         assert said.intent == "unclear", noise
         assert not said.windows
+
+
+@pytest.mark.parametrize(
+    "message,topic",
+    [
+        ("Can I change my delivery address?", "address"),
+        ("my address is wrong, it's the wrong block", "address"),
+        ("Actually I want to cancel", "cancel"),
+        ("how much does it cost?", "price"),
+        ("can I speak to someone?", "contact"),
+    ],
+)
+def test_a_question_that_is_not_about_timing_is_support_not_scheduling(message, topic):
+    """"Can I change my delivery address?" was answered with "which of those times would you like?"
+
+    These messages are full of words that look like scheduling -- "change", a question mark, a
+    refusal -- so a reader tuned for times mistakes them for one. They are perfectly clear; we
+    simply cannot answer them by moving a van, and pretending otherwise is what makes someone give
+    up on an automated agent for good.
+    """
+    said = language.interpret(message, has_open_offer=True)
+
+    assert said.intent == "general_support", message
+    assert said.support_topic == topic
+    assert not said.windows, "a support question must never state availability"
+
+
+def test_a_support_question_is_not_read_as_an_answer_to_the_offer():
+    """The specific misreading: it must be neither an acceptance nor a rejection."""
+    for message in ("Can I change my delivery address?", "how much will this cost?"):
+        said = language.interpret(message, has_open_offer=True)
+        assert said.intent not in ("accept", "reject"), message
 
 
 # -- relative dates in Singapore ------------------------------------------------

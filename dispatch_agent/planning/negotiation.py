@@ -88,6 +88,20 @@ def should_counteroffer(
             reason="the requested time cannot be served at all",
         )
 
+    added_idle = requested.proposed_idle_minutes - requested.baseline_idle_minutes
+    if added_idle >= settings.material_idle_minutes:
+        # The case the browser test found: +1 driving minute, +3h46 on the working day. Driving
+        # alone called it the efficient choice. A crew sitting outside a block for three hours has
+        # driven nowhere, which is precisely why no driving figure showed it.
+        return CounterofferDecision(
+            should_ask=True,
+            kind="idle_gap",
+            reason=(
+                f"serving it leaves the crew waiting about {added_idle // 60}h "
+                f"{added_idle % 60:02d}m that day"
+            ),
+        )
+
     if requested.overtime_penalty_minutes > 0:
         return CounterofferDecision(
             should_ask=True,
@@ -198,10 +212,14 @@ def route_aware_windows(
 
     # Prefer a day already running, then the cheapest insertion, then the earliest date. Sorting on
     # `opens_empty_day` first is what "prefer days with an existing compatible route" means.
+    # Prefer a day already running, then the least disruptive insertion, then the earliest date.
+    # `operational_score` rather than driving alone: a slot that adds one driving minute and three
+    # hours of waiting is not the best alternative to offer somebody, and sorting on driving said
+    # it was.
     found.sort(
         key=lambda s: (
             s.evaluation.opens_empty_day,
-            s.evaluation.incremental_drive_minutes,
+            s.evaluation.total_score - s.evaluation.preference_penalty_minutes,
             s.date,
         )
     )

@@ -357,6 +357,47 @@ class DaySequence(BaseModel):
         last = self.stops[-1].arrival_window.end
         return last.hour * 60 + last.minute + self.return_drive_minutes
 
+    @property
+    def departure_minutes(self) -> int:
+        """When the crew leaves the depot -- the first arrival, less the drive to it."""
+        if not self.stops:
+            return 0
+        first = self.stops[0].arrival_window.start
+        return first.hour * 60 + first.minute - self.stops[0].drive_minutes_from_prev
+
+    @property
+    def working_span_minutes(self) -> int:
+        """Door to door: how long the crew is actually out for.
+
+        The number the old scoring never looked at, and the reason a slot that added *one* driving
+        minute could extend the day by nearly four hours. Driving is what a route costs the road;
+        this is what it costs the people.
+        """
+        if not self.stops:
+            return 0
+        return self.completion_minutes - self.departure_minutes
+
+    @property
+    def service_minutes(self) -> int:
+        """Time spent actually delivering, summed across the stops."""
+        total = 0
+        for stop in self.stops:
+            start, end = stop.arrival_window.start, stop.arrival_window.end
+            total += (end.hour * 60 + end.minute) - (start.hour * 60 + start.minute)
+        return total
+
+    @property
+    def idle_minutes(self) -> int:
+        """Time the crew spends waiting: out of the depot, not driving, not delivering.
+
+        Almost always the result of a promise made for later in the day than the route naturally
+        reaches. It is invisible in every driving figure -- a van parked outside a customer's block
+        for three hours has driven nowhere -- which is exactly why it has to be measured.
+        """
+        if not self.stops:
+            return 0
+        return max(0, self.working_span_minutes - self.round_trip_drive_minutes - self.service_minutes)
+
 
 class OverrideLogEntry(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -431,6 +472,13 @@ class CandidateSlotEvaluation(BaseModel):
     proposed_stop_count: int = 0
     baseline_completion_minutes: int = 0
     proposed_completion_minutes: int = 0
+    # How long the crew is out, door to door, and how much of that is spent waiting. The figures
+    # the old evaluation never carried -- which is how a slot that added one driving minute and
+    # nearly four hours to the working day was presented as the efficient choice.
+    baseline_span_minutes: int = 0
+    proposed_span_minutes: int = 0
+    baseline_idle_minutes: int = 0
+    proposed_idle_minutes: int = 0
     opens_empty_day: bool = False
     preference_rank: int = 1
     # Where this stop landed in the solved day, and the region it landed in. Read off the sequence,
@@ -446,6 +494,7 @@ class CandidateSlotEvaluation(BaseModel):
     day_opening_penalty_minutes: int = 0
     preference_penalty_minutes: int = 0
     overtime_penalty_minutes: int = 0
+    idle_penalty_minutes: int = 0
     # A RANKING INDEX, not a duration and not a price. It mixes real driving minutes with artificial
     # penalties -- a 60-minute empty-day charge is a planning weight, nobody drives it. Never render
     # this to a customer or a coordinator with a time unit; show the components instead.
