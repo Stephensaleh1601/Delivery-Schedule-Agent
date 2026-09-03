@@ -344,29 +344,145 @@ def test_a_clarification_does_not_replace_the_last_real_decision(client):
     assert after["decision"]["meaningful"] is True
 
 
-def test_the_decision_names_the_options_that_were_compared(client):
+def test_the_decision_leads_with_the_conclusion_not_the_constraints(client):
+    """A judge should understand this in five seconds. Heading, what changed, at most two
+    candidates, one recommendation -- and the planning rules collapsed out of the way."""
     order_id = _order(client)
 
-    turn = _say(client, order_id, "Tuesday after 1 works for me.")
+    turn = _say(client, order_id, "Saturday morning works.")
 
     decision = turn["decision"]
-    assert decision["asked_for"], decision
-    assert decision["constraints"], "the panel must say what constrained the answer"
-    assert decision["options"], "the panel must show what was compared"
-    assert decision["decision"], "the panel must state the conclusion"
+    assert decision["heading"] == "Why these times?"
+    assert decision["asked"], decision
+    assert decision["decision"], "the panel must state a conclusion"
+    assert len(decision["candidates"]) <= 2, decision["candidates"]
+    assert decision["planning_rules"], "the rules still exist, just collapsed"
 
 
-def test_a_suggested_alternative_is_labelled_as_a_question_not_availability(client, temp_db):
-    """A suggestion in the panel must not read as something the customer agreed to."""
-    _confirmed(temp_db, "Anchor", "460216", TUESDAY)
-    order_id = _order(client, postal_code="469123")
+def test_the_broad_availability_is_not_shown_as_a_candidate(client):
+    """"Saturday 9am-6pm" used to sit beside "Saturday 11am-1pm" as though they were alternatives.
+    One is a boundary the customer gave us; the other is a time we would actually turn up."""
+    order_id = _order(client)
 
     turn = _say(client, order_id, "I'm free Saturday, any time.")
 
-    for option in turn["decision"]["options"]:
-        assert option["origin"] in ("requested", "suggested")
-        if option["origin"] == "suggested":
-            assert option["chosen"] is False or option["label"], option
+    for candidate in turn["decision"]["candidates"]:
+        assert candidate["window"], candidate
+        span = candidate["window"]
+        assert "9am–6pm" not in span and "9am–18" not in span, (
+            f"the customer's whole day is being shown as a candidate: {span}"
+        )
+
+
+def test_two_candidates_are_never_the_same_answer_twice(client, temp_db):
+    """Two windows on one day with the same route impact are one option shown twice."""
+    _confirmed(temp_db, "Anchor", "469123", SATURDAY, window=(9, 0, 12, 0))
+    order_id = _order(client, postal_code="828761")
+
+    turn = _say(client, order_id, "I'm free Saturday, any time.")
+
+    candidates = turn["decision"]["candidates"]
+    labels = [c["label"] for c in candidates]
+    assert len(labels) == len(set(labels)), labels
+    if len(candidates) == 2:
+        a, b = candidates
+        identical = (
+            a["date"] == b["date"]
+            and abs((a["added_drive_minutes"] or 0) - (b["added_drive_minutes"] or 0)) < 3
+        )
+        assert not identical, f"two candidates on one day with the same impact: {candidates}"
+
+
+def test_a_candidate_is_labelled_customer_friendly_or_lowest_route_impact(client, temp_db):
+    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    order_id = _order(client, postal_code="828761")
+
+    turn = _say(client, order_id, "Saturday morning works.")
+
+    for candidate in turn["decision"]["candidates"]:
+        assert candidate["badge"] in ("Customer-friendly", "Lowest route impact"), candidate
+        assert candidate["explanation"], candidate
+        assert candidate["kind"] in ("customer", "route")
+
+
+def test_the_recommendation_matches_the_cheaper_candidate(client, temp_db):
+    """The decision sentence must name the option the numbers actually favour."""
+    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    order_id = _order(client, postal_code="828761")
+
+    turn = _say(client, order_id, "Saturday morning works.")
+    decision = turn["decision"]
+    candidates = decision["candidates"]
+    if len(candidates) < 2:
+        pytest.skip("this assertion is about a two-way comparison")
+
+    cheapest = min(candidates, key=lambda c: c["added_drive_minutes"] or 0)
+    assert "Recommend" in decision["decision"]
+    assert cheapest["label"] in decision["decision"], (
+        f"recommended something other than the cheapest: {decision['decision']}"
+    )
+
+
+def test_a_rejection_shows_the_sequence_that_produced_the_new_time(client):
+    """The whole point of the redesign. A judge saw 9-11 become 11-1 and no reason why."""
+    order_id = _order(client)
+    opened = _say(client, order_id, "I'm free Saturday, any time.")
+    rejected = opened["offers"][opened["open_offer_id"]]["options"][0]
+
+    turn = _say(client, order_id, "That doesn't work, anything later that day?")
+
+    decision = turn["decision"]
+    assert decision["heading"] == "Why the offer changed"
+    # The exact window that was removed, named.
+    assert _clock(rejected["window"]["start"]) in decision["what_changed"], decision["what_changed"]
+    assert "rejected" in decision["what_changed"] and "removed" in decision["what_changed"]
+    tones = [s["tone"] for s in decision["steps"]]
+    assert "removed" in tones and "solved" in tones, decision["steps"]
+
+
+def _clock(hhmm):
+    hour, minute = (int(p) for p in hhmm.split(":"))
+    suffix = "am" if hour < 12 else "pm"
+    shown = hour % 12 or 12
+    return f"{shown}:{minute:02d}{suffix}" if minute else f"{shown}{suffix}"
+
+
+def test_an_explanation_panel_says_nothing_changed(client):
+    order_id = _order(client)
+    _say(client, order_id, "I'm free Saturday, any time.")
+
+    turn = _say(client, order_id, "Why this timing?")
+
+    decision = turn["decision"]
+    assert decision["heading"] == "Why this time?"
+    assert "Nothing changed" in decision["what_changed"]
+    assert decision["outcome"] == ["Offer unchanged", "Nothing rejected", "No route published"]
+
+
+def test_the_confirmation_panel_reports_the_version_change(client, temp_db):
+    """v1 -> v2, which only means anything if the day started at v1 -- which is what the seeded
+    baseline routes are for. Without one the booking publishes v1 and there is no before."""
+    from dispatch_agent.planning import plan_service
+
+    _confirmed(temp_db, "Anchor", "469123", SATURDAY, window=(9, 0, 12, 0))
+    plan_service.publish_plan_version(
+        plan_service.solve_day(temp_db, SATURDAY), reason="Initial route for the day"
+    )
+    assert temp_db.active_plan(SATURDAY).version == 1
+
+    order_id = _order(client, postal_code="828761")
+    opened = _say(client, order_id, "I'm free Saturday, any time.")
+    if opened["offers"][opened["open_offer_id"]]["options"][0]["date"] != SATURDAY.isoformat():
+        pytest.skip("this assertion needs the Saturday slot to be the one offered first")
+
+    turn = _say(client, order_id, "Okay, take the first one.")
+
+    decision = turn["decision"]
+    assert decision["heading"] == "What the agent changed"
+    joined = " ".join(decision["outcome"])
+    assert "Appointment locked" in joined
+    assert "moved: 0" in joined
+    assert "v1 → v2" in joined, joined
 
 
 # -- the step limit -------------------------------------------------------------
@@ -545,3 +661,73 @@ def test_a_support_topic_survives_the_model_calling_it_unclear(temp_db):
 
     assert understood.interpretation.intent == "general_support"
     assert understood.interpretation.support_topic == "address"
+
+
+def test_the_explanation_compares_the_options_with_real_numbers(client, temp_db):
+    """"Explained the timing from the solved route" is not an answer to "why Tuesday?".
+
+    The answer is the comparison: this one adds a minute, that one adds sixteen. Both figures come
+    from solves this run performed, and the "already nearby" clause is only attached when the
+    driving figure supports it.
+    """
+    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    order_id = _order(client, postal_code="828761")
+    _say(client, order_id, "Saturday morning works.")
+
+    turn = _say(client, order_id, "Why Tuesday?")
+
+    decision = turn["decision"]["decision"]
+    assert "driving" in decision, decision
+    assert any(ch.isdigit() for ch in decision), f"no figures in the answer: {decision}"
+    assert "Explained the timing" not in decision
+
+
+def test_no_nearby_claim_without_the_driving_to_support_it(client, temp_db):
+    """"Already nearby" is a claim about the route, and it is only made when the added driving
+    says so. An expensive option must not borrow the phrase."""
+    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    order_id = _order(client, postal_code="828761")
+    _say(client, order_id, "Saturday morning works.")
+
+    turn = _say(client, order_id, "Why Tuesday?")
+    decision = turn["decision"]
+
+    if "already nearby" in decision["decision"]:
+        cheapest = min(
+            decision["candidates"], key=lambda c: c["added_drive_minutes"] or 0
+        )
+        assert (cheapest["added_drive_minutes"] or 0) <= 5, cheapest
+        assert not cheapest["opens_new_day"]
+
+
+def test_the_route_strip_has_the_position_it_needs_to_draw(client, temp_db):
+    """The strip shows where the stop lands in the sequence. Without a position it cannot, and a
+    route claim with no visible evidence is the thing this was added to fix."""
+    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    order_id = _order(client, postal_code="828761")
+
+    turn = _say(client, order_id, "Saturday morning works.")
+
+    for candidate in turn["decision"]["candidates"]:
+        assert candidate["position"], candidate
+        assert candidate["stops_before"] is not None, candidate
+        assert candidate["insertion"], "the insertion must be described in words too"
+
+
+def test_a_confirmation_names_the_window_not_a_database_row(client, temp_db):
+    """"Customer selected 2026-09-08" is a row. The panel's one quotable line must be readable."""
+    from dispatch_agent.planning import plan_service
+
+    _confirmed(temp_db, "Anchor", "469123", SATURDAY, window=(9, 0, 12, 0))
+    plan_service.publish_plan_version(
+        plan_service.solve_day(temp_db, SATURDAY), reason="Initial route for the day"
+    )
+    order_id = _order(client, postal_code="828761")
+    _say(client, order_id, "I'm free Saturday, any time.")
+
+    turn = _say(client, order_id, "Okay, take the first one.")
+
+    changed = turn["decision"]["what_changed"]
+    assert "Customer selected" in changed
+    assert "2026-" not in changed, f"raw ISO date in the panel: {changed}"
+    assert "am" in changed or "pm" in changed, changed

@@ -163,23 +163,26 @@ export default function RoutesPage() {
         <LoadingPanel rows={2} label="Loading the day" />
       ) : list.length === 0 ? (
         <EmptyPanel
-          title="Nothing published for this day"
+          title={dayOrders.length === 0 ? "No deliveries on this day" : "Nothing published for this day"}
           description={
             dayOrders.length === 0
               ? "No deliveries are committed to this date. An order sent here would open a new delivery day."
               : "There are confirmed deliveries but no published route yet."
           }
           action={
+            // Secondary, and no longer on the judge's path: every populated day is seeded with a
+            // published v1, so reaching this state at all means something is wrong. Kept as an
+            // admin recovery, named for what it does rather than as a step anyone should take.
             dayOrders.length > 0 ? (
               <Button
-                variant="primary"
+                variant="ghost"
                 busy={busy === "publish"}
                 onClick={() => run("publish", async () => {
                   await dispatch.routePlan(active!);
                   await refresh();
                 })}
               >
-                Publish a plan
+                Regenerate route
               </Button>
             ) : undefined
           }

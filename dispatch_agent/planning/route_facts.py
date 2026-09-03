@@ -128,8 +128,28 @@ def route_facts(
 
 
 def _weekday_part(window) -> str:
-    """"Friday morning" / "Friday afternoon", by when the promise starts."""
+    """"Friday morning" / "Friday afternoon", by when the promise starts.
+
+    Only used where a vague part of the day is genuinely what we mean. A window that straddles
+    midday -- 11am to 1pm -- is neither, and calling it "Saturday morning" to a customer who has
+    just been offered 11-1 is describing the wrong thing: `describe_window` names the hours.
+    """
     return "morning" if window.start.hour < 12 else "afternoon"
+
+
+def describe_window(date, window) -> str:
+    """"Saturday 11am-1pm". The exact hours, for anything a customer will read back.
+
+    The product said "Saturday morning fits between the other deliveries" directly after offering
+    11am-1pm, which is not morning and does not match the times in the same message.
+    """
+    return f"{date:%A} {_clock(window.start)}-{_clock(window.end)}"
+
+
+def _clock(value) -> str:
+    hour = value.hour % 12 or 12
+    suffix = "am" if value.hour < 12 else "pm"
+    return f"{hour}:{value.minute:02d}{suffix}" if value.minute else f"{hour}{suffix}"
 
 
 def minutes_phrase(count: int) -> str:
@@ -149,7 +169,8 @@ def customer_reason(facts: RouteFacts, date, window) -> str:
     overtime is not "the time we can promise most reliably", however little driving it adds -- and
     saying so was the product reciting a routing metric rather than describing the day.
     """
-    when = f"{date:%A} {_weekday_part(window)}"
+    # The exact hours, not a vague part of the day. See describe_window.
+    when = describe_window(date, window)
 
     if facts.overtime_minutes > 0:
         return (
@@ -167,8 +188,8 @@ def customer_reason(facts: RouteFacts, date, window) -> str:
             f"so this is the time we can promise most reliably."
         )
     if facts.opens_empty_day:
-        return f"{when.capitalize()} is clear, so we can start the day with you."
-    return f"{when.capitalize()} fits between the other deliveries we already have booked."
+        return f"{date:%A} is clear, so we can start the day with you at {_clock(window.start)}."
+    return f"{when} fits between the other deliveries we already have booked."
 
 
 def coordinator_reason(facts: RouteFacts, added_drive_minutes: int) -> str:

@@ -62,21 +62,26 @@ export function FunctionCallsPill({ run }: { run: AgentRun }) {
   );
 }
 
-/** Who chose these actions. Read off the run, so a rule-driven run cannot pose as a model one. */
+/** Who read the message, and what ran afterwards.
+ *
+ *  Two different things, and conflating them is how this line came to say "standard procedure" on
+ *  a run a model had understood perfectly well. The model reads the customer's message and decides
+ *  what they want; the steps that follow are a deterministic procedure, which is why one message
+ *  costs one model call instead of seven. `decider` names the reader — LLMMessageReader when a
+ *  provider answered, RuleMessageReader when it did not. */
 function ProvenanceLine({ run }: { run: AgentRun }) {
-  const byModel = run.decider === "LLMDecisionAgent";
+  const byModel = run.decider.startsWith("LLM") && !run.decider_error;
   return (
     <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
       <span>
-        {byModel ? "Actions chosen by" : "Actions chosen by the"}{" "}
+        Message understood by{" "}
         <span className="font-mono text-[11.5px] text-ink-soft">
-          {byModel ? (run.model_id ?? "the model") : "standard procedure"}
+          {byModel ? (run.model_id ?? "the model") : "the deterministic reader"}
         </span>
+        , steps executed deterministically
       </span>
       {run.decider_error && (
-        <Pill tone="alert">
-          fell back: {run.decider_error.slice(0, 80)}
-        </Pill>
+        <Pill tone="alert">fell back: {run.decider_error.slice(0, 80)}</Pill>
       )}
     </span>
   );

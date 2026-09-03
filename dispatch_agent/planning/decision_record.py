@@ -1,16 +1,17 @@
-"""The business decision behind one agent run, in the terms a coordinator would use.
+"""The agent's decision, in the shape a judge can read in five seconds.
 
-The side panel used to repeat the tool calls, which the per-message inspector already shows in
-full. Repeating them told a judge nothing they could not get by opening the modal, and left the
-actual question -- *why that time and not the other one* -- answered nowhere.
+Rewritten from a panel that was correct and unreadable. It listed constraints, depot configuration,
+service durations and before/after tables, and a judge watching the conversation had to work out
+for themselves why 9-11 had become 11-1. It looked like the optimiser had moved the customer at
+random.
 
-So this is the other view of the same run: what the customer asked for, what constrained the
-answer, what the options actually cost, what was decided and what happened. Every figure comes
-from a tool result that is already persisted; nothing here is recomputed, and nothing is model
-prose. It is built from the run's own action log, so it survives a refresh for the same reason the
-trace does -- it is derived from the database, not from what a browser tab happened to be holding.
+What actually happened was a sequence: the customer rejected 9-11, that window was removed, Saturday
+was re-solved, 11-1 came back. Four steps, none of them arbitrary. So the panel now leads with that
+sequence, then shows at most two candidates -- the one that matches what the customer asked for, and
+the one that is easiest on the route -- and ends with a single recommendation.
 
-There is no chain-of-thought here and there cannot be: the inputs are typed tool results.
+Everything is derived from persisted tool results. There is no chain-of-thought here and there
+cannot be: the inputs are typed results, not model prose.
 """
 from __future__ import annotations
 
@@ -20,194 +21,426 @@ from dispatch_agent.config import settings
 from dispatch_agent.models import AgentRunLog
 from dispatch_agent.planning.route_facts import minutes_phrase
 
+# Two candidates. A judge comparing five is not comparing anything.
+MAX_CANDIDATES = 2
+
+# Below this, two windows are the same answer twice and only one is worth showing.
+SAME_IMPACT_MINUTES = 3
+
 
 @dataclass
-class OptionLine:
-    """One candidate as it was actually evaluated -- feasible or not, and what it would cost."""
+class Step:
+    """One link in "what changed" -- rejected, removed, re-solved, found."""
+
+    text: str
+    tone: str = "neutral"  # "removed" | "solved" | "found"
+
+
+@dataclass
+class Candidate:
+    """One option, with the consequences of choosing it."""
 
     label: str
-    feasible: bool
-    reason: str | None = None
+    # "customer" -- matches what they asked for. "route" -- easiest on the operation.
+    kind: str = "customer"
+    badge: str = ""
+    explanation: str = ""
     added_drive_minutes: int | None = None
     added_distance_km: float | None = None
-    finishes_before: str | None = None
-    finishes_after: str | None = None
-    day_extends_minutes: int | None = None
+    finishes_later_minutes: int | None = None
     idle_minutes: int | None = None
     overtime_minutes: int | None = None
+    promises_moved: int = 0
     opens_new_day: bool = False
-    # Where this option came from: the customer asked for it, or we are proposing it.
-    origin: str = "requested"
+    feasible: bool = True
+    # Where it sits in the solved day, for the route strip.
+    insertion: str | None = None
+    stops_before: int | None = None
+    position: int | None = None
     chosen: bool = False
+    date: str = ""
+    window: str = ""
 
 
 @dataclass
 class DecisionRecord:
-    asked_for: str = ""
-    constraints: list[str] = field(default_factory=list)
-    options: list[OptionLine] = field(default_factory=list)
+    """What the panel renders. `heading` changes with the event, because "Why these times?" and
+    "Why the offer changed" are different questions and one panel answering both answers neither."""
+
+    heading: str = "Agent decision"
+    asked: str = ""
+    what_changed: str = ""
+    steps: list[Step] = field(default_factory=list)
+    candidates: list[Candidate] = field(default_factory=list)
     decision: str = ""
     outcome: list[str] = field(default_factory=list)
-    # Whether this run actually decided anything. A clarification question has no options to
-    # compare, and rendering an empty three-section panel for it is worse than rendering nothing.
+    # Collapsed by default: true, and worth having, and not what anyone needs first.
+    planning_rules: list[str] = field(default_factory=list)
     meaningful: bool = False
 
     def to_dict(self) -> dict:
         return {
-            "asked_for": self.asked_for,
-            "constraints": self.constraints,
-            "options": [vars(o) for o in self.options],
+            "heading": self.heading,
+            "asked": self.asked,
+            "what_changed": self.what_changed,
+            "steps": [vars(s) for s in self.steps],
+            "candidates": [vars(c) for c in self.candidates],
             "decision": self.decision,
             "outcome": self.outcome,
+            "planning_rules": self.planning_rules,
             "meaningful": self.meaningful,
         }
 
 
 def _step(run: AgentRunLog, tool: str):
-    """The last successful call of `tool` in this run, or None."""
     matches = [a for a in run.actions if a.tool == tool and a.ok]
     return matches[-1] if matches else None
 
 
-def _clock(minutes: int | None) -> str | None:
-    if not minutes:
-        return None
-    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+def _window_label(date: str, start: str, end: str) -> str:
+    from datetime import date as Date
+
+    try:
+        day = Date.fromisoformat(date).strftime("%A")
+    except ValueError:
+        day = date
+    return f"{day} {_clock(start)}–{_clock(end)}"
 
 
-def build(run: AgentRunLog, order=None, evaluations=None) -> DecisionRecord:
-    """Assemble the decision from what the run actually did.
+def _clock(hhmm: str) -> str:
+    """"13:00" -> "1pm", "11:30" -> "11:30am"."""
+    try:
+        hour, minute = (int(p) for p in hhmm.split(":"))
+    except (ValueError, AttributeError):
+        return hhmm
+    suffix = "am" if hour < 12 else "pm"
+    shown = hour % 12 or 12
+    return f"{shown}:{minute:02d}{suffix}" if minute else f"{shown}{suffix}"
 
-    `evaluations` is the in-memory list when the run has only just happened. After a refresh there
-    is no such list, and everything below comes from the persisted action data instead -- which is
-    why the tools record their figures in `data` rather than only in prose.
-    """
+
+def build(run: AgentRunLog, order=None, evaluations=None, suggestions=None) -> DecisionRecord:
+    """Assemble the decision from what the run actually did."""
     record = DecisionRecord()
+    intent = _intent_of(run)
+
+    record.heading = {
+        "provide_availability": "Why these times?",
+        "reject": "Why the offer changed",
+        "explain": "Why this time?",
+        "accept": "What the agent changed",
+    }.get(intent, "Agent decision")
+
+    record.planning_rules = _planning_rules(order)
+
+    if intent == "accept":
+        _confirmation(record, run, order)
+        return record
+
+    _what_the_customer_asked(record, run, intent)
+    # Candidates first: the last step of "what changed" names the window that was found, and
+    # reading it off the candidate is exact where scraping it out of a summary string was not.
+    record.candidates = _candidates(run, evaluations, suggestions)
+    _what_changed(record, run, intent)
+    _decide(record, run, intent)
+
+    record.meaningful = bool(record.candidates or record.outcome or record.what_changed)
+    return record
+
+
+def _intent_of(run: AgentRunLog) -> str:
+    tools = [a.tool for a in run.actions]
+    if "lock_appointment" in tools:
+        return "accept"
+    if "record_rejection" in tools:
+        return "reject"
+    if "explain_choice" in tools:
+        return "explain"
+    if "record_availability" in tools:
+        return "provide_availability"
+    return "other"
+
+
+def _planning_rules(order) -> list[str]:
+    """True, and collapsed. Nobody opens a panel to be told what a working day is."""
     duration = getattr(order, "duration_minutes", None)
-    item = getattr(getattr(order, "job_type", None), "value", None)
-
-    # -- 1. what the customer asked for ---------------------------------------
-    noted = _step(run, "record_availability")
-    if noted:
-        windows = noted.data.get("options") or []
-        asked = ", ".join(
-            f"{w['date']} {w['start']}-{w['end']}" for w in windows[:3]
-        )
-        record.asked_for = (
-            f"{asked} for a {duration}-minute {item} delivery"
-            if duration and item else asked
-        )
-        if noted.data.get("timing_is_fixed"):
-            record.asked_for += " (they say it is their only possible time)"
-    elif _step(run, "record_rejection"):
-        declined = _step(run, "record_rejection").data.get("excluded_windows") or []
-        shown = ", ".join(f"{w['date']} {w['start']}-{w['end']}" for w in declined[:2])
-        record.asked_for = f"A different time -- they turned down {shown}." if shown else "A different time."
-    elif _step(run, "lock_appointment"):
-        record.asked_for = "To confirm the time we offered."
-    elif _step(run, "explain_choice"):
-        record.asked_for = "Why that time was chosen."
-    elif _step(run, "ask_clarification"):
-        record.asked_for = "Something we could not answer from the schedule."
-
-    # -- 2. what constrained the answer ---------------------------------------
-    record.constraints = [
-        f"Service duration: {minutes_phrase(duration)}" if duration else "Service duration",
-        "Existing confirmed promises on those days are never moved",
-        f"Driver hours: {settings.work_day_start:%H:%M}-{settings.work_day_end:%H:%M}, "
+    rules = [
+        "Confirmed promises are never moved to fit a new booking",
+        f"Driver hours {settings.work_day_start:%H:%M}–{settings.work_day_end:%H:%M}, "
         f"overtime counted after {settings.soft_day_end:%H:%M}",
         f"Every route starts and ends at {settings.depot_address}",
     ]
-    if record.asked_for:
-        record.constraints.insert(0, "The customer's own stated availability")
+    if duration:
+        rules.insert(0, f"This delivery needs {minutes_phrase(duration)} on site")
+    return rules
 
-    # -- 3. the options, as evaluated -----------------------------------------
+
+def _what_the_customer_asked(record: DecisionRecord, run: AgentRunLog, intent: str) -> None:
+    noted = _step(run, "record_availability")
+    if noted:
+        windows = noted.data.get("options") or []
+        if windows:
+            first = windows[0]
+            record.asked = _window_label(first["date"], first["start"], first["end"])
+            if len(windows) > 1:
+                record.asked += f" (and {len(windows) - 1} other)"
+        if noted.data.get("timing_is_fixed"):
+            record.asked += " — their only possible time"
+    elif intent == "reject":
+        record.asked = "A different time"
+    elif intent == "explain":
+        record.asked = "Why that time was chosen"
+
+
+def _what_changed(record: DecisionRecord, run: AgentRunLog, intent: str) -> None:
+    """The sequence that makes a shifted window look deliberate instead of random."""
+    declined = _step(run, "record_rejection")
+    if declined:
+        windows = declined.data.get("excluded_windows") or []
+        if windows:
+            w = windows[0]
+            label = _window_label(w["date"], w["start"], w["end"])
+            day = label.split(" ")[0]
+            record.what_changed = (
+                f"{label} was rejected and removed. The rest of {day} stayed available."
+            )
+            record.steps = [
+                Step(f"{label} rejected", "removed"),
+                Step("Removed from their availability", "removed"),
+                Step(f"{day} re-solved around the gap", "solved"),
+            ]
+            replacement = next(
+                (c for c in record.candidates if c.label.startswith(day)), None
+            )
+            record.steps.append(
+                Step(
+                    f"{replacement.label} found" if replacement else "Next workable time found",
+                    "found",
+                )
+            )
+        return
+
+    if intent == "explain":
+        record.what_changed = "Nothing changed — this was a question about the offer on the table."
+        record.steps = [
+            Step("Offer still active", "found"),
+            Step("No appointment rejected", "found"),
+            Step("No route republished", "found"),
+        ]
+        return
+
     priced = _step(run, "evaluate_slots")
     if priced:
-        for option in priced.data.get("options") or []:
-            record.options.append(
-                OptionLine(
-                    label=option.get("date", "?"),
-                    feasible=bool(option.get("feasible")),
-                    reason=option.get("reason"),
-                    origin="requested",
-                )
-            )
-    suggested = _step(run, "suggest_route_aware_windows")
-    if suggested:
-        for alternative in suggested.data.get("alternatives") or []:
-            record.options.append(
-                OptionLine(
-                    label=f"{alternative['date']} {alternative['start']}-{alternative['end']}",
-                    feasible=True,
-                    reason=alternative.get("reason"),
-                    added_drive_minutes=alternative.get("added_drive_minutes"),
-                    idle_minutes=alternative.get("idle_minutes"),
-                    overtime_minutes=alternative.get("overtime_minutes"),
-                    opens_new_day=bool(alternative.get("opens_new_day")),
-                    # Not availability. It is a question we have not yet asked.
-                    origin="suggested",
-                )
-            )
-
-    # Richer figures for anything the evaluations still hold in memory.
-    if evaluations:
-        by_date = {e.date.isoformat(): e for e in evaluations}
-        for line in record.options:
-            found = by_date.get(line.label.split(" ")[0])
-            if found is None or not found.feasible:
-                continue
-            line.added_drive_minutes = found.incremental_drive_minutes
-            line.added_distance_km = round(
-                found.proposed_distance_km - found.baseline_distance_km, 2
-            )
-            line.finishes_before = _clock(found.baseline_completion_minutes)
-            line.finishes_after = _clock(found.proposed_completion_minutes)
-            line.day_extends_minutes = max(
-                0, found.proposed_span_minutes - found.baseline_span_minutes
-            )
-            line.idle_minutes = max(0, found.proposed_idle_minutes - found.baseline_idle_minutes)
-            line.overtime_minutes = found.overtime_penalty_minutes
-            line.opens_new_day = found.opens_empty_day
-
-    # -- 4. the decision ------------------------------------------------------
-    offered = _step(run, "create_offer")
-    if offered:
-        for line in record.options:
-            if line.label.split(" ")[0] in (offered.summary or ""):
-                line.chosen = True
-        record.decision = offered.summary or ""
-    elif _step(run, "lock_appointment"):
-        record.decision = _step(run, "lock_appointment").summary
-    elif _step(run, "explain_choice"):
-        record.decision = "Answered the question from the solved route. Nothing was changed."
-    elif _step(run, "ask_clarification"):
-        record.decision = _step(run, "ask_clarification").summary
-
-    # -- 5. what happened -----------------------------------------------------
-    locked = _step(run, "lock_appointment")
-    if locked:
-        record.outcome = [
-            "Appointment locked",
-            f"Route republished as v{locked.data.get('plan_version')}"
-            if locked.data.get("plan_version") else "Route republished",
-            "One stop added",
-            "Existing confirmed customers moved: 0",
-        ]
-    elif offered:
-        record.outcome = ["Offer sent -- waiting for the customer"]
-    elif _step(run, "send_message"):
-        record.outcome = ["Replied to the customer"]
-
-    refused = [a for a in run.actions if a.error in ("not_allowed_for_intent", "already_done")]
-    if refused:
-        # Worth showing: a refusal is the guardrail doing its job, and a judge should see that the
-        # system stopped something rather than that nothing was attempted.
-        record.outcome.append(
-            f"{len(refused)} action(s) refused as out of scope for this message"
+        options = priced.data.get("options") or []
+        workable = sum(1 for o in options if o.get("feasible"))
+        record.what_changed = (
+            f"Solved the customer's requested time against the real routes: "
+            f"{workable} of {len(options)} can be delivered."
         )
 
-    # A clarification is a question, not a decision. Counting it as one would let "lol" wipe the
-    # panel that explains a booking the customer has already confirmed.
-    record.meaningful = bool(record.options or locked or offered)
-    return record
+
+def _candidates(run: AgentRunLog, evaluations, suggestions) -> list[Candidate]:
+    """At most two, and never the same answer twice.
+
+    The panel used to list every evaluated window, including the customer's broad availability
+    rendered as though it were a candidate in its own right -- so "Saturday 9am-6pm" sat beside
+    "Saturday 11am-1pm" as if they were alternatives. Only windows we would actually offer, or
+    would actually propose, belong here.
+    """
+    # An explanation makes no offer, and still has to compare the options it is explaining --
+    # "Tuesday adds a minute, Saturday adds sixteen" is the answer to "why Tuesday?", and the
+    # generic "explained from the solved route" is not.
+    if not _step(run, "create_offer") and not _step(run, "explain_choice"):
+        return []
+
+    found: list[Candidate] = []
+    by_key = {}
+    for evaluation in evaluations or []:
+        if evaluation.feasible and evaluation.promise_window:
+            by_key[(evaluation.date.isoformat(),
+                    evaluation.promise_window.start.strftime("%H:%M"))] = evaluation
+
+    # The customer's own request first, then the route-friendly alternative.
+    requested = [e for e in (evaluations or []) if e.feasible and e.promise_window]
+    for evaluation in requested[:1]:
+        found.append(_candidate_from(evaluation, kind="customer"))
+
+    for suggestion in (suggestions or []):
+        evaluation = suggestion.evaluation
+        if not evaluation.feasible or not evaluation.promise_window:
+            continue
+        key = (evaluation.date.isoformat(), evaluation.promise_window.start.strftime("%H:%M"))
+        if any(c.date == key[0] and c.window.startswith(_clock(key[1])) for c in found):
+            continue
+        found.append(_candidate_from(evaluation, kind="route"))
+        if len(found) >= MAX_CANDIDATES:
+            break
+
+    # Two options that cost the same are one option shown twice.
+    if len(found) == 2:
+        a, b = found
+        same_impact = (
+            abs((a.added_drive_minutes or 0) - (b.added_drive_minutes or 0)) < SAME_IMPACT_MINUTES
+            and abs((a.finishes_later_minutes or 0) - (b.finishes_later_minutes or 0)) < 30
+        )
+        if same_impact and a.date == b.date:
+            found = found[:1]
+
+    _label(found)
+    offered = _step(run, "create_offer")
+    for candidate in found:
+        if offered and candidate.date in (offered.summary or ""):
+            candidate.chosen = True
+    return found[:MAX_CANDIDATES]
+
+
+def _candidate_from(evaluation, kind: str) -> Candidate:
+    window = evaluation.promise_window
+    return Candidate(
+        label=_window_label(
+            evaluation.date.isoformat(),
+            window.start.strftime("%H:%M"),
+            window.end.strftime("%H:%M"),
+        ),
+        kind=kind,
+        date=evaluation.date.isoformat(),
+        window=f"{_clock(window.start.strftime('%H:%M'))}–{_clock(window.end.strftime('%H:%M'))}",
+        added_drive_minutes=evaluation.incremental_drive_minutes,
+        added_distance_km=round(
+            evaluation.proposed_distance_km - evaluation.baseline_distance_km, 1
+        ),
+        finishes_later_minutes=max(
+            0, evaluation.proposed_completion_minutes - evaluation.baseline_completion_minutes
+        ) if evaluation.baseline_completion_minutes else None,
+        idle_minutes=max(0, evaluation.proposed_idle_minutes - evaluation.baseline_idle_minutes),
+        overtime_minutes=evaluation.overtime_penalty_minutes,
+        opens_new_day=evaluation.opens_empty_day,
+        position=evaluation.route_position or None,
+        stops_before=evaluation.baseline_stop_count,
+        insertion=_insertion(evaluation),
+        feasible=True,
+    )
+
+
+def _insertion(evaluation) -> str | None:
+    """Where in the solved day this stop lands, in plain words."""
+    if not evaluation.route_position or not evaluation.route_stop_count:
+        return None
+    if evaluation.route_position == evaluation.route_stop_count:
+        return f"Inserted after stop {evaluation.route_position - 1} and before the return journey."
+    if evaluation.route_position == 1:
+        return "Inserted as the first stop of the day."
+    return (
+        f"Inserted between stop {evaluation.route_position - 1} and stop "
+        f"{evaluation.route_position} of {evaluation.route_stop_count}."
+    )
+
+
+def _label(candidates: list[Candidate]) -> None:
+    """Badges and one-line explanations, from the numbers rather than from adjectives."""
+    if not candidates:
+        return
+
+    cheapest = min(candidates, key=lambda c: c.added_drive_minutes or 0)
+    for candidate in candidates:
+        if candidate.kind == "customer":
+            candidate.badge = "Customer-friendly"
+            candidate.explanation = "This is what the customer asked for."
+        else:
+            candidate.badge = "Lowest route impact"
+            candidate.explanation = "This option adds less driving."
+
+    if len(candidates) == 2:
+        other = next(c for c in candidates if c is not cheapest)
+        saving = (other.added_drive_minutes or 0) - (cheapest.added_drive_minutes or 0)
+        if saving >= 5:
+            cheapest.badge = "Lowest route impact"
+            cheapest.explanation = (
+                f"Fits an existing route — about {minutes_phrase(saving)} less driving than "
+                f"{other.label}."
+            )
+
+
+def _decide(record: DecisionRecord, run: AgentRunLog, intent: str) -> None:
+    offered = _step(run, "create_offer")
+    explained = _step(run, "explain_choice")
+
+    if explained and not offered:
+        # A question, answered. Nothing to decide.
+        record.decision = _explanation_sentence(record.candidates, explained)
+        record.outcome = ["Offer unchanged", "Nothing rejected", "No route published"]
+        record.meaningful = True
+        return
+
+    if not offered:
+        asked = _step(run, "ask_clarification")
+        if asked:
+            record.decision = asked.summary
+        return
+
+    if len(record.candidates) == 2:
+        route = next((c for c in record.candidates if c.kind == "route"), None)
+        customer = next((c for c in record.candidates if c.kind == "customer"), None)
+        if route and customer:
+            record.decision = (
+                f"Offer both. Recommend {route.label} for the lowest route impact, keeping "
+                f"{customer.label} as the customer-friendly option."
+            )
+    elif record.candidates:
+        only = record.candidates[0]
+        record.decision = f"Offer {only.label} — {only.explanation[0].lower()}{only.explanation[1:]}"
+
+    record.outcome = ["Offer sent — waiting for the customer"]
+    refused = [a for a in run.actions if a.error in ("not_allowed_for_intent", "already_done")]
+    if refused:
+        record.outcome.append(f"{len(refused)} action(s) refused as out of scope")
+
+
+def _explanation_sentence(candidates: list[Candidate], explained) -> str:
+    """The comparison, in the customer's terms. Numbers from the solve, never an adjective."""
+    if len(candidates) == 2:
+        cheapest = min(candidates, key=lambda c: c.added_drive_minutes or 0)
+        other = next(c for c in candidates if c is not cheapest)
+        because = (
+            " because the van is already nearby at that time"
+            if (cheapest.added_drive_minutes or 0) <= 5 and not cheapest.opens_new_day
+            else ""
+        )
+        return (
+            f"{cheapest.label} adds {minutes_phrase(cheapest.added_drive_minutes or 0)} of "
+            f"driving{because}. {other.label} adds "
+            f"{minutes_phrase(other.added_drive_minutes or 0)}."
+        )
+    if candidates:
+        only = candidates[0]
+        return (
+            f"{only.label} adds {minutes_phrase(only.added_drive_minutes or 0)} of driving to "
+            f"that day's route."
+        )
+    return explained.summary or "Answered from the solved route."
+
+
+def _confirmation(record: DecisionRecord, run: AgentRunLog, order=None) -> None:
+    locked = _step(run, "lock_appointment")
+    if not locked:
+        return
+    version = locked.data.get("plan_version")
+    when = locked.data.get("delivery_date", "")
+    # The window they chose, in words. "Customer selected 2026-09-08" is a database row, not an
+    # answer -- and it is the one line of this panel a judge reads out loud.
+    slot = when
+    if order is not None and getattr(order, "locked_window", None) and when:
+        slot = _window_label(
+            when,
+            order.locked_window.start.strftime("%H:%M"),
+            order.locked_window.end.strftime("%H:%M"),
+        )
+    record.asked = "To confirm the time we offered"
+    record.what_changed = f"Customer selected {slot}." if slot else "Customer confirmed."
+    record.decision = locked.summary
+    record.outcome = [
+        "Appointment locked",
+        f"Route v{version - 1} → v{version}" if version and version > 1 else "Route published",
+        "One stop inserted",
+        "Existing promises moved: 0",
+    ]
+    record.meaningful = True

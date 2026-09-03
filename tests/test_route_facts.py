@@ -164,22 +164,36 @@ def test_the_customer_sentence_quotes_no_score_or_penalty():
         assert leak not in reason.lower()
 
 
-def test_morning_and_afternoon_follow_the_promised_window():
-    """A reason that names the time of day must name the RIGHT one.
+def test_a_customer_is_told_the_hours_not_a_vague_part_of_the_day():
+    """The product said "Saturday morning fits between the other deliveries" directly after
+    offering 11am-1pm. That is not morning, and it does not match the times in the same message --
+    which is exactly the sort of thing that makes a customer stop trusting the times at all."""
+    from dispatch_agent.planning.route_facts import RouteFacts, describe_window
 
-    Uses a lone stop, because the "we'll already be nearby" branch deliberately says "around then"
-    instead: that sentence is a claim about the hour the van is in the area, and pinning it to
-    "Tuesday afternoon" is how it came to be said about a route whose only eastern stop was 9am.
-    """
+    window = TimeWindow(start=time(11, 0), end=time(13, 0))
+    assert describe_window(DAY, window) == "Friday 11am-1pm"
+
+    # The branch that produced the bad sentence: a stop that simply fits between others.
+    fits_between = RouteFacts(
+        region="East", position=2, stop_count=3, previous_customer="A", next_customer="B",
+        neighbours_in_region=0, opens_empty_day=False,
+    )
+    reason = customer_reason(fits_between, DAY, window)
+
+    assert "morning" not in reason and "afternoon" not in reason
+    assert "11am" in reason and "1pm" in reason
+
+
+def test_the_named_hours_follow_the_window_that_was_promised():
     job = _job("Only", EAST[0])
     sequence = _solve([job])
     facts = route_facts(sequence, job, {job.id: job})
 
-    morning = customer_reason(facts, DAY, TimeWindow(start=time(9, 30), end=time(11, 30)))
-    afternoon = customer_reason(facts, DAY, TimeWindow(start=time(14, 0), end=time(16, 0)))
+    early = customer_reason(facts, DAY, TimeWindow(start=time(9, 30), end=time(11, 30)))
+    late = customer_reason(facts, DAY, TimeWindow(start=time(14, 0), end=time(16, 0)))
 
-    assert "morning" in morning and "afternoon" not in morning
-    assert "afternoon" in afternoon and "morning" not in afternoon
+    assert "9:30am" in early and "2pm" in late
+    assert early != late
 
 
 def test_the_coordinator_sentence_states_the_real_position_and_driving():

@@ -364,33 +364,51 @@ export interface ChatTurn {
   error: string | null;
 }
 
-/** One candidate as it was evaluated, for the decision panel. */
-export interface DecisionOption {
-  label: string;
-  feasible: boolean;
-  reason: string | null;
-  added_drive_minutes: number | null;
-  added_distance_km: number | null;
-  finishes_before: string | null;
-  finishes_after: string | null;
-  day_extends_minutes: number | null;
-  idle_minutes: number | null;
-  overtime_minutes: number | null;
-  opens_new_day: boolean;
-  /** "requested" is the customer's own; "suggested" is a question we have not yet asked. */
-  origin: "requested" | "suggested";
-  chosen: boolean;
+/** One link in "what changed" -- rejected, removed, re-solved, found. */
+export interface DecisionStep {
+  text: string;
+  tone: "neutral" | "removed" | "solved" | "found";
 }
 
-/** The business decision behind a run, rebuilt from persisted tool results.
+/** One option, with the consequences of choosing it. */
+export interface DecisionCandidate {
+  label: string;
+  /** "customer" matches what they asked for; "route" is easiest on the operation. */
+  kind: "customer" | "route";
+  badge: string;
+  explanation: string;
+  added_drive_minutes: number | null;
+  added_distance_km: number | null;
+  finishes_later_minutes: number | null;
+  idle_minutes: number | null;
+  overtime_minutes: number | null;
+  promises_moved: number;
+  opens_new_day: boolean;
+  feasible: boolean;
+  /** Where it lands in the solved day, in plain words. */
+  insertion: string | null;
+  stops_before: number | null;
+  position: number | null;
+  chosen: boolean;
+  date: string;
+  window: string;
+}
+
+/** The agent's decision, in the shape a judge can read in five seconds.
  *
- *  Not chain-of-thought and structurally cannot be: every field comes from a typed tool result. */
+ *  Derived from persisted tool results. Not chain-of-thought, and structurally cannot be. */
 export interface Decision {
-  asked_for: string;
-  constraints: string[];
-  options: DecisionOption[];
+  /** Changes with the event: "Why these times?", "Why the offer changed", "Why this time?",
+   *  "What the agent changed". One panel answering every question answers none of them. */
+  heading: string;
+  asked: string;
+  what_changed: string;
+  steps: DecisionStep[];
+  candidates: DecisionCandidate[];
   decision: string;
   outcome: string[];
+  /** True, and collapsed. Nobody opens a panel to be told what a working day is. */
+  planning_rules: string[];
   meaningful: boolean;
 }
 

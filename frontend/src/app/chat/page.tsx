@@ -258,22 +258,23 @@ export default function ChatPage() {
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1">
             <Eyebrow>Agent decision</Eyebrow>
+            {/* The heading is the question this run answers. "Why these times?" and "Why the offer
+                changed" are different questions, and one panel titled for both answers neither. */}
             <h2 className="text-[17px] font-semibold text-ink">
               {!orderId
                 ? "Nothing decided yet"
                 : busy
                   ? "Reading the message and solving the route…"
                   : decision?.meaningful
-                    ? headline(turn)
+                    ? decision.heading
                     : lastRun
                       ? summarise(lastRun, turn)
                       : "Waiting for the customer"}
             </h2>
             <p className="max-w-[68ch] text-[12.5px] text-ink-muted">
-              The customer sees none of this. Every figure below comes from a solved route — open{" "}
+              The customer sees none of this. Every figure comes from a solved route — open{" "}
               <span className="font-medium text-ink-soft">Function calls &amp; results</span> under
-              any message for the tool calls behind it.
-              {lastRun && <> Understood by {providerLabel(lastRun)}.</>}
+              any message for the tool calls that produced it.
             </p>
           </div>
 
@@ -435,23 +436,6 @@ function prettyTime(hhmm: string): string {
   const [h, m] = hhmm.split(":").map(Number);
   const hour = h % 12 || 12;
   return `${hour}${m ? `:${String(m).padStart(2, "0")}` : ""}${h < 12 ? "am" : "pm"}`;
-}
-
-/** What actually chose this run's actions. Stated, never assumed -- see AgentRunLog.decider. */
-function providerLabel(run: AgentRun): string {
-  if (run.decider === "LLMDecisionAgent") return run.model_id ?? "model";
-  return run.decider_error ? "standard procedure (model unavailable)" : "standard procedure";
-}
-
-/** The headline once a real decision exists. Reads the outcome rather than the tool count. */
-function headline(turn: ChatTurn | null): string {
-  if (turn?.confirmed) return "Appointment locked and the day republished";
-  const offer = turn?.open_offer_id ? turn.offers[turn.open_offer_id] : null;
-  if (offer) {
-    const n = offer.options.length;
-    return `${n} window${n === 1 ? "" : "s"} offered, derived from the solved route`;
-  }
-  return turn?.decision?.decision || "Decision recorded";
 }
 
 function summarise(run: AgentRun, turn: ChatTurn | null): string {

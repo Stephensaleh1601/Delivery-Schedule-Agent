@@ -40,6 +40,62 @@ def _describe(path: Path) -> str:
     return f"{path} containing {', '.join(counts) if counts else 'no rows'}"
 
 
+CACHE_TABLES = ("geocode_cache", "drive_time_cache")
+
+
+def _read_caches(path: Path) -> dict[str, tuple[list[str], list[tuple]]]:
+    """Every row of the provider caches, with their column names."""
+    if not path.exists():
+        return {}
+    saved: dict[str, tuple[list[str], list[tuple]]] = {}
+    conn = sqlite3.connect(path)
+    try:
+        for table in CACHE_TABLES:
+            try:
+                cursor = conn.execute(f"SELECT * FROM {table}")
+            except sqlite3.Error:
+                continue  # a database old enough not to have this table yet
+            columns = [c[0] for c in cursor.description]
+            saved[table] = (columns, cursor.fetchall())
+    finally:
+        conn.close()
+    return saved
+
+
+def _write_caches(path: Path, saved: dict[str, tuple[list[str], list[tuple]]]) -> str:
+    """Put them back into the fresh schema, skipping anything the new schema no longer has."""
+    if not saved:
+        return ""
+    restored = []
+    conn = sqlite3.connect(path)
+    try:
+        # The cache tables are created lazily by the modules that own them, so a freshly
+        # initialised database does not have them yet. Reuse each module's own DDL rather than
+        # restating the columns here, where a schema change would not be noticed.
+        from dispatch_agent.geo import geocoder, matrix_cache
+
+        conn.executescript(geocoder.SCHEMA)
+        conn.executescript(matrix_cache.SCHEMA)
+
+        for table, (columns, rows) in saved.items():
+            if not rows:
+                continue
+            placeholders = ",".join("?" * len(columns))
+            try:
+                conn.executemany(
+                    f"INSERT OR IGNORE INTO {table} ({','.join(columns)}) VALUES ({placeholders})",
+                    rows,
+                )
+            except sqlite3.Error as exc:
+                print(f"  ! could not restore {table}: {exc}")
+                continue
+            restored.append(f"{len(rows)} {table} rows")
+        conn.commit()
+    finally:
+        conn.close()
+    return ", ".join(restored)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--yes", action="store_true", help="confirm the deletion")
@@ -53,11 +109,21 @@ def main() -> int:
         print("\nRefusing to proceed without --yes. Nothing has been changed.")
         return 1
 
+    # Lift the caches out before the file goes. They are not demo data -- they are the record of
+    # every geocode and drive time we have already paid a provider for, and throwing them away
+    # makes the next run slow, billable, and dependent on the network being up at the worst
+    # possible moment.
+    preserved = _read_caches(path)
+
     if path.exists():
         path.unlink()
         print(f"Deleted {path}")
     init_db(path)
     print(f"Recreated schema at {path}")
+
+    restored = _write_caches(path, preserved)
+    if restored:
+        print(f"Preserved {restored}")
 
     if args.no_seed:
         print("Skipping seed data (--no-seed).")

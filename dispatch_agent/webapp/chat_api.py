@@ -123,6 +123,9 @@ def receive_message(order_id: str, payload: InboundMessage) -> dict:
     return _turn(
         repo, order_id, extra_run=run, intent=said.intent,
         inbound_id=inbound.id, evaluations=ctx.evaluations,
+        # The route-friendly alternatives this run found. Passed through so the panel can price
+        # them properly rather than repeating the one-line summary the tool logged.
+        suggestions=ctx.scratch.get("suggestions"),
     )
 
 
@@ -238,7 +241,7 @@ def _clarifying_question(said, live_offer) -> str:
     return "Sorry, I didn't catch that -- which day and roughly what time would suit you?"
 
 
-def _decision_for(repo: JobsRepository, order_id: str, extra_run, evaluations) -> dict:
+def _decision_for(repo: JobsRepository, order_id: str, extra_run, evaluations, suggestions=None) -> dict:
     """The most recent run that decided something, as a rendered decision record.
 
     Walks backwards through this order's runs. The side panel went blank -- "Waiting for the
@@ -260,7 +263,10 @@ def _decision_for(repo: JobsRepository, order_id: str, extra_run, evaluations) -
 
     for run in candidates:
         record = decision_record.build(
-            run, order=order, evaluations=evaluations if run is extra_run else None
+            run,
+            order=order,
+            evaluations=evaluations if run is extra_run else None,
+            suggestions=suggestions if run is extra_run else None,
         )
         if record.meaningful:
             return {"decision": record.to_dict(), "decision_run_id": run.id}
@@ -275,6 +281,7 @@ def _turn(
     duplicate: bool = False,
     inbound_id: str | None = None,
     evaluations=None,
+    suggestions=None,
 ) -> dict:
     """The conversation as it now stands, read back from the database.
 
@@ -319,7 +326,7 @@ def _turn(
         # browser tab was holding. `decision_run_id` is the last run that actually decided
         # something -- a clarification question is not a decision, and after a confirmation the
         # panel must keep showing the confirmation rather than reverting to "waiting".
-        **_decision_for(repo, order_id, extra_run, evaluations),
+        **_decision_for(repo, order_id, extra_run, evaluations, suggestions),
         "error": (
             extra_run.final_summary
             if extra_run is not None and extra_run.status is not AgentRunStatus.COMPLETED

@@ -188,6 +188,8 @@ def seed() -> str:
     for job in jobs:
         repo.save_job(job)
 
+    published = publish_baseline_routes(repo)
+
     confirmed = sum(1 for j in jobs if j.planning_status is PlanningStatus.CONFIRMED)
     precise = sum(1 for j in jobs if j.address.precisely_located)
     return (
@@ -197,8 +199,36 @@ def seed() -> str:
         f"  {len(jobs) - confirmed} awaiting planning, each with 2 acceptable windows\n"
         f"  2 customers have agreed to an earlier delivery\n"
         f"  {precise}/{len(jobs)} at real building coordinates\n"
-        f"  'Priya Nair' on {d1} is the intended readiness-delay subject"
+        f"  'Priya Nair' on {d1} is the intended readiness-delay subject\n"
+        f"  v1 routes published for {', '.join(str(d) for d in published) or 'no dates'}"
     )
+
+
+def publish_baseline_routes(repo: JobsRepository) -> list:
+    """Solve and publish a v1 route for every day that has confirmed work on it.
+
+    Without this the demo opens on "Nothing published for this day" beside a list of five
+    deliveries, which reads as a broken page rather than an empty one -- and there is no v1 for the
+    booking to turn into a v2, so the before/after comparison the whole demo turns on has nothing
+    to compare against.
+
+    Genuinely empty days are left alone: an empty day with no plan is the honest state, and
+    publishing a plan with no stops on it would be inventing work.
+    """
+    from dispatch_agent.planning import plan_service
+
+    published = []
+    for date in PlanningClock.horizon_dates():
+        if not plan_service.routable_jobs(repo, date):
+            continue
+        try:
+            sequence = plan_service.solve_day(repo, date)
+        except Exception as exc:  # noqa: BLE001 -- a day we cannot route must not stop the seed
+            print(f"  ! {date} could not be routed, left unpublished: {exc}")
+            continue
+        plan_service.publish_plan_version(sequence, reason="Initial route for the day")
+        published.append(date)
+    return published
 
 
 def main() -> str:

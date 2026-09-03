@@ -1,178 +1,211 @@
 "use client";
 
+import { useState } from "react";
 import { Card, Eyebrow, Pill, cx } from "@/components/ui";
-import type { Decision, DecisionOption } from "@/lib/api";
+import { RouteStrip } from "@/components/RouteStrip";
+import type { Decision, DecisionCandidate, DecisionStep } from "@/lib/api";
 
 /**
- * The business decision, in the terms a coordinator would use.
+ * The agent's decision, for someone who has five seconds.
  *
- * This panel used to list the tool calls, which the per-message inspector already shows in full.
- * Repeating them told a judge nothing they could not get by opening the modal, and left the actual
- * question -- *why that time and not the other one* -- answered nowhere on the screen.
+ * The previous version was correct and unreadable: constraints, depot configuration, service
+ * durations, before/after tables. A judge watching the conversation had to work out for themselves
+ * why 9–11 had become 11–1, and it looked like the optimiser had moved the customer at random.
  *
- * So: what was asked for, what constrained the answer, what the options really cost, what was
- * decided, and what happened. Every figure comes from a persisted tool result. There is no
- * chain-of-thought here and there cannot be, because the inputs are typed results rather than
- * model prose.
+ * So this leads with the sequence — rejected, removed, re-solved, found — then shows at most two
+ * candidates and one recommendation. The planning rules are still here and still true; they are
+ * collapsed, because nobody opens a panel to be told what a working day is.
+ *
+ * The tool calls are deliberately absent. They live under the message that produced them, in
+ * "Function calls & results", which is the technical audit. This panel is what happened and why it
+ * matters; that modal is proof the agent actually did it.
  */
 export function AgentDecision({ decision }: { decision: Decision }) {
+  const [showRules, setShowRules] = useState(false);
+
   return (
     <div className="flex flex-col gap-4">
-      {decision.asked_for && (
-        <Section title="What the customer asked for">
-          <p className="text-[13.5px] leading-[1.5] text-ink">{decision.asked_for}</p>
-        </Section>
+      {decision.asked && (
+        <div className="flex flex-col gap-0.5">
+          <Eyebrow>Customer asked for</Eyebrow>
+          <p className="text-[14px] leading-[1.45] text-ink">{decision.asked}</p>
+        </div>
       )}
 
-      {decision.constraints.length > 0 && (
-        <Section title="Constraints applied">
-          <ul className="flex flex-col gap-1">
-            {decision.constraints.map((line) => (
-              <li key={line} className="flex gap-2 text-[12.5px] leading-[1.5] text-ink-soft">
-                <span aria-hidden className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-rail-strong" />
-                {line}
-              </li>
-            ))}
-          </ul>
-        </Section>
+      {decision.what_changed && (
+        <section className="flex flex-col gap-2">
+          <Eyebrow>What changed</Eyebrow>
+          <p className="text-[14px] font-medium leading-[1.45] text-ink">
+            {decision.what_changed}
+          </p>
+          {decision.steps.length > 0 && <Flow steps={decision.steps} />}
+        </section>
       )}
 
-      {decision.options.length > 0 && (
-        <Section title="Options compared">
-          <div className="flex flex-col gap-2">
-            {decision.options.map((option, i) => (
-              <OptionCard key={`${option.label}-${i}`} option={option} />
+      {decision.candidates.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <Eyebrow>
+            {decision.candidates.length === 1 ? "The option" : "The two real choices"}
+          </Eyebrow>
+          <div
+            className={cx(
+              "grid gap-3",
+              decision.candidates.length === 2 ? "grid-cols-2" : "grid-cols-1",
+            )}
+          >
+            {decision.candidates.map((candidate) => (
+              <CandidateCard key={candidate.label} candidate={candidate} />
             ))}
           </div>
-        </Section>
+        </section>
       )}
 
+      {decision.candidates.length > 0 && <RouteStrip candidates={decision.candidates} />}
+
       {decision.decision && (
-        <Section title="Decision">
-          <p className="text-[13.5px] leading-[1.5] text-ink">{decision.decision}</p>
-        </Section>
+        <section
+          className={cx(
+            "rounded-[12px] border px-4 py-3",
+            "border-locked-edge bg-locked-wash/50",
+          )}
+        >
+          <Eyebrow>Decision</Eyebrow>
+          <p className="mt-1 text-[14px] font-medium leading-[1.5] text-ink">
+            {decision.decision}
+          </p>
+        </section>
       )}
 
       {decision.outcome.length > 0 && (
-        <Section title="Outcome">
-          <ul className="flex flex-col gap-1">
+        <section className="flex flex-col gap-1">
+          <Eyebrow>Outcome</Eyebrow>
+          <ul className="flex flex-col gap-0.5">
             {decision.outcome.map((line) => (
               <li key={line} className="flex gap-2 text-[12.5px] leading-[1.5] text-ink-soft">
-                <span aria-hidden className="mt-[6px] text-[10px] text-locked">✓</span>
+                <span aria-hidden className="mt-[5px] text-[10px] text-locked">✓</span>
                 {line}
               </li>
             ))}
           </ul>
-        </Section>
+        </section>
+      )}
+
+      {decision.planning_rules.length > 0 && (
+        <div className="border-t border-rail pt-2.5">
+          <button
+            onClick={() => setShowRules((v) => !v)}
+            aria-expanded={showRules}
+            className="text-[11.5px] text-ink-faint transition-colors hover:text-ink-soft"
+          >
+            {showRules ? "− " : "+ "}Planning rules applied
+          </button>
+          {showRules && (
+            <ul className="mt-1.5 flex flex-col gap-1">
+              {decision.planning_rules.map((rule) => (
+                <li key={rule} className="flex gap-2 text-[11.5px] leading-[1.45] text-ink-muted">
+                  <span aria-hidden className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-rail-strong" />
+                  {rule}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+/** rejected → removed → re-solved → found. The part that makes a shifted window look deliberate. */
+function Flow({ steps }: { steps: DecisionStep[] }) {
   return (
-    <section className="flex flex-col gap-1.5">
-      <Eyebrow>{title}</Eyebrow>
-      {children}
-    </section>
+    <ol className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
+      {steps.map((step, i) => (
+        <li key={step.text} className="flex items-center gap-1.5">
+          {i > 0 && (
+            <span aria-hidden className="text-[12px] text-ink-faint">
+              →
+            </span>
+          )}
+          <span
+            className={cx(
+              "rounded-full border px-2.5 py-[3px] text-[11.5px] leading-none",
+              step.tone === "removed" && "border-alert-edge bg-alert-wash text-alert",
+              step.tone === "solved" && "border-rail-strong bg-sunk text-ink-soft",
+              step.tone === "found" && "border-locked-edge bg-locked-wash text-locked",
+              step.tone === "neutral" && "border-rail bg-surface text-ink-muted",
+            )}
+          >
+            {step.text}
+          </span>
+        </li>
+      ))}
+    </ol>
   );
 }
 
-function OptionCard({ option }: { option: DecisionOption }) {
-  if (!option.feasible) {
-    return (
-      <Card tone="neutral" className="flex flex-col gap-1 px-3.5 py-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[13px] font-medium text-ink-soft">{option.label}</span>
-          <Pill tone="alert">Can&apos;t be served</Pill>
-        </div>
-        {option.reason && (
-          <p className="text-[12px] leading-[1.45] text-ink-muted">{option.reason}</p>
-        )}
-      </Card>
-    );
-  }
-
-  // Consequences worth flagging on their own, because each one is invisible in the driving figure
-  // that used to be the whole story.
+function CandidateCard({ candidate }: { candidate: DecisionCandidate }) {
   const heavy =
-    (option.day_extends_minutes ?? 0) >= 60 ||
-    (option.idle_minutes ?? 0) >= 60 ||
-    (option.overtime_minutes ?? 0) > 0;
+    (candidate.finishes_later_minutes ?? 0) >= 60 ||
+    (candidate.idle_minutes ?? 0) >= 60 ||
+    (candidate.overtime_minutes ?? 0) > 0;
 
   return (
     <Card
-      tone={option.chosen ? "locked" : "neutral"}
-      className="flex flex-col gap-2 px-3.5 py-2.5"
+      tone={candidate.kind === "route" ? "locked" : "neutral"}
+      className="flex flex-col gap-2 px-3.5 py-3"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-[13px] font-medium text-ink">{option.label}</span>
-        <div className="flex items-center gap-1.5">
-          {option.chosen && <Pill tone="locked">Offered</Pill>}
-          {option.origin === "suggested" && <Pill tone="pending">We&apos;d have to ask</Pill>}
-          {!option.chosen && option.origin === "requested" && <Pill tone="neutral">Requested</Pill>}
-        </div>
+      <div className="flex flex-col gap-1">
+        <span className="text-[13.5px] font-semibold text-ink">{candidate.label}</span>
+        <Pill tone={candidate.kind === "route" ? "locked" : "neutral"}>{candidate.badge}</Pill>
       </div>
 
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-0.5">
-        <Figure label="Driving" value={signedMinutes(option.added_drive_minutes)} />
-        <Figure label="Distance" value={signedKm(option.added_distance_km)} />
-        <Figure
-          label="Day ends"
-          value={
-            option.finishes_before && option.finishes_after
-              ? `${option.finishes_before} → ${option.finishes_after}`
-              : (option.finishes_after ?? "—")
-          }
-        />
-        <Figure
-          label="Working day"
-          value={signedMinutes(option.day_extends_minutes)}
-          warn={(option.day_extends_minutes ?? 0) >= 60}
-        />
-        <Figure
-          label="Crew waiting"
-          value={signedMinutes(option.idle_minutes)}
-          warn={(option.idle_minutes ?? 0) >= 60}
-        />
-        <Figure
-          label="Overtime"
-          value={option.overtime_minutes ? duration(option.overtime_minutes) : "—"}
-          warn={(option.overtime_minutes ?? 0) > 0}
-        />
-      </dl>
+      <ul className="flex flex-col gap-0.5">
+        <Fact value={signed(candidate.added_drive_minutes, duration)} label="driving" />
+        <Fact value={signed(candidate.added_distance_km, (n) => `${n.toFixed(1)} km`)} label="" />
+        {candidate.finishes_later_minutes ? (
+          <Fact
+            value={`Crew finishes ${duration(candidate.finishes_later_minutes)} later`}
+            label=""
+            warn={candidate.finishes_later_minutes >= 60}
+          />
+        ) : null}
+        {candidate.overtime_minutes ? (
+          <Fact value={`${duration(candidate.overtime_minutes)} overtime`} label="" warn />
+        ) : null}
+        {candidate.opens_new_day && <Fact value="Opens a new delivery day" label="" warn />}
+        <Fact value={`No existing promises moved`} label="" />
+      </ul>
 
-      {option.opens_new_day && (
-        <p className="text-[11.5px] text-pending">Opens a delivery day with no other work on it.</p>
-      )}
-      {heavy && (
-        // The sentence the browser session needed and did not get: a "+1 driving minute" headline
-        // must not be allowed to hide a multi-hour increase in the working day.
-        <p className="text-[11.5px] leading-[1.45] text-pending">
-          Cheap to drive to, expensive to serve — the extra cost is in the crew&apos;s day, not the
-          road.
-        </p>
-      )}
-      {option.reason && (
-        <p className="text-[12px] leading-[1.45] text-ink-muted">{option.reason}</p>
+      <p
+        className={cx(
+          "text-[12px] leading-[1.45]",
+          heavy ? "text-pending" : "text-ink-muted",
+        )}
+      >
+        {candidate.explanation}
+      </p>
+      {candidate.insertion && (
+        <p className="text-[11.5px] leading-[1.4] text-ink-faint">{candidate.insertion}</p>
       )}
     </Card>
   );
 }
 
-function Figure({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+function Fact({ value, label, warn }: { value: string | null; label: string; warn?: boolean }) {
+  if (!value) return null;
   return (
-    <div className="flex items-baseline justify-between gap-2 py-[2px]">
-      <dt className="text-[12px] text-ink-muted">{label}</dt>
-      <dd
-        className={cx(
-          "font-mono text-[12px] tnum",
-          warn ? "text-pending" : "text-ink-soft",
-        )}
-      >
+    <li
+      className={cx(
+        "flex gap-1.5 text-[12.5px] leading-[1.45]",
+        warn ? "text-pending" : "text-ink-soft",
+      )}
+    >
+      <span aria-hidden className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-rail-strong" />
+      <span>
         {value}
-      </dd>
-    </div>
+        {label && ` ${label}`}
+      </span>
+    </li>
   );
 }
 
@@ -183,15 +216,10 @@ export function duration(minutes: number): string {
   const hours = Math.floor(n / 60);
   const rest = n % 60;
   if (rest === 0) return `${hours} hour${hours === 1 ? "" : "s"}`;
-  return `${hours}h ${rest}m`;
+  return `${hours}h ${String(rest).padStart(2, "0")}m`;
 }
 
-function signedMinutes(minutes: number | null): string {
-  if (minutes === null || minutes === 0) return "—";
-  return `${minutes > 0 ? "+" : "−"}${duration(minutes)}`;
-}
-
-function signedKm(km: number | null): string {
-  if (km === null || Math.abs(km) < 0.05) return "—";
-  return `${km > 0 ? "+" : "−"}${Math.abs(km).toFixed(1)} km`;
+function signed(value: number | null, format: (n: number) => string): string | null {
+  if (value === null || Math.abs(value) < 0.05) return null;
+  return `${value > 0 ? "+" : "−"}${format(Math.abs(value))}`;
 }
