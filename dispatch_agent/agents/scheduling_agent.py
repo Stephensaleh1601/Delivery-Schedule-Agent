@@ -29,6 +29,7 @@ from dispatch_agent.agents.prompts import (
 from dispatch_agent.db import JobsRepository
 from dispatch_agent.geo.routing_client import RoutingClient
 from dispatch_agent.llm import LLMClient, build_llm_client
+from dispatch_agent.config import settings
 from dispatch_agent.models import (
     AgentActionLog,
     AgentRunLog,
@@ -161,13 +162,18 @@ class RuleDecisionAgent:
 
         if event.event_type is PlanningEventType.CUSTOMER_REJECTED_OFFER:
             if "record_rejection" not in done:
-                return ActionDecision(action="record_rejection",
-                                      reason_summary="Recording that the customer declined.",
-                                      arguments={"offer_id": event.payload.get("offer_id")})
+                return ActionDecision(
+                    action="record_rejection",
+                    reason_summary="Excluding the time they turned down, not the whole day.",
+                    arguments={"offer_id": event.payload.get("offer_id"),
+                               "slot_id": event.payload.get("slot_id")},
+                )
             if "evaluate_slots" not in done:
-                return ActionDecision(action="evaluate_slots",
-                                      reason_summary="Looking for another workable window.",
-                                      arguments={"order_id": event.order_id})
+                return ActionDecision(
+                    action="evaluate_slots",
+                    reason_summary="Re-solving their dates around the excluded time.",
+                    arguments={"order_id": event.order_id},
+                )
             if "create_offer" not in done:
                 return ActionDecision(action="create_offer",
                                       reason_summary="Offering the next best slot.",
@@ -216,6 +222,8 @@ class SchedulingState(TypedDict, total=False):
     step_count: int
     completed: bool
     error: Optional[str]
+    # Set when a decision fell back to the standard procedure, so the run can say why.
+    decider_error: Optional[str]
 
 
 def _observe_node(ctx: tools.ToolContext):
@@ -270,6 +278,7 @@ def _decide_node(decider: DecisionAgent, fallback: DecisionAgent | None):
             # implying it made these calls.
             decision = fallback.decide(state, tools.allowed_actions())
             decision.reason_summary = f"[model unavailable, using standard procedure] {decision.reason_summary}"
+            return {"pending_decision": decision, "decider_error": f"{type(exc).__name__}: {exc}"}
         return {"pending_decision": decision}
 
     return node
@@ -376,6 +385,8 @@ def handle_planning_event(
             decider = LLMDecisionAgent()
         except Exception:  # noqa: BLE001 -- a missing provider must degrade, not 500
             decider = RuleDecisionAgent()
+    run.decider = type(decider).__name__
+    run.model_id = settings.bedrock_model_id if isinstance(decider, LLMDecisionAgent) else None
     fallback = RuleDecisionAgent() if use_fallback else None
     graph = build_graph(ctx, decider, fallback)
 
@@ -392,6 +403,10 @@ def handle_planning_event(
         repo.save_agent_run(run)
         return run
 
+    # A run can be part-model, part-standard-procedure: the fallback happens per decision, not per
+    # run. Recording the error is what makes that visible rather than a guess from a prefix.
+    if final.get("decider_error"):
+        run.decider_error = final["decider_error"]
     run.actions = final.get("actions", [])
     run.completed_at = datetime.now(timezone.utc)
 

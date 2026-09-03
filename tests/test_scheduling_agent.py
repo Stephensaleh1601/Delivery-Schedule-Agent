@@ -195,8 +195,14 @@ def test_acceptance_locks_the_appointment_and_publishes_a_plan(temp_db):
 
 
 def test_rejection_leads_to_another_offer(temp_db):
-    """Three windows, two offered first time round -- so there is genuinely a third to fall back
-    on. (With only two options this correctly escalates instead; see the test below.)"""
+    """A rejection must produce a different TIME, which is not the same as a different day.
+
+    This assertion used to be "a different availability option", which was right only while the
+    offered window was the customer's whole day. Now that the offer is a narrow window carved out
+    of that day, declining 10-12 on Friday leaves the rest of Friday genuinely available -- and
+    re-offering it is the correct behaviour, not a repeat. What must never come back is the exact
+    window they turned down.
+    """
     order = _order(temp_db, option_count=3)
     handle_planning_event(_event(order), repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False)
     first = temp_db.offers_for_order(order.id)[0]
@@ -208,16 +214,50 @@ def test_rejection_leads_to_another_offer(temp_db):
 
     offers = temp_db.offers_for_order(order.id)
     assert len(offers) == 2, "a rejection should produce a second offer, not a dead end"
-    already = {s.availability_option_id for s in offers[0].options}
-    assert not any(s.availability_option_id in already for s in offers[1].options), (
-        "the second offer repeated a slot the customer already turned down"
+    declined = {(s.date, s.window.start, s.window.end) for s in offers[0].options}
+    repeated = [s for s in offers[1].options if (s.date, s.window.start, s.window.end) in declined]
+    assert not repeated, f"re-offered a time the customer already turned down: {repeated}"
+
+
+def test_a_declined_time_is_excluded_from_the_day_it_came_from(temp_db):
+    """The mechanism behind the test above, checked on the order itself: the declined window is
+    carved out of the availability option, so the same date is re-solved with a hole in it rather
+    than abandoned."""
+    order = _order(temp_db, option_count=3)
+    handle_planning_event(_event(order), repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False)
+    first = temp_db.offers_for_order(order.id)[0]
+    declined = first.options[0]
+
+    handle_planning_event(
+        _event(order, PlanningEventType.CUSTOMER_REJECTED_OFFER,
+               offer_id=first.id, slot_id=declined.id),
+        repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False,
     )
+
+    stored = temp_db.get_job(order.id)
+    option = next(o for o in stored.availability_options if o.id == declined.availability_option_id)
+    assert declined.window in option.excluded_windows
+    # ...and the day is still on the table, not written off.
+    assert option.bookable_windows(min_width=stored.duration_minutes + 30)
 
 
 def test_rejecting_the_last_available_slot_escalates_rather_than_giving_up(temp_db):
     """When every window the customer gave has been tried, the order must reach a human --
-    quietly ending the run would abandon it."""
+    quietly ending the run would abandon it.
+
+    The windows here are deliberately only as wide as one promise. A four-hour availability would
+    survive a rejection with hours to spare and correctly come back with a different time (see
+    test_rejection_leads_to_another_offer); exhaustion is what this test is about, so the customer
+    is given two windows that hold exactly one slot each.
+    """
     order = _order(temp_db, option_count=2)
+    days = PlanningClock.horizon_dates()
+    order.availability_options = [
+        AvailabilityOption(date=days[0], window=_w((9, 0), (11, 0)), preference_rank=1),
+        AvailabilityOption(date=days[1], window=_w((14, 0), (16, 0)), preference_rank=2),
+    ]
+    temp_db.save_job(order)
+
     handle_planning_event(_event(order), repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False)
     first = temp_db.offers_for_order(order.id)[0]
 
@@ -264,3 +304,34 @@ def test_the_loop_falls_back_to_standard_procedure_when_the_model_is_unavailable
 def test_reason_summaries_are_truncated_not_trusted(temp_db):
     decision = ActionDecision(action="finish", reason_summary="x " * 400)
     assert len(decision.reason_summary) <= 240
+
+
+def test_the_run_records_which_provider_actually_decided(temp_db):
+    """An inspector that says "the agent decided" without saying who is decorative. Nothing stored
+    this before -- the only evidence of a fallback was a prefix inside a truncated string."""
+    order = _order(temp_db)
+
+    run = handle_planning_event(
+        _event(order), repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False
+    )
+
+    assert run.decider == "RuleDecisionAgent"
+    assert run.model_id is None
+    assert run.decider_error is None
+    assert temp_db.agent_runs()[0].decider == "RuleDecisionAgent"
+
+
+def test_a_fallback_keeps_the_exception_that_caused_it(temp_db):
+    """"No AWS credentials" and "the model returned garbage" are different problems, and a demo
+    that cannot tell them apart cannot be debugged in the five minutes before it starts."""
+    order = _order(temp_db)
+
+    class BrokenDecider:
+        def decide(self, state, allowed):
+            raise RuntimeError("bedrock unavailable")
+
+    run = handle_planning_event(_event(order), repo=temp_db, decider=BrokenDecider())
+
+    assert run.decider == "BrokenDecider"
+    assert "bedrock unavailable" in run.decider_error
+    assert temp_db.agent_runs()[0].decider_error == run.decider_error

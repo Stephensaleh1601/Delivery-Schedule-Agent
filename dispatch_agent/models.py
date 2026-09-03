@@ -211,7 +211,24 @@ class AvailabilityOption(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     date: Date
     window: TimeWindow
+    # Intervals inside `window` the customer has since turned down. A rejection applies to the time
+    # we proposed, not to the whole day -- "not 10 till 12" is not "not Friday" -- so the option
+    # survives with a hole in it and the day is re-solved around it. Stored rather than derived so
+    # it outlives the round trip and is visible in the order's record.
+    excluded_windows: list[TimeWindow] = Field(default_factory=list)
     preference_rank: int = 1
+
+    def bookable_windows(self, min_width: int) -> list["TimeWindow"]:
+        """What is left of this option once the rejections are carved out.
+
+        Empty means the customer has ruled out every part of the day that could hold the job --
+        which is a real answer, and the caller should move to another date rather than re-offering.
+        """
+        from dispatch_agent.planning.promise_window import subtract
+
+        if not self.excluded_windows:
+            return [self.window]
+        return subtract(self.window, self.excluded_windows, min_width=min_width)
 
 
 class JobRecord(BaseModel):
@@ -416,12 +433,27 @@ class CandidateSlotEvaluation(BaseModel):
     proposed_completion_minutes: int = 0
     opens_empty_day: bool = False
     preference_rank: int = 1
+    # Where this stop landed in the solved day, and the region it landed in. Read off the sequence,
+    # never inferred -- these are what let the agent say "we'll already be in the East" truthfully.
+    region: Optional[str] = None
+    route_position: int = 0
+    route_stop_count: int = 0
+    # Two renderings of the same facts. The customer one names no other customer by construction
+    # (route_facts.customer_reason); the coordinator one may, because a dispatcher sees the day
+    # anyway. Both are built deterministically from the solved route, with no model in the loop.
+    customer_reason: Optional[str] = None
+    coordinator_reason: Optional[str] = None
     day_opening_penalty_minutes: int = 0
     preference_penalty_minutes: int = 0
     overtime_penalty_minutes: int = 0
     # A RANKING INDEX, not a duration and not a price. It mixes real driving minutes with artificial
     # penalties -- a 60-minute empty-day charge is a planning weight, nobody drives it. Never render
     # this to a customer or a coordinator with a time unit; show the components instead.
+    #
+    # `total_score` is kept for compatibility (OfferedSlot.score, the API, recovery ranking).
+    # `operational_score` is the same index with the customer's preference taken back out, and it
+    # is what candidates are actually ranked on: preference then breaks ties between operationally
+    # comparable days instead of acting as a ten-minute-per-rank bribe against the route.
     total_score: int = 0
     proposed_sequence: Optional[DaySequence] = None
 
@@ -461,8 +493,14 @@ class CandidateSlotEvaluation(BaseModel):
 class OfferedSlot(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     availability_option_id: str
+    # The narrow window put to the customer, derived from the solved arrival -- not the broad
+    # availability the option came from.
     date: Date
     window: TimeWindow
+    # Why this time, in the customer's terms. Built from the solved route by
+    # route_facts.customer_reason and stored here so the message and the button can never disagree,
+    # and so the reason survives a page refresh. Names no other customer, quotes no score.
+    reason: Optional[str] = None
     score: int = 0
 
 
@@ -540,6 +578,15 @@ class AgentRunLog(BaseModel):
     actions: list[AgentActionLog] = Field(default_factory=list)
     status: AgentRunStatus = AgentRunStatus.RUNNING
     final_summary: str = ""
+    # Which provider actually chose the actions, and what it was told to fall back to. Nothing
+    # recorded this before: the only trace of a fallback was a "[model unavailable...]" prefix
+    # inside a string that gets truncated. An inspector that cannot say whether the model or the
+    # standard procedure made these calls is decorative, so this is stored rather than inferred.
+    decider: str = "unknown"
+    model_id: Optional[str] = None
+    # The exception that caused a fallback, kept so "no AWS credentials" is distinguishable from
+    # "the model returned something unusable".
+    decider_error: Optional[str] = None
     token_usage: Optional[dict] = None
     started_at: datetime = Field(default_factory=_utcnow)
     completed_at: Optional[datetime] = None

@@ -11,6 +11,50 @@ Built for IGNITE Agentic AI Hackathon 2026, digital track.
 
 ## What's built
 
+### The negotiated promise window
+
+The thing that makes this behave like a coordinator rather than a scheduler. A customer who says
+"Friday, any time" is describing a **boundary**, not asking to be told a nine-hour arrival window.
+So the route is solved first, and the customer is then asked for something specific:
+
+> We can deliver on Friday, 5 September, between 10:00am and 12:00pm. We'll already be delivering
+> in the East that morning, so this is the time we can promise most reliably. Does that work?
+
+Three windows exist and all three are stored, because they mean different things:
+
+| | what it is | where it lives |
+|---|---|---|
+| **availability** | what the customer said they could do | `AvailabilityOption.window` |
+| **service** | their solved arrival to departure | `CandidateSlotEvaluation.service_window` |
+| **promise** | the narrow window put to them, and locked on acceptance | `OfferedSlot.window` |
+
+The promise is derived from the arrival OR-Tools actually chose (`planning/promise_window.py`), not
+from the availability — deriving it from the availability would reproduce the old behaviour with
+extra steps. It is `max(120, duration + 30)` minutes wide. Never the service interval itself:
+`solver._normalised_windows` reduces a lock `[S,E]` for a `D`-minute job to an arrival domain of
+`[S, E-D]`, so at width `D` the arrival is *pinned* and one leg re-estimating by a minute makes the
+day infeasible for everyone on it.
+
+**Two optimisations, kept apart.** Sequencing decides the ORDER of a day's stops (OR-Tools, in
+`solver.py`, tested in `tests/test_route_sequencing.py`). Negotiation decides WHICH day and window a
+customer is promised (`planning/candidate_service.py` and `offer_service.py`, tested in
+`tests/test_negotiation.py`). The language model chooses between deterministic results; it never
+produces them, and it never invents geography — the reasons come from `planning/route_facts.py`,
+read off the solved sequence.
+
+**Declining a time is not declining the day.** "Not 10 till 12" leaves the rest of Friday on the
+table: the interval is carved out of the availability option, the day is re-solved around the hole
+(the solver's existing `CumulVar.RemoveInterval` support), and a different window comes back. The
+two-round cap is unchanged, so this cannot become pestering.
+
+**Route impact is never one number.** `total_score` is a ranking index: it mixes real driving
+minutes with artificial penalties — a 60-minute empty-day charge is a planning weight nobody drives.
+It is not rendered on any customer- or coordinator-facing surface. What is shown is the
+decomposition, each with its own unit: driving, distance, stops, completion time, overtime, and
+whether a delivery day is opened (a yes/no). Customer preference sits below a rule, unpriced, and
+acts as a tiebreak rather than a term inside the score.
+
+
 - **Intake agent** (`dispatch_agent/agents/intake_agent.py`) — a LangGraph graph that reads a
   WhatsApp message, extracts a structured job (name, address, postal code, job type,
   availability) via a forced Claude tool call, geocodes the postal code, and persists it.

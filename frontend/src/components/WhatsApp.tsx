@@ -180,10 +180,14 @@ export function TypingBubble() {
 export function ChoiceBubble({
   options,
   onChoose,
+  onDecline,
   disabled,
 }: {
   options: Array<{ id: string; label: string; sub?: string }>;
   onChoose: (id: string) => void;
+  /** Declining is a normal thing a customer does, so it belongs in the thread beside the times --
+   *  not in an API a demo audience never sees. Omitted once the rounds are used up. */
+  onDecline?: () => void;
   disabled?: boolean;
 }) {
   return (
@@ -213,6 +217,23 @@ export function ChoiceBubble({
           )}
         </button>
       ))}
+      {onDecline && (
+        <button
+          disabled={disabled}
+          onClick={onDecline}
+          className={cx(
+            "w-[85%] rounded-[8px] rounded-tl-[3px] border border-dashed px-3 py-2 text-left",
+            "text-[13px] transition-colors disabled:opacity-55 hover:brightness-[0.985]",
+          )}
+          style={{
+            background: "transparent",
+            borderColor: "var(--color-wa-meta)",
+            color: "var(--color-wa-meta)",
+          }}
+        >
+          None of these work
+        </button>
+      )}
     </div>
   );
 }

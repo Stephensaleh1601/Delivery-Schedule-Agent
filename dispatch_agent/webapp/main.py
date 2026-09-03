@@ -326,6 +326,9 @@ def _offer_to_dict(offer) -> dict:
                     "end": slot.window.end.strftime("%H:%M"),
                 },
                 "label": f"{offer_service.format_date(slot.date)}, {offer_service.format_window(slot.window)}",
+                # Why this time, read off the solved route. Safe for the customer-facing bubble:
+                # route_facts.customer_reason names nobody else and quotes no score.
+                "reason": slot.reason,
             }
             for slot in offer.options
         ],
@@ -394,6 +397,13 @@ def _evaluation_to_dict(evaluation) -> dict:
                 "after": _hhmm(evaluation.proposed_completion_minutes),
             },
             "opens_empty_day": evaluation.opens_empty_day,
+            "region": evaluation.region,
+            "position": evaluation.route_position,
+            "stop_count": evaluation.route_stop_count,
+            # Read off the solved sequence, not written by a model. The customer one names nobody
+            # else; the coordinator one is for the operations panel.
+            "customer_reason": evaluation.customer_reason,
+            "coordinator_reason": evaluation.coordinator_reason,
             "empty_day_overhead_minutes": evaluation.day_opening_penalty_minutes,
             "preference_rank": evaluation.preference_rank,
         },
@@ -542,8 +552,33 @@ def respond_to_offer(offer_id: str, payload: OfferResponse) -> dict:
     """Accept or reject an offered slot. Safe to replay -- see offer_service.accept_offer."""
     repo = JobsRepository()
     if not payload.accepted:
-        offer = offer_service.reject_offer(repo, offer_id)
-        return {"offer": _offer_to_dict(offer), "confirmed": False, "message": None}
+        declined = repo.get_offer(offer_id)
+        if declined is None:
+            raise HTTPException(404, "Offer not found")
+
+        # Declining runs the agent, exactly as a new order does. The rejection is not a dead end:
+        # the tools exclude the time that was turned down, re-solve the customer's dates around the
+        # hole, and come back with a different window -- so this returns the next offer, the run
+        # that produced it, and the evaluations behind it, all from the one call.
+        ctx = tools.ToolContext(repo=repo)
+        run = handle_planning_event(
+            PlanningEvent(
+                event_type=PlanningEventType.CUSTOMER_REJECTED_OFFER,
+                order_id=declined.order_id,
+                payload={"offer_id": offer_id, "slot_id": payload.slot_id},
+            ),
+            repo=repo,
+            ctx=ctx,
+        )
+        next_offer = repo.get_offer(ctx.offer_id) if ctx.offer_id else None
+        return {
+            "offer": _offer_to_dict(repo.get_offer(offer_id)),
+            "confirmed": False,
+            "next_offer": _offer_to_dict(next_offer) if next_offer else None,
+            "message": ctx.scratch.get("offer_message"),
+            "run": _run_to_dict(run),
+            "evaluations": [_evaluation_to_dict(e) for e in ctx.evaluations],
+        }
 
     if not payload.slot_id:
         raise HTTPException(400, "slot_id is required when accepting")
@@ -649,6 +684,11 @@ def _run_to_dict(run) -> dict:
         "order_id": run.order_id,
         "status": run.status.value,
         "final_summary": run.final_summary,
+        # Which provider actually chose these actions. Stated rather than implied, so the inspector
+        # cannot present a rule-driven run as a model-driven one.
+        "decider": run.decider,
+        "model_id": run.model_id,
+        "decider_error": run.decider_error,
         "started_at": run.started_at.isoformat(),
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
         "actions": [

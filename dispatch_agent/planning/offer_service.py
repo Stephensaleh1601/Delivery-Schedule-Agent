@@ -86,7 +86,14 @@ def create_offer(
             kind="round_cap_reached",
         )
 
-    already_offered = {slot.availability_option_id for offer in previous for slot in offer.options}
+    # Keyed on the window, not the option. Declining 10-12 on Friday does not decline Friday, so
+    # the same availability option may legitimately be offered again with a different window
+    # carved out of it -- what must never repeat is the exact time they already turned down.
+    already_offered = {
+        (slot.availability_option_id, slot.window.start, slot.window.end)
+        for offer in previous
+        for slot in offer.options
+    }
     servable = [e for e in evaluations if e.feasible]
     if not servable:
         raise OfferError(
@@ -94,7 +101,12 @@ def create_offer(
             kind="no_feasible_slot",
         )
 
-    feasible = [e for e in servable if e.availability_option_id not in already_offered]
+    feasible = [
+        e
+        for e in servable
+        if (e.availability_option_id, e.promise_window.start, e.promise_window.end)
+        not in already_offered
+    ]
     if not feasible:
         # The windows are fine; we have simply already put all of them to this customer. Saying
         # they "cannot be fitted" here would be false, and it used to raise a coordinator
@@ -103,6 +115,7 @@ def create_offer(
             "every window this customer offered has already been put to them",
             kind="all_options_already_offered",
         )
+
 
     offer = AppointmentOffer(
         order_id=order.id,
@@ -118,6 +131,7 @@ def create_offer(
                 # to `e.window` here on purpose: silently promising nine hours is the behaviour this
                 # replaces, and it would be invisible.
                 window=e.promise_window,
+                reason=e.customer_reason,
                 score=e.total_score,
             )
             for e in feasible[:MAX_SLOTS_PER_OFFER]
@@ -157,15 +171,20 @@ def offer_message(offer: AppointmentOffer) -> str:
     convenient their preference was for us -- that is our problem, not theirs."""
     if len(offer.options) == 1:
         slot = offer.options[0]
+        reason = f" {slot.reason}" if slot.reason else ""
         return (
             f"We can deliver on {format_date(slot.date)}, between "
-            f"{format_time(slot.window.start)} and {format_time(slot.window.end)}. "
-            f"That's the only one of your preferred times we can fit -- does it work?"
+            f"{format_time(slot.window.start)} and {format_time(slot.window.end)}."
+            f"{reason} That's the only one of your preferred times we can fit -- does it work?"
         )
 
     lines = ["We can deliver on:"]
     for i, slot in enumerate(offer.options, start=1):
         lines.append(f"{i}. {format_date(slot.date)}, {format_window(slot.window)}")
+    # Only the recommended slot carries its reason. Two explanations in one message reads as a
+    # sales pitch rather than a coordinator telling you what is convenient.
+    if offer.options[0].reason:
+        lines.append(offer.options[0].reason)
     lines.append("Please choose whichever suits you best.")
     return "\n".join(lines)
 
@@ -293,8 +312,19 @@ def accept_offer(
     )
 
 
-def reject_offer(repo: JobsRepository, offer_id: str) -> AppointmentOffer:
-    """Record that a customer turned an offer down, freeing the order to be offered again."""
+def reject_offer(
+    repo: JobsRepository, offer_id: str, slot_id: str | None = None
+) -> AppointmentOffer:
+    """Record that a customer turned an offer down, freeing the order to be offered again.
+
+    The declined windows are carved out of the availability options they came from, so the next
+    round proposes a *different* time rather than the same one. This is the difference between
+    "not 10 till 12" and "not Friday": the day survives with a hole in it, and the solver already
+    knows how to route around one.
+
+    `slot_id` names a single slot the customer declined. Without it the whole offer is declined and
+    every window in it is excluded -- which is what the "none of these work" path sends.
+    """
     offer = repo.get_offer(offer_id)
     if offer is None:
         raise OfferError("that offer no longer exists")
@@ -308,6 +338,14 @@ def reject_offer(repo: JobsRepository, offer_id: str) -> AppointmentOffer:
 
     job = repo.get_job(offer.order_id)
     if job is not None:
+        declined = [s for s in offer.options if slot_id is None or s.id == slot_id]
+        options_by_id = {o.id: o for o in job.availability_options}
+        for slot in declined:
+            option = options_by_id.get(slot.availability_option_id)
+            # Matched by id, never by window equality: the offered window is now the narrow promise
+            # derived from the route, so it no longer equals the option it came from.
+            if option is not None and slot.window not in option.excluded_windows:
+                option.excluded_windows = [*option.excluded_windows, slot.window]
         job.set_planning_status(PlanningStatus.PENDING_PLANNING)
         repo.save_job(job)
     return offer

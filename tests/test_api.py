@@ -138,15 +138,35 @@ def test_replaying_an_acceptance_is_harmless(client):
     assert len(versions) == 1
 
 
-def test_rejecting_an_offer_returns_the_order_to_the_planning_pool(client):
+def test_declining_a_slot_comes_back_with_a_different_time(client):
+    """A rejection is a step in the negotiation, not the end of one.
+
+    This used to assert the order was left sitting in the planning pool, which was the whole of the
+    behaviour: something else had to notice and act. Declining now runs the agent in the same call
+    -- the time is excluded, the customer's dates are re-solved around it, and a different window
+    comes back -- so the order is legitimately OFFERED again by the time this returns.
+    """
     order_id = client.post("/api/orders", json=_order_payload()).json()["id"]
     offer = client.post(f"/api/orders/{order_id}/plan-options").json()["offer"]
+    declined = offer["options"][0]
 
-    body = client.post(f"/api/offers/{offer['id']}/respond", json={"accepted": False}).json()
+    body = client.post(
+        f"/api/offers/{offer['id']}/respond",
+        json={"accepted": False, "slot_id": declined["id"]},
+    ).json()
 
     assert body["confirmed"] is False
+    assert body["next_offer"] is not None, "declining one time should not end the conversation"
+    offered_again = [
+        (o["date"], o["window"]["start"], o["window"]["end"]) for o in body["next_offer"]["options"]
+    ]
+    assert (declined["date"], declined["window"]["start"], declined["window"]["end"]) not in offered_again
+
+    # The run is returned with it, so the trace beside the conversation shows the exclusion.
+    assert [a["tool"] for a in body["run"]["actions"]][:2] == ["record_rejection", "evaluate_slots"]
+
     order = next(o for o in client.get("/api/orders").json() if o["id"] == order_id)
-    assert order["planning_status"] == PlanningStatus.PENDING_PLANNING.value
+    assert order["planning_status"] == PlanningStatus.OFFERED.value
 
 
 def test_plan_versions_expose_the_history_for_comparison(client):

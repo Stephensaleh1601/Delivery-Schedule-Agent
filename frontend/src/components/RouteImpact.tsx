@@ -38,6 +38,11 @@ export function RouteImpactTable({ evaluation }: { evaluation: Evaluation }) {
 
   return (
     <div className="flex flex-col gap-2">
+      {impact.coordinator_reason && (
+        // Read off the solved sequence by planning/route_facts.py -- no model wrote this, which is
+        // why it can name where the van is and who it sits between without inventing either.
+        <p className="text-[12.5px] leading-[1.45] text-ink-soft">{impact.coordinator_reason}</p>
+      )}
       <div className="grid grid-cols-[minmax(0,1fr)_78px_16px_78px_62px] items-baseline gap-x-2">
         <Header>Route efficiency</Header>
         <Header align="right">before</Header>
@@ -98,16 +103,11 @@ export function RouteImpactTable({ evaluation }: { evaluation: Evaluation }) {
       </div>
 
       <div className="flex items-baseline justify-between gap-3 border-t border-rail pt-2">
-        <span className="text-[12.5px] text-ink-muted">
-          Customer preference
-          <span className="ml-1.5 font-mono text-[11px] text-ink-faint">
-            {ordinal(impact.preference_rank)} choice
-          </span>
-        </span>
-        {/* Unpriced on purpose. Preference breaks ties between comparable days; a minutes figure
-            beside real driving time invites reading it as a cost of travel. */}
-        <span className="text-[12px] text-ink-faint">
-          {impact.preference_rank === 1 ? "their first choice" : "not their first choice"}
+        <span className="text-[12.5px] text-ink-muted">Customer preference</span>
+        {/* Unpriced on purpose. Preference breaks ties between operationally comparable days; a
+            minutes figure beside real driving time invites reading it as a cost of travel. */}
+        <span className="text-[12.5px] text-ink-soft">
+          {ordinal(impact.preference_rank)} choice
         </span>
       </div>
 

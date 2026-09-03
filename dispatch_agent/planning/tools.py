@@ -158,6 +158,9 @@ class AcceptArgs(_Args):
 
 class OfferIdArgs(_Args):
     offer_id: str
+    # Which slot was declined. Omitted means the customer declined the whole offer ("none of these
+    # work"), and every window in it is excluded.
+    slot_id: str | None = None
 
 
 class ReplanArgs(_Args):
@@ -295,12 +298,35 @@ def lock_appointment(args: AcceptArgs, ctx: ToolContext) -> ToolResult:
 
 @tool("record_rejection", OfferIdArgs)
 def record_rejection(args: OfferIdArgs, ctx: ToolContext) -> ToolResult:
-    offer = offer_service.reject_offer(ctx.repo, args.offer_id)
+    """Note what the customer declined -- the time, not the day.
+
+    The declined windows are carved out of the availability options they came from, so the next
+    evaluation re-solves the same date around the hole instead of proposing the same slot again.
+    """
+    offer = offer_service.reject_offer(ctx.repo, args.offer_id, slot_id=args.slot_id)
     ctx.order = ctx.repo.get_job(offer.order_id)
+    declined = [s for s in offer.options if args.slot_id is None or s.id == args.slot_id]
+    excluded = ", ".join(
+        f"{offer_service.format_date(s.date)} {offer_service.format_window(s.window)}"
+        for s in declined
+    )
     return ToolResult(
         ok=True, tool="record_rejection",
-        summary="Customer turned the offered slots down; the order is back in planning.",
-        data={"order_id": offer.order_id},
+        summary=(
+            f"Customer declined {excluded}. That time is excluded; the rest of the day is still "
+            f"open, so it will be re-solved rather than dropped."
+        ),
+        data={
+            "order_id": offer.order_id,
+            "excluded_windows": [
+                {
+                    "date": s.date.isoformat(),
+                    "start": s.window.start.strftime("%H:%M"),
+                    "end": s.window.end.strftime("%H:%M"),
+                }
+                for s in declined
+            ],
+        },
     )
 
 

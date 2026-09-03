@@ -258,3 +258,44 @@ def test_bootstrap_carries_the_constants_a_ui_would_otherwise_hardcode(client):
     assert operating["work_day_start"] == "09:00"
     assert operating["soft_day_end"] == "17:00"
     assert operating["day_opening_penalty_minutes"] == config.settings.day_opening_penalty_minutes
+
+
+# -- what a surface may and may not show ---------------------------------------
+
+
+def _payload(name="Mrs Lee", postal_code="469123"):
+    day = PlanningClock.horizon_dates()[0]
+    return {
+        "customer_name": name, "address_raw": "Blk 1", "postal_code": postal_code,
+        "job_type": "sofa",
+        "availability": [{"date": day.isoformat(), "window_start": "09:00", "window_end": "18:00"}],
+    }
+
+
+def test_the_evaluation_payload_carries_the_components_not_just_a_total(client):
+    """The decomposition is the contract. A judge reading "Route impact: 93 min" would be right to
+    check it against the map and wrong about what they found -- 60 of those minutes are an
+    empty-day weight nobody drives. Every component the UI shows must arrive with its own unit."""
+    order_id = client.post("/api/orders", json=_payload()).json()["id"]
+    impact = client.post(f"/api/orders/{order_id}/plan-options").json()["evaluations"][0]["route_impact"]
+
+    for key in ("drive_minutes", "distance_km", "stops", "finishes_at"):
+        assert set(impact[key]) == {"before", "after"}, f"{key} must be a before/after pair"
+    assert isinstance(impact["opens_empty_day"], bool), "opening a day is a yes/no, not a duration"
+    assert isinstance(impact["overtime_minutes"], int)
+
+
+def test_the_offer_carries_a_reason_that_names_nobody_else(client):
+    """The reason is customer-facing. It is built from the solved route by route_facts, so it can
+    say where the van will be -- but it must never say who else is on it."""
+    first = client.post("/api/orders", json=_payload("Alice", "469123")).json()["id"]
+    offer = client.post(f"/api/orders/{first}/plan-options").json()["offer"]
+    slot = offer["options"][0]
+    client.post(f"/api/offers/{offer['id']}/respond", json={"accepted": True, "slot_id": slot["id"]})
+
+    second = client.post("/api/orders", json=_payload("Bob", "529536")).json()["id"]
+    body = client.post(f"/api/orders/{second}/plan-options").json()
+
+    for option in body["offer"]["options"]:
+        assert option["reason"], "an offered slot with no reason is the old behaviour"
+        assert "Alice" not in option["reason"]

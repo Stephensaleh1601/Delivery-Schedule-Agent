@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ActionRow } from "@/components/AgentTrace";
+import { FunctionCallsPill } from "@/components/FunctionCalls";
 import { DayChange, RouteImpactTable } from "@/components/RouteImpact";
 import { RouteMap, stopsToPoints } from "@/components/RouteMap";
 import { Page } from "@/components/Shell";
@@ -164,6 +165,50 @@ export default function ChatPage() {
     }
   }
 
+  /** Declining one proposed time. Not declining the day: the agent excludes that interval,
+   *  re-solves the same dates around it and comes back with a different window, which is what the
+   *  thread and the trace beside it then show. */
+  async function decline(offer: Offer, slotId?: string) {
+    const slot = slotId ? offer.options.find((s) => s.id === slotId) : undefined;
+    setBusy(true);
+    setMsgs((prev) => prev.filter((m) => m.kind !== "choices"));
+    push({
+      kind: "me", id: nextId(), time: chatTime(),
+      text: slot ? `${slot.label} doesn't work for me — anything else that day?` : "None of those work for me.",
+    });
+    push({ kind: "typing", id: nextId() });
+
+    try {
+      const result = await dispatch.respond(offer.id, false, slotId);
+      dropTyping();
+      // The run and evaluations come back from the same call, so the panel shows the exclusion and
+      // the re-solve that produced whatever is offered next.
+      if (result.run) setRun(result.run);
+      if (result.evaluations?.length) setEvaluations(result.evaluations);
+
+      if (!result.next_offer) {
+        push({
+          kind: "them", id: nextId(), time: chatTime(),
+          text: "I'm sorry — there's nothing else we can fit in the times you gave us. One of our team will call you.",
+        });
+        setPhase("done");
+        return;
+      }
+      push({
+        kind: "them", id: nextId(), time: chatTime(),
+        text: result.message ?? "Let me try again.",
+      });
+      push({ kind: "choices", id: nextId(), offer: result.next_offer });
+      setPhase("offered");
+    } catch (err) {
+      dropTyping();
+      setError(err);
+      setPhase("offered");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function reset() {
     seq = 0;
     setMsgs([]);
@@ -205,7 +250,7 @@ export default function ChatPage() {
                   </>
                 ) : (
                   msgs.map((m) => (
-                    <MessageView key={m.id} msg={m} onChoose={accept} busy={busy} />
+                    <MessageView key={m.id} msg={m} onChoose={accept} onDecline={decline} run={run} busy={busy} />
                   ))
                 )}
               </div>
@@ -366,25 +411,40 @@ export default function ChatPage() {
 function MessageView({
   msg,
   onChoose,
+  onDecline,
+  run,
   busy,
 }: {
   msg: Msg;
   onChoose: (offer: Offer, slotId: string) => void;
+  onDecline: (offer: Offer, slotId?: string) => void;
+  /** The run that produced this offer, so the inspector opens on the calls behind THESE times. */
+  run: AgentRun | null;
   busy: boolean;
 }) {
   if (msg.kind === "typing") return <TypingBubble />;
 
   if (msg.kind === "choices") {
     return (
+      <div className="flex w-full flex-col items-start gap-1.5">
       <ChoiceBubble
         disabled={busy}
         options={msg.offer.options.map((slot) => ({
           id: slot.id,
           label: slot.label,
-          sub: "Tap to confirm this time",
+          // The reason comes off the solved route, so it is the same sentence the message body
+          // used -- not a second, prettier explanation invented for the button.
+          sub: slot.reason ?? "Tap to confirm this time",
         }))}
         onChoose={(id) => onChoose(msg.offer, id)}
+        // Round two is the last: the cap is enforced in offer_service, and offering a "no" button
+        // that can only fail would be worse than not offering one.
+        onDecline={msg.offer.round_number < 2 ? () => onDecline(msg.offer, msg.offer.options[0]?.id) : undefined}
       />
+      {/* Under the offer, not filed on another screen: the question an audience has here is
+          "where did those times come from", and the answer is one tap away. */}
+      {run && <FunctionCallsPill run={run} />}
+      </div>
     );
   }
 

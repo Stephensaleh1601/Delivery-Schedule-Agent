@@ -143,6 +143,13 @@ export interface RouteImpact {
   finishes_at: { before: string | null; after: string };
   opens_empty_day: boolean;
   empty_day_overhead_minutes: number;
+  /** Broad region from the postal district table -- a fact about the address, not a guess. */
+  region: string | null;
+  position: number;
+  stop_count: number;
+  /** Built deterministically from the solved route. The customer one names no other customer. */
+  customer_reason: string | null;
+  coordinator_reason: string | null;
   preference_rank: number;
 }
 
@@ -175,6 +182,8 @@ export interface OfferSlot {
   availability_option_id: string;
   date: string;
   window: Window;
+  /** Why this time, from the solved route. Names no other customer. */
+  reason: string | null;
   label: string;
 }
 
@@ -246,6 +255,11 @@ export type ActivePlan = PlanVersion & {
 export interface AcceptResponse {
   offer: Offer;
   confirmed: boolean;
+  /** Declining runs the agent in the same call: the time is excluded, the customer's dates are
+   *  re-solved around it, and this is what came back. Null when nothing else can be fitted. */
+  next_offer?: Offer | null;
+  run?: AgentRun | null;
+  evaluations?: Evaluation[];
   idempotent?: boolean;
   message: string | null;
   delivery_date: string | null;
@@ -292,6 +306,11 @@ export interface AgentRun {
   order_id: string | null;
   status: "running" | "completed" | "failed" | "step_limit_reached";
   final_summary: string;
+  /** Which provider actually chose the actions -- "LLMDecisionAgent" or "RuleDecisionAgent". */
+  decider: string;
+  model_id: string | null;
+  /** The exception that forced a fallback, kept so a credentials problem is distinguishable. */
+  decider_error: string | null;
   started_at: string;
   completed_at: string | null;
   actions: AgentAction[];

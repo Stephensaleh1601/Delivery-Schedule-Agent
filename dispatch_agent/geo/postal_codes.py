@@ -93,3 +93,47 @@ def postal_code_to_coords(postal_code: str) -> Coordinates:
     if district is None:
         raise ValueError(f"unrecognised postal sector {postal_code[:2]!r} in {postal_code!r}")
     return DISTRICT_CENTROIDS[district]
+
+
+# District -> the broad region a Singaporean would name it by. A table, not a heuristic: the
+# groupings are the conventional ones (URA/property-listing regions), and they are what makes
+# "we'll already be in the East" a fact about the address rather than a guess about the map.
+#
+# This is deliberately independent of the coordinate source. A centroid-fallback address and a
+# precisely geocoded one in the same district name the same region, so the reason a customer is
+# given never changes because a geocoder was reachable.
+DISTRICT_TO_REGION: dict[int, str] = {
+    1: "City", 2: "City", 6: "City", 7: "City", 8: "City", 9: "City",
+    3: "Central", 10: "Central", 11: "Central", 12: "Central", 13: "Central", 20: "Central",
+    4: "South", 5: "West", 21: "West", 22: "West", 23: "West", 24: "West",
+    14: "East", 15: "East", 16: "East", 17: "East", 18: "East",
+    19: "North-East", 28: "North-East",
+    25: "North", 26: "North", 27: "North",
+}
+
+
+def postal_code_to_district(postal_code: str) -> int | None:
+    """The postal district, or None for anything that is not a recognised 6-digit code."""
+    if len(postal_code or "") != 6 or not postal_code.isdigit():
+        return None
+    return SECTOR_TO_DISTRICT.get(int(postal_code[:2]))
+
+
+def region_of(postal_code: str | None, coordinates: Coordinates | None = None) -> str | None:
+    """The broad region for an address, by postal district where there is one.
+
+    Falls back to a coarse coordinate split only when there is no usable postal code -- an order
+    typed in without one still gets a region rather than a blank in the reason.
+    """
+    district = postal_code_to_district(postal_code or "")
+    if district is not None:
+        return DISTRICT_TO_REGION.get(district)
+    if coordinates is None:
+        return None
+    # Rough quadrants around the island's middle. Only reached without a postal code, and only
+    # ever used to name a direction, never to compute a distance.
+    if coordinates.lng >= 103.91:
+        return "East"
+    if coordinates.lng <= 103.78:
+        return "West"
+    return "North" if coordinates.lat >= 1.38 else "Central"

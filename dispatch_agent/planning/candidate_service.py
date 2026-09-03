@@ -35,8 +35,10 @@ from dispatch_agent.models import (
     JobRecord,
     PlanningStatus,
 )
+from dispatch_agent.planning import plan_service
 from dispatch_agent.planning.clock import PlanningClock
 from dispatch_agent.planning.promise_window import promise_window
+from dispatch_agent.planning.route_facts import coordinator_reason, customer_reason, route_facts
 from dispatch_agent.planning.scoring import ScoringConfig, overtime_minutes, score_candidate
 from dispatch_agent.solver import UnsolvableDayError, sequence_day
 
@@ -106,6 +108,8 @@ class CandidateService:
             baseline = DaySequence(
                 delivery_date=delivery_date, stops=[], total_drive_minutes=0, return_drive_minutes=0
             )
+        if baseline is not None:
+            baseline = self._with_distances(baseline, {j.id: j for j in jobs})
 
         context = DayContext(
             delivery_date=delivery_date,
@@ -116,6 +120,17 @@ class CandidateService:
         )
         self._contexts[delivery_date] = context
         return context
+
+    def _with_distances(self, sequence: DaySequence, jobs_by_id: dict[str, JobRecord]) -> DaySequence:
+        """Kilometres for a sequence the solver has just produced.
+
+        The solver is handed a precomputed matrix and has no routing client, so distance is not
+        part of what it returns -- which is why a candidate evaluation reported 0.0 km either side
+        and would have rendered a fabricated zero next to real driving minutes. The solve has just
+        warmed the drive-time cache for exactly these points, so asking for them here costs no
+        provider requests.
+        """
+        return plan_service.annotate_distances(sequence, jobs_by_id, self._routing, self._depot)
 
     def _solve(self, jobs: list[JobRecord], delivery_date: Date) -> DaySequence:
         return sequence_day(
@@ -135,12 +150,25 @@ class CandidateService:
         if context.baseline_error is not None:
             return self._infeasible(option, f"that day cannot currently be routed: {context.baseline_error}")
 
+        # What is left of the option after anything the customer has already declined. A rejection
+        # applies to the window we proposed, not to their whole day, so the day is re-solved with a
+        # hole in it -- the solver punches these out with CumulVar.RemoveInterval and handles the
+        # disjoint result natively.
+        bookable = option.bookable_windows(
+            min_width=order.duration_minutes + settings.promise_min_slack_minutes
+        )
+        if not bookable:
+            return self._infeasible(
+                option,
+                "the customer has ruled out every part of that day that could hold the delivery",
+            )
+
         # An in-memory copy pinned to just this window. Never persisted -- the order keeps no
         # date and no lock until a customer actually accepts something.
         candidate = order.model_copy(
             update={
                 "delivery_date": option.date,
-                "availability": [option.window],
+                "availability": bookable,
                 "availability_options": [],
                 "locked_window": None,
                 "planning_status": PlanningStatus.PENDING_PLANNING,
@@ -157,15 +185,22 @@ class CandidateService:
         # is a lookup rather than a guess -- and it is what makes the offered window a consequence of
         # the route instead of a restatement of the customer's availability.
         service = next(s.arrival_window for s in proposed.stops if s.job_id == candidate.id)
-        promise = promise_window(service=service, availability=option.window)
+        # Bound the promise by the PIECE the van actually landed in, not by the option's outer
+        # window: with 10-12 declined out of 9-6, a promise bounded by 9-6 could stretch back over
+        # the interval the customer just turned down.
+        piece = next(
+            (w for w in bookable if w.start <= service.start and service.end <= w.end),
+            option.window,
+        )
+        promise = promise_window(service=service, availability=piece)
 
-        proposed_minutes = proposed.round_trip_drive_minutes
         jobs_by_id = {job.id: job for job in context.jobs + [candidate]}
+        proposed = self._with_distances(proposed, jobs_by_id)
+        proposed_minutes = proposed.round_trip_drive_minutes
+        facts = route_facts(proposed, candidate, jobs_by_id)
         total, breakdown = score_candidate(
             baseline_drive_minutes=context.baseline_drive_minutes,
             proposed_drive_minutes=proposed_minutes,
-            baseline_distance_km=context.baseline.round_trip_distance_km if context.baseline else 0.0,
-            proposed_distance_km=proposed.round_trip_distance_km,
             is_empty_day=context.is_empty,
             preference_rank=option.preference_rank,
             overtime=overtime_minutes(proposed, jobs_by_id, self._depot, self._scoring),
@@ -189,6 +224,13 @@ class CandidateService:
             proposed_completion_minutes=proposed.completion_minutes,
             opens_empty_day=context.is_empty,
             preference_rank=option.preference_rank,
+            region=facts.region,
+            route_position=facts.position,
+            route_stop_count=facts.stop_count,
+            customer_reason=customer_reason(facts, option.date, promise),
+            coordinator_reason=coordinator_reason(
+                facts, proposed_minutes - context.baseline_drive_minutes
+            ),
             total_score=total,
             proposed_sequence=proposed,
             **breakdown,
@@ -215,12 +257,25 @@ class CandidateService:
 
     @staticmethod
     def rank(evaluations: list[CandidateSlotEvaluation]) -> list[CandidateSlotEvaluation]:
-        """Feasibility first, then cost, then earliest date.
+        """Feasibility, then what the route actually costs, then the customer's preference, then date.
 
         Sorting on `not feasible` keeps infeasibility a separate key rather than a large score --
         an impossible slot sorts last no matter how cheap its arithmetic would have been.
+
+        Preference is a key in its own right rather than a term inside the score. Folded into the
+        total it was worth ten minutes of driving per rank, which is a number nobody chose on
+        purpose: it silently outranks a genuinely better route by a small margin. As a tiebreak it
+        does what it is for -- deciding between days the operation is indifferent about.
         """
-        return sorted(evaluations, key=lambda e: (not e.feasible, e.total_score, e.date))
+        return sorted(
+            evaluations,
+            key=lambda e: (
+                not e.feasible,
+                e.total_score - e.preference_penalty_minutes,
+                e.preference_rank,
+                e.date,
+            ),
+        )
 
     @staticmethod
     def _infeasible(option: AvailabilityOption, reason: str) -> CandidateSlotEvaluation:

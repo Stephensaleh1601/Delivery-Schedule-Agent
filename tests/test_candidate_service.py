@@ -13,6 +13,7 @@ from dispatch_agent.geo.postal_codes import postal_code_to_coords
 from dispatch_agent.models import (
     Address,
     AvailabilityOption,
+    CandidateSlotEvaluation,
     JobRecord,
     JobType,
     PlanningStatus,
@@ -136,6 +137,33 @@ def test_preference_breaks_ties_without_overriding_routing(temp_db):
     assert ranked[0].date == second, "both days are equivalent, so the preferred one should win"
     assert ranked[0].preference_penalty_minutes == 0
     assert ranked[1].preference_penalty_minutes == config.settings.preference_penalty_per_rank
+
+
+def test_preference_does_not_outrank_a_better_route(temp_db):
+    """The other half of the tiebreak, put to `rank` directly.
+
+    Preference used to be a term INSIDE the score, worth ten minutes of driving per rank -- a
+    number nobody chose deliberately, which quietly bought a worse route whenever the margin was
+    under ten minutes. Built here rather than solved, because that margin is exactly what a solved
+    scenario cannot be relied on to produce: the two days below differ by 5 operational minutes,
+    inside the old preference weight, so this fails under the old comparator and passes under the
+    new one.
+    """
+    days = PlanningClock.horizon_dates()
+    first_choice = CandidateSlotEvaluation(
+        availability_option_id="a", date=days[0], window=_window((9, 0), (18, 0)), feasible=True,
+        preference_rank=1, preference_penalty_minutes=0, total_score=20,
+    )
+    better_route = CandidateSlotEvaluation(
+        availability_option_id="b", date=days[1], window=_window((9, 0), (18, 0)), feasible=True,
+        preference_rank=2, preference_penalty_minutes=10, total_score=25,
+    )
+
+    ranked = CandidateService.rank([first_choice, better_route])
+
+    assert ranked[0].availability_option_id == "b", (
+        "15 operational minutes should beat 20, whatever the customer ranked them"
+    )
 
 
 def test_evaluation_never_persists_a_date_or_a_lock(temp_db):
