@@ -342,6 +342,21 @@ def _evaluation_to_dict(evaluation) -> dict:
             "start": evaluation.window.start.strftime("%H:%M"),
             "end": evaluation.window.end.strftime("%H:%M"),
         },
+        # What we would actually put to the customer: the narrow window derived from the arrival the
+        # solver chose. `window` above stays what they ASKED for -- the two are different now, and a
+        # surface showing the wrong one either over-promises or under-sells the negotiation.
+        "promise_window": {
+            "start": evaluation.promise_window.start.strftime("%H:%M"),
+            "end": evaluation.promise_window.end.strftime("%H:%M"),
+        }
+        if evaluation.promise_window
+        else None,
+        "service_window": {
+            "start": evaluation.service_window.start.strftime("%H:%M"),
+            "end": evaluation.service_window.end.strftime("%H:%M"),
+        }
+        if evaluation.service_window
+        else None,
         "feasible": evaluation.feasible,
         "infeasible_reason": evaluation.infeasible_reason,
         "total_score": evaluation.total_score if evaluation.feasible else None,
@@ -360,10 +375,16 @@ def _evaluation_to_dict(evaluation) -> dict:
                 "before": evaluation.baseline_drive_minutes,
                 "after": evaluation.proposed_drive_minutes,
             },
+            "distance_km": {
+                "before": evaluation.baseline_distance_km,
+                "after": evaluation.proposed_distance_km,
+            },
             "stops": {
                 "before": evaluation.baseline_stop_count,
                 "after": evaluation.proposed_stop_count,
             },
+            # Real minutes worked past the soft day end, unlike the penalties above it.
+            "overtime_minutes": evaluation.overtime_penalty_minutes,
             "finishes_at": {
                 # None when the day had no stops -- "this day did not exist yet" is the honest
                 # rendering, not 00:00.

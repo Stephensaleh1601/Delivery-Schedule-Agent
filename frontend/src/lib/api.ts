@@ -135,7 +135,10 @@ export interface ScoreBreakdown {
  *  courtesy weight and deliberately lives in `breakdown`, not here. */
 export interface RouteImpact {
   drive_minutes: { before: number; after: number };
+  distance_km: { before: number; after: number };
   stops: { before: number; after: number };
+  /** Real minutes worked past the soft day end -- a duration, unlike the penalties. */
+  overtime_minutes: number;
   /** `before` is null when the day had no stops -- it did not exist yet. */
   finishes_at: { before: string | null; after: string };
   opens_empty_day: boolean;
@@ -146,9 +149,19 @@ export interface RouteImpact {
 export interface Evaluation {
   availability_option_id: string;
   date: string;
+  /** What the customer said they could do -- often a whole day. */
   window: Window;
+  /** The narrow window we would offer, derived from the arrival the solver chose. Null if infeasible. */
+  promise_window: Window | null;
+  /** This order's own solved stop: arrival to departure. Null if infeasible. */
+  service_window: Window | null;
   feasible: boolean;
   infeasible_reason: string | null;
+  /**
+   * A RANKING INDEX with no unit -- it mixes real driving minutes with artificial penalties (the
+   * empty-day charge is a planning weight nobody drives). Never render it as a time, a cost, or a
+   * headline figure; show `route_impact`'s components instead.
+   */
   total_score: number | null;
   breakdown: ScoreBreakdown;
   route_impact: RouteImpact;

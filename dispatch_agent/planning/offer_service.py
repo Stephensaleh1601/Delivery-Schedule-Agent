@@ -113,7 +113,11 @@ def create_offer(
             OfferedSlot(
                 availability_option_id=e.availability_option_id,
                 date=e.date,
-                window=e.window,
+                # The narrow window derived from where the solver actually put the van -- not the
+                # customer's broad availability, which is what `e.window` still means. No fallback
+                # to `e.window` here on purpose: silently promising nine hours is the behaviour this
+                # replaces, and it would be invisible.
+                window=e.promise_window,
                 score=e.total_score,
             )
             for e in feasible[:MAX_SLOTS_PER_OFFER]
@@ -205,7 +209,9 @@ def accept_offer(
 
     previous_date = job.delivery_date
     job.delivery_date = slot.date
-    job.availability = [slot.window]
+    # `availability` stays as the customer stated it. It used to be overwritten with the accepted
+    # slot, which was harmless while the two were identical and destroys information now that the
+    # promise is narrower -- a rejection or a later reschedule needs to know what they can still do.
     job.locked_window = slot.window
     job.set_planning_status(PlanningStatus.CONFIRMED)
     repo.save_job(job)
@@ -220,7 +226,6 @@ def accept_offer(
         # not exist, and let a human sort it out.
         job.delivery_date = previous_date
         job.locked_window = None
-        job.availability = []
         job.set_planning_status(PlanningStatus.EXCEPTION)
         repo.save_job(job)
         offer.status = OfferStatus.CLOSED

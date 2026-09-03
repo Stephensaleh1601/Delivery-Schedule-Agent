@@ -85,6 +85,15 @@ class Settings:
     # customer preference costs a little, so preference breaks ties without overriding routing.
     day_opening_penalty_minutes: int = int(os.getenv("DAY_OPENING_PENALTY_MINUTES", "60"))
     preference_penalty_per_rank: int = int(os.getenv("PREFERENCE_PENALTY_PER_RANK", "10"))
+    # A customer's availability is a boundary, not the promise. Having solved the route, we offer a
+    # window this wide around the arrival the solver actually chose. Two hours is a promise someone
+    # can plan a morning around; nine hours is not an appointment.
+    promise_window_minutes: int = int(os.getenv("PROMISE_WINDOW_MINUTES", "120"))
+    # ...but never so tight that the arrival is pinned. solver._normalised_windows reduces a lock
+    # [S,E] for a D-minute job to an arrival domain of [S, E-D]; at E-S == D that is a single point,
+    # and one leg re-estimating by a minute makes the day infeasible for everyone on it. This is the
+    # floor on how much room a later re-solve keeps.
+    promise_min_slack_minutes: int = int(os.getenv("PROMISE_MIN_SLACK_MINUTES", "30"))
     default_job_duration_minutes: int = int(os.getenv("DEFAULT_JOB_DURATION_MINUTES", "60"))
     work_day_start: Time = _time("WORK_DAY_START", "09:00")
     # Hard end of the working day: the solver will not schedule past it, so a route that would

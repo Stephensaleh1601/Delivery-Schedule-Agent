@@ -93,8 +93,11 @@ def _normalised_windows(job: JobRecord, day_start: int, day_end: int, require_fi
             raw.append((start, end))
 
     if not raw:
+        # Whose window this is matters to whoever reads the message: before confirmation it is the
+        # customer's own availability, afterwards it is the narrow window WE promised them.
+        whose = "the window we promised" if job.is_locked else f"{job.customer_name}'s availability"
         raise UnsolvableDayError(
-            f"{job.customer_name}'s availability cannot fit a {job.duration_minutes}-minute job "
+            f"{whose} cannot fit {job.customer_name}'s {job.duration_minutes}-minute job "
             f"inside working hours"
         )
 

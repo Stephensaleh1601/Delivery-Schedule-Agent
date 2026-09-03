@@ -318,3 +318,58 @@ def test_end_to_end_booking_to_locked_route(temp_db):
     # 6. The customer was actually told, and it is recorded.
     sent = [m for m in temp_db.messages(order.id) if m.direction is MessageDirection.OUTBOUND]
     assert len(sent) == 2, "customer should have received an offer and a confirmation"
+
+
+# -- what the customer is actually offered -------------------------------------
+
+
+def test_an_all_day_availability_is_offered_back_as_a_narrow_window(temp_db):
+    """The negotiation, end to end through the real offer chain rather than the arithmetic alone.
+
+    "Any time Wednesday" must not come back as "any time Wednesday". This is the test that fails if
+    the promise window is ever unwired from evaluation or quietly falls back to `e.window`.
+    """
+    day = BASE + timedelta(days=2)
+    order = _order(temp_db, options=[_option(day)])
+
+    evaluations = CandidateService(repo=temp_db).evaluate_all(order)
+    offer = offer_service.create_offer(temp_db, order, evaluations)
+
+    slot = offer.options[0]
+    assert slot.window != _w((9, 0), (18, 0)), "offered the customer their own availability back"
+    assert slot.window.start >= time(9, 0) and slot.window.end <= time(18, 0)
+
+    minutes = (slot.window.end.hour * 60 + slot.window.end.minute) - (
+        slot.window.start.hour * 60 + slot.window.start.minute
+    )
+    assert minutes <= max(config.settings.promise_window_minutes, order.duration_minutes + 30)
+
+
+def test_the_offered_window_contains_the_arrival_the_solver_chose(temp_db):
+    """The window is a consequence of the route, not a slice of the availability. If this fails,
+    the customer has been promised a time the van is not scheduled to arrive in."""
+    day = BASE + timedelta(days=2)
+    order = _order(temp_db, options=[_option(day)])
+
+    evaluation = CandidateService(repo=temp_db).evaluate_all(order)[0]
+
+    assert evaluation.service_window is not None
+    assert evaluation.promise_window.start <= evaluation.service_window.start
+    assert evaluation.service_window.end <= evaluation.promise_window.end
+
+
+def test_accepting_keeps_the_availability_the_customer_stated(temp_db):
+    """Acceptance used to overwrite `availability` with the accepted slot. Harmless while the two
+    were identical; now it would erase the nine hours the customer is still free, which is exactly
+    what a later reschedule or rejection needs to read."""
+    day = BASE + timedelta(days=2)
+    stated = _w((9, 0), (18, 0))
+    order = _order(temp_db, options=[_option(day)])
+
+    evaluations = CandidateService(repo=temp_db).evaluate_all(order)
+    offer = offer_service.create_offer(temp_db, order, evaluations)
+    outcome = offer_service.accept_offer(temp_db, offer.id, offer.options[0].id)
+
+    assert outcome.job.locked_window == offer.options[0].window
+    assert stated not in outcome.job.availability or outcome.job.availability == []
+    assert [o.window for o in outcome.job.availability_options] == [stated]

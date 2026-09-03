@@ -94,9 +94,13 @@ def offer_freed_slot(
     offer = offer_service.create_offer(
         repo, job, [evaluation], purpose=OfferPurpose.RECOVERY
     )
+    # The window in the message must be the one on the offer, not `quoted`: create_offer narrows
+    # it to the solved arrival, and telling the customer a different time from the one they can tap
+    # is how a demo turns into a support call.
+    promised = offer.options[0].window
     message = (
         f"Hi {job.customer_name} -- a slot has opened up on "
-        f"{offer_service.format_date(freed_date)}, {offer_service.format_window(quoted)}. "
+        f"{offer_service.format_date(freed_date)}, {offer_service.format_window(promised)}. "
         f"You mentioned an earlier delivery would suit you. Your existing booking on "
         f"{offer_service.format_date(job.delivery_date)} stands unless you take this one."
     )

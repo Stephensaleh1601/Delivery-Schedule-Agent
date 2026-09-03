@@ -282,11 +282,11 @@ export default function ChatPage() {
                         <Pill tone="locked">Recommended</Pill>
                       ) : (
                         <span className="font-mono text-[11px] text-ink-faint">
-                          {formatWindow(e.window)}
+                          {formatWindow(e.promise_window ?? e.window)}
                         </span>
                       )}
                     </div>
-                    <RouteImpactTable evaluation={e} recommended={i === 0 && e.feasible} />
+                    <RouteImpactTable evaluation={e} />
                   </Card>
                 ))}
               </div>

@@ -391,12 +391,23 @@ class CandidateSlotEvaluation(BaseModel):
 
     availability_option_id: str
     date: Date
+    # What the customer said they could do. NOT what we offer them -- see `promise_window`.
     window: TimeWindow
+    # This order's own solved stop, [arrival, arrival + duration]. Safe to expose: it is the
+    # candidate's own time, not another customer's.
+    service_window: Optional[TimeWindow] = None
+    # The narrow window we would actually put to the customer, derived from `service_window`.
+    # None when infeasible. This is what gets offered and, on acceptance, locked.
+    promise_window: Optional[TimeWindow] = None
     feasible: bool
     infeasible_reason: Optional[str] = None
     baseline_drive_minutes: int = 0
     proposed_drive_minutes: int = 0
     incremental_drive_minutes: int = 0
+    # Round-trip kilometres before and after. Real distance, not a weight -- unlike total_score it
+    # can be shown to anyone with its unit attached. 0.0 on plans published before distance existed.
+    baseline_distance_km: float = 0.0
+    proposed_distance_km: float = 0.0
     # The day before and after, as scalars. Deliberately NOT the baseline sequence itself, which
     # would carry other customers' stops into every response that quotes a price.
     baseline_stop_count: int = 0
@@ -408,6 +419,9 @@ class CandidateSlotEvaluation(BaseModel):
     day_opening_penalty_minutes: int = 0
     preference_penalty_minutes: int = 0
     overtime_penalty_minutes: int = 0
+    # A RANKING INDEX, not a duration and not a price. It mixes real driving minutes with artificial
+    # penalties -- a 60-minute empty-day charge is a planning weight, nobody drives it. Never render
+    # this to a customer or a coordinator with a time unit; show the components instead.
     total_score: int = 0
     proposed_sequence: Optional[DaySequence] = None
 
@@ -421,6 +435,26 @@ class CandidateSlotEvaluation(BaseModel):
                     "an infeasible evaluation must not carry a score or a proposed sequence -- "
                     "rank on the `feasible` flag instead of encoding it as a large number"
                 )
+            if self.promise_window is not None or self.service_window is not None:
+                raise ValueError("an infeasible evaluation cannot have a window to offer")
+        return self
+
+    @model_validator(mode="after")
+    def _promise_is_offerable(self) -> "CandidateSlotEvaluation":
+        """The promise must be something we can actually keep: inside what the customer offered,
+        and wide enough to hold the whole job. Enforced on the model so it cannot be got wrong by
+        a caller building one of these by hand."""
+        if not self.feasible or self.promise_window is None or self.service_window is None:
+            return self
+        if not (self.window.start <= self.promise_window.start
+                and self.promise_window.end <= self.window.end):
+            raise ValueError(
+                f"promised {self.promise_window.start:%H:%M}-{self.promise_window.end:%H:%M} but the "
+                f"customer is only free {self.window.start:%H:%M}-{self.window.end:%H:%M}"
+            )
+        if not (self.promise_window.start <= self.service_window.start
+                and self.service_window.end <= self.promise_window.end):
+            raise ValueError("the promised window does not contain the job it is promising")
         return self
 
 

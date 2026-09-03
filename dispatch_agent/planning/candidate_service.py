@@ -36,6 +36,7 @@ from dispatch_agent.models import (
     PlanningStatus,
 )
 from dispatch_agent.planning.clock import PlanningClock
+from dispatch_agent.planning.promise_window import promise_window
 from dispatch_agent.planning.scoring import ScoringConfig, overtime_minutes, score_candidate
 from dispatch_agent.solver import UnsolvableDayError, sequence_day
 
@@ -152,11 +153,19 @@ class CandidateService:
         except UnsolvableDayError as exc:
             return self._infeasible(option, str(exc))
 
+        # The stop the solver actually made for this order. `model_copy` preserves the id, so this
+        # is a lookup rather than a guess -- and it is what makes the offered window a consequence of
+        # the route instead of a restatement of the customer's availability.
+        service = next(s.arrival_window for s in proposed.stops if s.job_id == candidate.id)
+        promise = promise_window(service=service, availability=option.window)
+
         proposed_minutes = proposed.round_trip_drive_minutes
         jobs_by_id = {job.id: job for job in context.jobs + [candidate]}
         total, breakdown = score_candidate(
             baseline_drive_minutes=context.baseline_drive_minutes,
             proposed_drive_minutes=proposed_minutes,
+            baseline_distance_km=context.baseline.round_trip_distance_km if context.baseline else 0.0,
+            proposed_distance_km=proposed.round_trip_distance_km,
             is_empty_day=context.is_empty,
             preference_rank=option.preference_rank,
             overtime=overtime_minutes(proposed, jobs_by_id, self._depot, self._scoring),
@@ -167,9 +176,13 @@ class CandidateService:
             availability_option_id=option.id,
             date=option.date,
             window=option.window,
+            service_window=service,
+            promise_window=promise,
             feasible=True,
             baseline_drive_minutes=context.baseline_drive_minutes,
             proposed_drive_minutes=proposed_minutes,
+            baseline_distance_km=context.baseline.round_trip_distance_km if context.baseline else 0.0,
+            proposed_distance_km=proposed.round_trip_distance_km,
             baseline_stop_count=len(context.baseline.stops) if context.baseline else 0,
             proposed_stop_count=len(proposed.stops),
             baseline_completion_minutes=context.baseline.completion_minutes if context.baseline else 0,

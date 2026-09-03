@@ -7,22 +7,18 @@ import { formatDuration } from "@/lib/format";
 /**
  * What saying yes to a slot would do to the day.
  *
- * Never a single number. "Cost: 93" tells a reader nothing they can check or argue with, and the
- * interesting case in this product is precisely when the cheapest slot is NOT the customer's first
- * choice -- which is only persuasive if you can see why.
+ * Never a single number, and specifically never `total_score`. That figure is a ranking index: it
+ * folds a 60-minute empty-day penalty -- a planning weight nobody drives -- in with real driving
+ * minutes, so printing it as "Route impact: 93 min" states a duration that does not exist. Anyone
+ * reading it would be right to check it against the map and wrong about what they found.
  *
- * Route efficiency is the objective and is laid out as a before/after ledger. Customer preference
- * is a courtesy weight, so it sits below a rule, quieter, and is labelled as a preference rather
- * than as a cost of driving.
+ * So every component is shown separately with its own unit: driving in minutes, distance in
+ * kilometres, opening a delivery day as a yes/no, overtime as the real minutes past the soft end.
+ * Customer preference sits below a rule, unpriced, because it is a fact about the customer rather
+ * than a cost of travel.
  */
 
-export function RouteImpactTable({
-  evaluation,
-  recommended = false,
-}: {
-  evaluation: Evaluation;
-  recommended?: boolean;
-}) {
+export function RouteImpactTable({ evaluation }: { evaluation: Evaluation }) {
   if (!evaluation.feasible) {
     return (
       <div className="rounded-[10px] border border-alert-edge bg-alert-wash px-4 py-3">
@@ -38,7 +34,7 @@ export function RouteImpactTable({
 
   const impact = evaluation.route_impact;
   const driveDelta = impact.drive_minutes.after - impact.drive_minutes.before;
-  const preferencePenalty = evaluation.breakdown.preference_penalty_minutes;
+  const distanceDelta = Number((impact.distance_km.after - impact.distance_km.before).toFixed(1));
 
   return (
     <div className="flex flex-col gap-2">
@@ -58,6 +54,17 @@ export function RouteImpactTable({
           emphasise
         />
         <Row
+          label="Distance"
+          before={`${impact.distance_km.before} km`}
+          after={`${impact.distance_km.after} km`}
+          delta={
+            distanceDelta === 0
+              ? "—"
+              : `${distanceDelta > 0 ? "+" : "−"}${Math.abs(distanceDelta).toFixed(1)} km`
+          }
+          tone={distanceDelta > 0 ? "cost" : "neutral"}
+        />
+        <Row
           label="Stops"
           before={String(impact.stops.before)}
           after={String(impact.stops.after)}
@@ -70,15 +77,24 @@ export function RouteImpactTable({
           delta={impact.finishes_at.before ? "" : "new day"}
           tone={impact.finishes_at.before ? "neutral" : "cost"}
         />
-        {impact.opens_empty_day && (
+        {impact.overtime_minutes > 0 && (
           <Row
-            label="Opens an empty day"
-            before="no work"
-            after="1 stop"
-            delta={`+${impact.empty_day_overhead_minutes}m`}
+            label="Overtime"
+            before="—"
+            after={formatDuration(impact.overtime_minutes)}
+            delta={`+${formatDuration(impact.overtime_minutes)}`}
             tone="cost"
           />
         )}
+        {/* A yes/no, never "+60m": opening a day is a decision we weight for ranking, not an hour
+            anyone spends behind a wheel. */}
+        <Row
+          label="Opens a new delivery day"
+          before={impact.opens_empty_day ? "no work" : "already running"}
+          after={impact.opens_empty_day ? "yes" : "no"}
+          delta={impact.opens_empty_day ? "yes" : "—"}
+          tone={impact.opens_empty_day ? "cost" : "neutral"}
+        />
       </div>
 
       <div className="flex items-baseline justify-between gap-3 border-t border-rail pt-2">
@@ -88,30 +104,13 @@ export function RouteImpactTable({
             {ordinal(impact.preference_rank)} choice
           </span>
         </span>
-        <span
-          className={cx(
-            "font-mono text-[12.5px] tnum",
-            preferencePenalty > 0 ? "text-pending" : "text-ink-faint",
-          )}
-        >
-          {preferencePenalty > 0 ? `+${preferencePenalty}m` : "—"}
+        {/* Unpriced on purpose. Preference breaks ties between comparable days; a minutes figure
+            beside real driving time invites reading it as a cost of travel. */}
+        <span className="text-[12px] text-ink-faint">
+          {impact.preference_rank === 1 ? "their first choice" : "not their first choice"}
         </span>
       </div>
 
-      <div className="flex items-baseline justify-between gap-3 rounded-[8px] bg-sunk/70 px-3 py-2">
-        <span className="font-mono text-[10px] uppercase tracking-[0.11em] text-ink-faint">
-          Route impact
-        </span>
-        <span
-          className={cx(
-            "font-display text-[22px] leading-none tnum",
-            recommended ? "text-locked" : "text-ink",
-          )}
-        >
-          {evaluation.total_score}
-          <span className="ml-1 font-sans text-[11px] text-ink-faint">min</span>
-        </span>
-      </div>
     </div>
   );
 }
