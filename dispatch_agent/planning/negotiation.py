@@ -162,6 +162,14 @@ def route_aware_windows(
     """
     exclude = exclude_dates or set()
     working_day = TimeWindow(start=settings.work_day_start, end=settings.work_day_end)
+    # Times this customer has already turned down, per date. Carried onto the search so a
+    # suggestion can never be the window they just rejected -- which is not merely untidy, it is
+    # the agent appearing not to have listened, immediately after being told no.
+    already_declined = {
+        option.date: list(option.excluded_windows)
+        for option in order.availability_options
+        if option.excluded_windows
+    }
 
     found: list[Suggestion] = []
     for date in PlanningClock.horizon_dates():
@@ -170,7 +178,12 @@ def route_aware_windows(
         # A whole working day as the search space: we are asking "where would the van naturally be
         # on this date", and the solver's answer is the promise. Narrowing it here would bias the
         # search towards our own guess about the day.
-        option = AvailabilityOption(date=date, window=working_day, preference_rank=1)
+        option = AvailabilityOption(
+            date=date,
+            window=working_day,
+            excluded_windows=already_declined.get(date, []),
+            preference_rank=1,
+        )
         evaluation = service.evaluate(order, option)
         if not evaluation.feasible or evaluation.promise_window is None:
             continue

@@ -170,16 +170,28 @@ def format_window(window) -> str:
     return f"{format_time(window.start)}-{format_time(window.end)}"
 
 
-def offer_message(offer: AppointmentOffer) -> str:
+def offer_message(offer: AppointmentOffer, some_requests_unavailable: bool = False) -> str:
     """Customer-facing wording. Deliberately says nothing about scores, penalties, or how
-    convenient their preference was for us -- that is our problem, not theirs."""
+    convenient their preference was for us -- that is our problem, not theirs.
+
+    `some_requests_unavailable` is the difference between two sentences that read very differently
+    to the person receiving them. "That's the only one of your preferred times we can fit" is an
+    apology, and it is a lie when the customer only gave us one time in the first place -- it
+    implies we turned something down that they never offered. Told plainly, one workable time gets
+    a plain answer.
+    """
     if len(offer.options) == 1:
         slot = offer.options[0]
         reason = f" {slot.reason}" if slot.reason else ""
+        closing = (
+            "That's the only one of your preferred times we can fit -- does it work?"
+            if some_requests_unavailable
+            else "Does that work?"
+        )
         return (
             f"We can deliver on {format_date(slot.date)}, between "
             f"{format_time(slot.window.start)} and {format_time(slot.window.end)}."
-            f"{reason} That's the only one of your preferred times we can fit -- does it work?"
+            f"{reason} {closing}"
         )
 
     lines = ["We can deliver on:"]

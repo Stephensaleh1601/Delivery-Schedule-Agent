@@ -595,3 +595,96 @@ def test_an_acceptance_with_nothing_offered_is_not_an_acceptance(temp_db):
     understood = MessageReader(llm=eager).read("okay", has_open_offer=False)
 
     assert understood.interpretation.intent != "accept"
+
+
+def test_take_that_one_is_a_demonstrative_not_an_ordinal(temp_db):
+    """"Take that one" against two options does not mean "the first one".
+
+    It read as ordinal 1 because "one" was in the ordinal table, so a customer still choosing
+    between two times got the earlier one booked without being asked. Nothing on screen would have
+    shown them it was a guess.
+    """
+    _, offer = _two_slot_offer(temp_db)
+    assert len(offer.options) == 2
+
+    said = language.interpret("Okay, take that one.", has_open_offer=True)
+
+    assert said.accepted_ordinal is None
+    with pytest.raises(conversation.AmbiguousAcceptance):
+        conversation.resolve_accepted_slot(offer, said)
+
+
+def test_an_explicit_ordinal_still_resolves(temp_db):
+    """The other side of the same fix -- "the first one" must keep working."""
+    _, offer = _two_slot_offer(temp_db)
+
+    for phrase, index in [("take the first one", 0), ("the second one please", 1)]:
+        chosen = conversation.resolve_accepted_slot(
+            offer, language.interpret(phrase, has_open_offer=True)
+        )
+        assert chosen.id == offer.options[index].id, phrase
+
+
+def test_the_models_is_fixed_answer_is_not_trusted(temp_db):
+    """A live smoke test had gpt-4o-mini mark "I'm free Saturday morning" as fixed.
+
+    That is a plain statement of availability, not an ultimatum, and believing it silently switches
+    off counteroffers -- so the customer is never told about a better slot, and nothing on any
+    screen says why. Whether a message contains an exclusivity phrase is a narrow lexical question
+    the regex answers reliably, so the model's answer is ignored for this field.
+    """
+    from dispatch_agent.agents.understanding import MessageReader
+    from tests.conftest import FakeLLM
+
+    overeager = FakeLLM(
+        structured_response={
+            "intent": "provide_availability",
+            "availability_phrases": ["Saturday morning"],
+            "is_fixed": True,
+        }
+    )
+
+    understood = MessageReader(llm=overeager).read("I'm free Saturday morning.")
+
+    assert not understood.interpretation.is_fixed
+
+
+def test_a_genuine_exclusivity_phrase_is_still_fixed(temp_db):
+    """The other side: the regex must catch it even when the model says nothing."""
+    from dispatch_agent.agents.understanding import MessageReader
+    from tests.conftest import FakeLLM
+
+    quiet = FakeLLM(
+        structured_response={
+            "intent": "provide_availability",
+            "availability_phrases": ["Saturday morning"],
+        }
+    )
+
+    understood = MessageReader(llm=quiet).read(
+        "Saturday morning, that's the only time I can do."
+    )
+
+    assert understood.interpretation.is_fixed
+
+
+def test_a_stated_preference_survives_the_models_ordering(temp_db):
+    """The same smoke test returned the phrases in the order they were spoken, ignoring "but
+    Tuesday is better". A dropped preference is the customer's wish being overruled by a routing
+    score they cannot see, so the ranking is re-derived from the sentence."""
+    from dispatch_agent.agents.understanding import MessageReader
+    from tests.conftest import FakeLLM
+
+    spoken_order = FakeLLM(
+        structured_response={
+            "intent": "provide_availability",
+            "availability_phrases": ["Saturday afternoon", "Tuesday morning"],
+        }
+    )
+
+    understood = MessageReader(llm=spoken_order).read(
+        "I can do Saturday afternoon or Tuesday morning, but Tuesday is better."
+    )
+
+    ranked = sorted(understood.interpretation.windows, key=lambda w: w.preference_rank)
+    assert [w.date for w in ranked] == [TUESDAY, SATURDAY]

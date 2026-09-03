@@ -28,6 +28,7 @@ from dispatch_agent.models import (
     PlanningStatus,
     TimeWindow,
 )
+from dispatch_agent.planning import tools
 from dispatch_agent.planning.clock import PlanningClock
 
 BASE = date(2026, 9, 2)
@@ -241,20 +242,40 @@ def test_a_declined_time_is_excluded_from_the_day_it_came_from(temp_db):
     assert option.bookable_windows(min_width=stored.duration_minutes + 30)
 
 
-def test_rejecting_the_last_available_slot_escalates_rather_than_giving_up(temp_db):
-    """When every window the customer gave has been tried, the order must reach a human --
-    quietly ending the run would abandon it.
+def test_the_negotiation_reaches_a_human_rather_than_petering_out(temp_db):
+    """Two rounds is the cap, and hitting it must escalate rather than end the run quietly.
 
-    The windows here are deliberately only as wide as one promise. A four-hour availability would
-    survive a rejection with hours to spare and correctly come back with a different time (see
-    test_rejection_leads_to_another_offer); exhaustion is what this test is about, so the customer
-    is given two windows that hold exactly one slot each.
+    This used to assert that exhausting the customer's OWN windows escalates. That stopped being
+    true, and rightly so: the agent now searches the horizon for a route-friendly alternative, so
+    "every time you gave me is taken" is answered with a different day rather than a shrug. What
+    ends a negotiation is the round cap -- which is the guardrail against pestering, and is counted
+    from persisted offers rather than remembered.
     """
     order = _order(temp_db, option_count=2)
+    handle_planning_event(_event(order), repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False)
+
+    for _ in range(2):
+        latest = max(temp_db.offers_for_order(order.id), key=lambda o: o.round_number)
+        run = handle_planning_event(
+            _event(order, PlanningEventType.CUSTOMER_REJECTED_OFFER, offer_id=latest.id),
+            repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False,
+        )
+
+    rounds = [o.round_number for o in temp_db.offers_for_order(order.id)]
+    assert max(rounds) <= 2, f"offered a third round: {rounds}"
+    assert any(a.tool == "create_exception" and a.ok for a in run.actions), (
+        "the order must reach a coordinator, not simply stop being answered"
+    )
+    assert temp_db.open_exceptions()
+
+
+def test_a_rejection_looks_at_other_days_before_giving_up(temp_db):
+    """The behaviour that replaced it. A customer whose stated windows are all narrow and now
+    excluded is offered another day, not an apology."""
+    order = _order(temp_db, option_count=1)
     days = PlanningClock.horizon_dates()
     order.availability_options = [
-        AvailabilityOption(date=days[0], window=_w((9, 0), (11, 0)), preference_rank=1),
-        AvailabilityOption(date=days[1], window=_w((14, 0), (16, 0)), preference_rank=2),
+        AvailabilityOption(date=days[0], window=_w((9, 0), (11, 0)), preference_rank=1)
     ]
     temp_db.save_job(order)
 
@@ -266,8 +287,9 @@ def test_rejecting_the_last_available_slot_escalates_rather_than_giving_up(temp_
         repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False,
     )
 
-    assert any(a.tool == "create_exception" and a.ok for a in run.actions)
-    assert any(e.kind == "no_remaining_slot" for e in temp_db.open_exceptions())
+    assert "suggest_route_aware_windows" in [a.tool for a in run.actions]
+    offers = temp_db.offers_for_order(order.id)
+    assert len(offers) == 2, "a second offer should have been made from another day"
 
 
 def test_the_activity_log_records_real_outcomes_not_narration(temp_db):
@@ -335,3 +357,173 @@ def test_a_fallback_keeps_the_exception_that_caused_it(temp_db):
     assert run.decider == "BrokenDecider"
     assert "bedrock unavailable" in run.decider_error
     assert temp_db.agent_runs()[0].decider_error == run.decider_error
+
+
+def test_the_digest_gives_the_model_every_identifier_it_must_produce(temp_db):
+    """A live run had the model invent an `order_id` -- record_availability came back
+    "unknown_order", and a send_message that reported success filed the reply against an order that
+    does not exist, so the customer simply got silence.
+
+    An identifier a model is required to produce but is never shown is a trap, not a test of the
+    model. Everything a tool needs by id has to appear in the digest verbatim.
+    """
+    from dispatch_agent.agents.prompts import render_state_digest
+
+    order = _order(temp_db, option_count=1)
+    event = _event(order, PlanningEventType.CUSTOMER_REJECTED_OFFER,
+                   offer_id="offer-123", slot_id="slot-456")
+
+    digest = render_state_digest({"event": event, "actions": [], "step_count": 0})
+
+    assert order.id in digest, "the order id must be quotable, not guessable"
+    assert "offer-123" in digest
+    assert "slot-456" in digest
+
+
+def test_the_digest_lists_the_windows_the_customer_just_gave(temp_db):
+    """Without these the model cannot know record_availability has anything to record, and a live
+    run skipped straight to evaluating an order with nothing on it."""
+    from dispatch_agent.agents.prompts import render_state_digest
+
+    order = _order(temp_db, option_count=1)
+    day = PlanningClock.horizon_dates()[0]
+    event = _event(
+        order,
+        stated_windows=[{"date": day.isoformat(), "start": "09:00", "end": "13:00",
+                         "phrase": "Saturday morning"}],
+    )
+
+    digest = render_state_digest({"event": event, "actions": [], "step_count": 0})
+
+    assert day.isoformat() in digest
+    assert "09:00-13:00" in digest
+    assert "Saturday morning" in digest
+
+
+def test_a_rejected_call_is_told_what_the_arguments_should_have_been(temp_db):
+    """"Arguments were not valid" told the model nothing, so a live run repeated the identical bad
+    call six times and burned the step budget without learning that it had written `message` where
+    `body` was expected."""
+    ctx = tools.ToolContext(repo=temp_db)
+
+    result = tools.dispatch("send_message", {"message": "hello"}, ctx)
+
+    assert not result.ok and result.error == "invalid_arguments"
+    assert "body" in result.summary, "the summary must name the fields it actually takes"
+    assert "order_id" in result.summary
+
+
+def test_the_customer_facing_wording_is_not_the_models_to_write(temp_db):
+    """A live run had gpt-4o-mini rewrite an offer into "Dear Mrs. Lee ... Best regards, The
+    Delivery Team" -- fluent, and missing the route reason the message existed to carry.
+
+    The specific window and the reason both come from the solved route. A model paraphrasing them
+    is a model inventing the explanation, which is the one thing the architecture is built to stop.
+    """
+    order = _order(temp_db, option_count=1)
+
+    run = handle_planning_event(
+        _event(order),
+        repo=temp_db,
+        decider=ScriptedDecisionAgent([
+            {"action": "evaluate_slots", "reason_summary": "checking",
+             "arguments": {"order_id": order.id}},
+            {"action": "create_offer", "reason_summary": "offering",
+             "arguments": {"order_id": order.id}},
+            {"action": "send_message", "reason_summary": "sending",
+             "arguments": {"order_id": order.id,
+                           "body": "Dear Mrs Tan, best regards, The Delivery Team"}},
+            {"action": "finish", "reason_summary": "done"},
+        ]),
+        use_fallback=False,
+    )
+
+    assert run.status is AgentRunStatus.COMPLETED
+    sent = temp_db.messages(order.id)[-1].body
+    assert "Best regards" not in sent and "Dear Mrs Tan" not in sent
+    assert "We can deliver" in sent, f"the prepared wording was replaced: {sent!r}"
+
+
+def test_a_message_with_nothing_prepared_and_nothing_written_is_refused(temp_db):
+    """The other side: send_message must not save an empty bubble."""
+    ctx = tools.ToolContext(repo=temp_db)
+    order = _order(temp_db, option_count=1)
+
+    result = tools.dispatch("send_message", {"order_id": order.id}, ctx)
+
+    assert not result.ok and result.error == "nothing_to_send"
+    assert not temp_db.messages(order.id)
+
+
+def test_an_unanswered_offer_cannot_be_locked_by_the_agent(temp_db):
+    """The most serious thing a live model did: it called lock_appointment while its own question
+    was still on the table, and succeeded -- booking a van to a customer who had not replied.
+
+    No prompt reliably prevents that, and the failure is invisible to the person it happens to.
+    The guard is structural: the accepted slot is set from the event, never claimed by a decider.
+    """
+    order = _order(temp_db)
+    handle_planning_event(_event(order), repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False)
+    offer = temp_db.offers_for_order(order.id)[0]
+    slot = offer.options[0]
+
+    run = handle_planning_event(
+        # A NEW_ORDER event -- nobody has accepted anything -- with a decider that tries anyway.
+        PlanningEvent(event_type=PlanningEventType.NEW_ORDER, order_id=order.id,
+                      payload={"stated_windows": []}),
+        repo=temp_db,
+        decider=ScriptedDecisionAgent([
+            {"action": "lock_appointment", "reason_summary": "confirming",
+             "arguments": {"offer_id": offer.id, "slot_id": slot.id}},
+            {"action": "finish", "reason_summary": "done"},
+        ]),
+        use_fallback=False,
+    )
+
+    assert run.actions[0].ok is False
+    assert run.actions[0].error == "customer_has_not_accepted"
+    job = temp_db.get_job(order.id)
+    assert job.planning_status is PlanningStatus.OFFERED
+    assert job.locked_window is None, "an unanswered offer became a booking"
+
+
+def test_locking_a_different_slot_than_the_one_accepted_is_refused(temp_db):
+    """They said Tuesday; the model asks to lock Saturday. That is a van at the wrong door."""
+    order = _order(temp_db)
+    handle_planning_event(_event(order), repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False)
+    offer = temp_db.offers_for_order(order.id)[0]
+    accepted, other = offer.options[0], offer.options[-1]
+    if accepted.id == other.id:
+        pytest.skip("this scenario needs two offered slots")
+
+    run = handle_planning_event(
+        _event(order, PlanningEventType.CUSTOMER_ACCEPTED_OFFER,
+               offer_id=offer.id, slot_id=accepted.id),
+        repo=temp_db,
+        decider=ScriptedDecisionAgent([
+            {"action": "lock_appointment", "reason_summary": "confirming the other one",
+             "arguments": {"offer_id": offer.id, "slot_id": other.id}},
+            {"action": "finish", "reason_summary": "done"},
+        ]),
+        use_fallback=False,
+    )
+
+    assert run.actions[0].ok is False and run.actions[0].error == "wrong_slot"
+    assert temp_db.get_job(order.id).locked_window is None
+
+
+def test_the_slot_the_customer_did_accept_still_locks(temp_db):
+    """The guard must not break the thing it guards."""
+    order = _order(temp_db)
+    handle_planning_event(_event(order), repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False)
+    offer = temp_db.offers_for_order(order.id)[0]
+    slot = offer.options[0]
+
+    handle_planning_event(
+        _event(order, PlanningEventType.CUSTOMER_ACCEPTED_OFFER, offer_id=offer.id, slot_id=slot.id),
+        repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False,
+    )
+
+    job = temp_db.get_job(order.id)
+    assert job.planning_status is PlanningStatus.CONFIRMED
+    assert job.locked_window == slot.window

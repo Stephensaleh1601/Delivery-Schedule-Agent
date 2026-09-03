@@ -238,24 +238,98 @@ export function ChoiceBubble({
   );
 }
 
-export function Composer({ children }: { children: ReactNode }) {
+/**
+ * The message box. A real one.
+ *
+ * It used to be a caption that said "Tap a time above", which made the buttons the only way to
+ * say anything -- and a booking system you can only answer by tapping is a form wearing a
+ * conversation's clothes. Typing is now the primary interaction and the buttons are shortcuts.
+ */
+export function Composer({
+  value,
+  onChange,
+  onSend,
+  disabled,
+  placeholder = "Message",
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  onSend: () => void;
+  disabled?: boolean;
+  placeholder?: string;
+}) {
+  const canSend = value.trim().length > 0 && !disabled;
+
   return (
-    <div
+    <form
       className="flex items-end gap-2 px-2.5 py-2"
       style={{ backgroundColor: "var(--color-wa-paper)" }}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (canSend) onSend();
+      }}
     >
       <div className="flex flex-1 items-center gap-2 rounded-[20px] bg-white px-3 py-2">
-        {children}
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={disabled}
+          placeholder={placeholder}
+          aria-label="Message"
+          enterKeyHint="send"
+          className="w-full bg-transparent text-[13.5px] text-[color:var(--color-wa-header)] outline-none placeholder:text-[color:var(--color-wa-meta)] disabled:opacity-60"
+        />
       </div>
-      <div
-        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
+      <button
+        type="submit"
+        // Disabled while a reply is in flight, which is the double-send guard the customer can
+        // see. The server has its own -- an identical message is answered rather than re-run --
+        // because a disabled button is a courtesy, not a guarantee.
+        disabled={!canSend}
+        aria-label="Send"
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-opacity disabled:opacity-45"
         style={{ background: "var(--color-wa-accent)" }}
-        aria-hidden
       >
-        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="white">
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="white" aria-hidden>
           <path d="M2.5 21 23 12 2.5 3 2.5 10l14.5 2-14.5 2z" />
         </svg>
-      </div>
+      </button>
+    </form>
+  );
+}
+
+/** Optional shortcuts under the thread. Never the only way to answer -- see Composer. */
+export function QuickReplies({
+  replies,
+  onPick,
+  disabled,
+}: {
+  replies: Array<{ id: string; label: string }>;
+  onPick: (id: string) => void;
+  disabled?: boolean;
+}) {
+  if (replies.length === 0) return null;
+  return (
+    <div
+      className="flex flex-wrap gap-1.5 px-2.5 pb-1.5"
+      style={{ backgroundColor: "var(--color-wa-paper)" }}
+    >
+      {replies.map((reply) => (
+        <button
+          key={reply.id}
+          type="button"
+          disabled={disabled}
+          onClick={() => onPick(reply.id)}
+          className="rounded-full border px-2.5 py-1 text-[12px] transition-colors disabled:opacity-50"
+          style={{
+            borderColor: "var(--color-wa-accent)",
+            color: "var(--color-wa-accent)",
+            background: "white",
+          }}
+        >
+          {reply.label}
+        </button>
+      ))}
     </div>
   );
 }

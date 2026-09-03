@@ -11,6 +11,44 @@ Built for IGNITE Agentic AI Hackathon 2026, digital track.
 
 ## What's built
 
+### The customer types
+
+There is no availability form. A customer writes "I'm free Saturday morning" and the agent reads
+it, solves the route, and answers with a window it can keep. One stated timing is enough; nothing
+asks for two or three.
+
+The model decides *what the customer wants* and quotes the phrases that say when. It never computes
+a date: "Saturday morning" comes back as those two words and is resolved by
+`planning/language.py` against the Singapore planning clock. A model that confidently answers
+"next Tuesday is the 15th" cannot introduce that date, because there is no field for it to arrive
+in. The same module is the deterministic fallback when a provider is unreachable, and it is what
+the tests assert on -- so no test calls a model (`LLM_PROVIDER=none` is pinned by an autouse
+fixture).
+
+Four things are kept distinct, and one boundary is structural:
+
+| | what it is |
+|---|---|
+| **stated availability** | what the customer said. Only they can create it |
+| **tentative suggestion** | a window we are asking about. Not availability |
+| **offered promise** | a tentative window put to them formally |
+| **locked appointment** | one they accepted |
+
+A suggestion becomes availability only by being accepted. `record_availability` takes no windows
+argument at all -- they arrive on the tool context from the parser -- so there is no path through
+which a model could invent a time the customer never offered.
+
+**Counteroffers are policy, not judgement.** A time they asked for that we can serve is served.
+`planning/negotiation.py` states the exceptions: infeasible, overtime, opening an otherwise-empty
+delivery day, or another day saving `COUNTEROFFER_SAVING_MINUTES` (15) or more. A customer who
+says their timing is fixed is never asked again.
+
+**Two guards are structural rather than prompted**, because a live smoke test showed prose is not
+enough. `lock_appointment` refuses unless the customer actually accepted that slot -- gpt-4o-mini
+called it while its own question was still unanswered, and succeeded. And `send_message` sends the
+wording the previous tool produced, because the same model rewrote an offer into "Dear Mrs. Lee...
+Best regards" and dropped the route reason the message existed to carry.
+
 ### The negotiated promise window
 
 The thing that makes this behave like a coordinator rather than a scheduler. A customer who says

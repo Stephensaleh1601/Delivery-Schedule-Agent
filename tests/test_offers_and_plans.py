@@ -101,7 +101,25 @@ def test_a_single_feasible_option_is_offered_alone(temp_db):
     offer = offer_service.create_offer(temp_db, order, evaluations)
 
     assert len(offer.options) == 1
-    assert "only one of your preferred times" in offer_service.offer_message(offer)
+    # One of their two requests could not be served, so the apology is accurate here.
+    assert "only one of your preferred times" in offer_service.offer_message(
+        offer, some_requests_unavailable=True
+    )
+
+
+def test_one_workable_time_gets_a_plain_answer_not_an_apology(temp_db):
+    """The other half of the same wording. "That's the only one of your preferred times we can fit"
+    said to a customer who gave us ONE time implies we turned down something they never offered --
+    and under the natural-language flow, one stated time is the normal case, not the exception."""
+    day = PlanningClock.horizon_dates()[0]
+    order = _order(temp_db, options=[_option(day)])
+
+    evaluations = CandidateService(repo=temp_db).evaluate_all(order)
+    offer = offer_service.create_offer(temp_db, order, evaluations)
+
+    message = offer_service.offer_message(offer, some_requests_unavailable=False)
+    assert "only one of your preferred times" not in message
+    assert message.endswith("Does that work?")
 
 
 def test_no_feasible_option_raises_rather_than_inventing_a_slot(temp_db):

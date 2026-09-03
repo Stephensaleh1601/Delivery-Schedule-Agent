@@ -144,6 +144,9 @@ class ToolContext:
     repo: JobsRepository
     routing_client: RoutingClient | None = None
     order: JobRecord | None = None
+    # The slot the CUSTOMER accepted, set by the loop from the event and by nothing else. While
+    # this is None, no appointment can be locked -- see lock_appointment.
+    accepted: tuple[str, str] | None = None
     evaluations: list[CandidateSlotEvaluation] = field(default_factory=list)
     offer_id: str | None = None
     # The run these tools are executing inside. Carried on the context so anything a tool creates
@@ -207,7 +210,10 @@ class ReplanArgs(_Args):
 
 class MessageArgs(_Args):
     order_id: str
-    body: str
+    # Optional, and ignored whenever a tool has already produced the wording. See send_message:
+    # the customer-facing text is built deterministically from the solved route, and a model
+    # rewriting it drops the reason it was built to carry.
+    body: str | None = None
 
 
 class ExceptionArgs(_Args):
@@ -294,9 +300,17 @@ def create_offer(args: OrderArgs, ctx: ToolContext) -> ToolResult:
         # The suggestions' evaluations join the pool. They are still not the customer's
         # availability -- nothing is written to the order here; that happens only if one is
         # accepted (see offer_service.accept_offer).
-        seen = {(e.date, e.promise_window) for e in offerable if e.feasible}
+        # Keyed on the window's endpoints, not the TimeWindow itself: it is a Pydantic model and
+        # therefore unhashable, and building a set of them raises inside the tool -- which surfaces
+        # as "we could not offer you anything" rather than as the type error it is.
+        seen = {
+            (e.date, e.promise_window.start, e.promise_window.end)
+            for e in offerable
+            if e.feasible and e.promise_window
+        }
         for suggestion in suggestions:
-            if (suggestion.date, suggestion.window) not in seen:
+            key = (suggestion.date, suggestion.window.start, suggestion.window.end)
+            if key not in seen:
                 offerable.append(suggestion.evaluation)
 
     try:
@@ -305,7 +319,12 @@ def create_offer(args: OrderArgs, ctx: ToolContext) -> ToolResult:
         return ToolResult(ok=False, tool="create_offer", error=exc.kind, summary=str(exc))
 
     ctx.offer_id = offer.id
-    ctx.scratch["offer_message"] = offer_service.offer_message(offer)
+    # Only apologise for the times we could not fit when there actually were some. Saying it to a
+    # customer who gave us one workable time implies we turned down something they never offered.
+    ctx.scratch["offer_message"] = offer_service.offer_message(
+        offer,
+        some_requests_unavailable=any(not e.feasible for e in ctx.evaluations),
+    )
     slots = ", ".join(
         f"{offer_service.format_date(s.date)} {offer_service.format_window(s.window)}"
         for s in offer.options
@@ -329,24 +348,69 @@ def create_offer(args: OrderArgs, ctx: ToolContext) -> ToolResult:
 
 @tool("send_message", MessageArgs)
 def send_message(args: MessageArgs, ctx: ToolContext) -> ToolResult:
-    """Simulated send. Recorded with a direction so "how many customers did we contact?" is a
-    query rather than a guess."""
+    """Send the wording the previous step produced.
+
+    Simulated send, recorded with a direction so "how many customers did we contact?" is a query
+    rather than a guess.
+
+    The body is taken from the context, not from the model, whenever a tool has prepared one. A
+    live run had gpt-4o-mini rewrite the offer into "Dear Mrs. Lee ... Best regards, The Delivery
+    Team" -- fluent, and missing the route reason the message existed to carry ("we'll already be
+    delivering in the East"). Customer-facing text is built from the solved route by
+    planning/route_facts, and a model paraphrasing it is a model inventing the explanation.
+    """
+    prepared = ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")
+    body = prepared or (args.body or "")
+    if not body.strip():
+        return ToolResult(ok=False, tool="send_message", error="nothing_to_send",
+                          summary="No message has been prepared, so there is nothing to send.")
     # Linked to the run that produced it and, when this message is presenting an offer, to that
     # offer -- so the inspector under this bubble opens THESE calls after a refresh.
     message = offer_service.record_message(
-        ctx.repo, args.order_id, args.body,
+        ctx.repo, args.order_id, body,
         MessageDirection.OUTBOUND, run_id=ctx.run_id, offer_id=ctx.offer_id,
     )
     return ToolResult(
         ok=True, tool="send_message",
-        summary=f"Message sent to the customer ({len(args.body)} chars).",
+        summary=(
+            f"Message sent to the customer ({len(body)} chars)"
+            + ("." if prepared else " -- no prepared wording, so the agent's own text was used.")
+        ),
         data={"order_id": args.order_id, "message_id": message.id},
     )
 
 
 @tool("lock_appointment", AcceptArgs)
 def lock_appointment(args: AcceptArgs, ctx: ToolContext) -> ToolResult:
-    """Turn an accepted slot into a protected promise, and republish the day."""
+    """Turn an accepted slot into a protected promise, and republish the day.
+
+    Refuses unless the customer actually accepted THIS slot. The check is here rather than in the
+    prompt because a live run showed why: gpt-4o-mini called this on its own initiative while an
+    offer was still unanswered, and once it succeeded -- booking a van to a customer who had been
+    asked a question and had not yet replied. There is no wording that reliably prevents that, and
+    the failure is invisible to the person it happens to.
+
+    `ctx.accepted` is set by the loop from a CUSTOMER_ACCEPTED_OFFER event and by nothing else, so
+    "the customer said yes" is a fact about the conversation rather than a claim by the model.
+    """
+    if ctx.accepted is None:
+        return ToolResult(
+            ok=False, tool="lock_appointment", error="customer_has_not_accepted",
+            summary=(
+                "Refused: the customer has not accepted anything. An offer they have not answered "
+                "is a question, not a booking."
+            ),
+        )
+    if ctx.accepted != (args.offer_id, args.slot_id):
+        expected_offer, expected_slot = ctx.accepted
+        return ToolResult(
+            ok=False, tool="lock_appointment", error="wrong_slot",
+            summary=(
+                f"Refused: the customer accepted slot {expected_slot} of offer {expected_offer}, "
+                f"not {args.slot_id} of {args.offer_id}."
+            ),
+        )
+
     try:
         outcome = offer_service.accept_offer(
             ctx.repo, args.offer_id, args.slot_id,
@@ -538,10 +602,22 @@ def dispatch(action: str, arguments: dict | None, ctx: ToolContext) -> ToolResul
     try:
         args = spec.args_model.model_validate(arguments or {})
     except ValidationError as exc:
+        # Say what was wrong, in the summary -- which is the part the model reads back on its next
+        # turn. "Arguments were not valid" told it nothing, so a live run repeated the identical
+        # bad call six times and burned the whole step budget without ever learning that it had
+        # written `message` where `body` was expected.
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in e['loc']) or '(root)'}: {e['msg']}"
+            for e in exc.errors(include_url=False)[:3]
+        )
+        expected = ", ".join(spec.args_model.model_fields) or "no arguments"
         return ToolResult(
             ok=False, tool=action, error="invalid_arguments",
-            summary=f"Arguments for {action} were not valid.",
-            data={"detail": exc.errors(include_url=False)[:3]},
+            summary=(
+                f"Arguments for {action} were not valid ({problems}). "
+                f"It takes exactly: {expected}."
+            ),
+            data={"expected": list(spec.args_model.model_fields)},
         )
 
     try:
@@ -552,6 +628,43 @@ def dispatch(action: str, arguments: dict | None, ctx: ToolContext) -> ToolResul
 
 def allowed_actions() -> list[str]:
     return sorted(TOOL_REGISTRY)
+
+
+def describe_arguments() -> dict[str, dict]:
+    """Each action's argument shape, generated from the Pydantic model that validates it.
+
+    The decision schema used to hand the model `arguments: {"type": "object"}` with no properties,
+    so it had to guess field names -- and a live run guessed `message` for `body` and omitted
+    `order_id` entirely, six times in a row, because extra="forbid" rejected each attempt without
+    ever telling it what the right names were. Generated here rather than written out so a tool
+    added later cannot drift from its own documentation.
+    """
+    described: dict[str, dict] = {}
+    for name, spec in TOOL_REGISTRY.items():
+        fields = {}
+        for field_name, field in spec.args_model.model_fields.items():
+            annotation = getattr(field.annotation, "__name__", str(field.annotation))
+            fields[field_name] = {
+                "type": annotation,
+                "required": field.is_required(),
+            }
+        described[name] = fields
+    return described
+
+
+def render_argument_help() -> str:
+    """The same thing as prompt text: one line per action, listing its arguments."""
+    lines = []
+    for name, fields in sorted(describe_arguments().items()):
+        if not fields:
+            lines.append(f"- {name}: no arguments")
+            continue
+        parts = [
+            f"{f}" + ("" if spec["required"] else " (optional)")
+            for f, spec in fields.items()
+        ]
+        lines.append(f"- {name}: {', '.join(parts)}")
+    return "\n".join(lines)
 
 
 # Registers the natural-language negotiation tools into TOOL_REGISTRY above. A bottom import

@@ -1,20 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ActionRow } from "@/components/AgentTrace";
 import { FunctionCallsPill } from "@/components/FunctionCalls";
-import { DayChange, RouteImpactTable } from "@/components/RouteImpact";
+import { DayChange } from "@/components/RouteImpact";
 import { RouteMap, stopsToPoints } from "@/components/RouteMap";
 import { Page } from "@/components/Shell";
 import {
   Bubble,
-  ChoiceBubble,
   Composer,
   Phone,
+  QuickReplies,
   TypingBubble,
   Wallpaper,
-  chatTime,
 } from "@/components/WhatsApp";
 import { Button, Card, ErrorPanel, Eyebrow, LockIcon, Pill, Skeleton, cx } from "@/components/ui";
 import {
@@ -22,188 +21,131 @@ import {
   type ActivePlan,
   type AgentRun,
   type Bootstrap,
-  type Evaluation,
+  type ChatMessage,
+  type ChatTurn,
   type Offer,
   type PlanVersion,
 } from "@/lib/api";
-import { formatDate, formatDuration, formatWindow } from "@/lib/format";
+import { formatDate } from "@/lib/format";
 import { useResource } from "@/lib/useResource";
 
 /**
  * The customer's side, and the agent's working, on one screen.
  *
- * Side by side because the claim only lands if you see both at once: the customer is told two
- * friendly times, and beside it is the evidence that those two were chosen by solving every window
- * they offered against the real route. Neither half is convincing alone.
+ * Two things shape this file, and both are worth knowing before editing it.
  *
- * Everything is a real request. When the confirmation appears the appointment is already locked and
- * the day's plan republished -- the UI is reporting, not performing.
+ * **The customer types.** There is no availability form. They write "I'm free Saturday morning",
+ * the agent reads it, solves the route, and answers with a specific window it can keep. The quick
+ * replies under the thread are shortcuts and a reliable path for a live demo -- never the only way
+ * to answer.
+ *
+ * **The thread belongs to the database, not to React.** Every turn returns the whole conversation
+ * as persisted, and this component renders that. It is why a refresh keeps the messages AND keeps
+ * the right trace under each one: the run id is a field on the message, not a variable up here
+ * that happened to hold the newest run when the bubble was drawn.
  */
 
-type Msg =
-  | { kind: "them"; id: string; text: string; time: string }
-  | { kind: "me"; id: string; text: string; time: string }
-  | { kind: "typing"; id: string }
-  | { kind: "choices"; id: string; offer: Offer }
-  | { kind: "confirmed"; id: string; text: string; time: string };
+type Draft =
+  // Sent but not yet answered. Rendered optimistically so the thread feels immediate, then
+  // replaced wholesale by the server's version of events.
+  | { kind: "pending"; id: string; text: string }
+  | { kind: "typing"; id: string };
 
 let seq = 0;
-const nextId = () => `b${++seq}`;
-
-const WINDOWS = [
-  { label: "Morning", start: "09:00", end: "13:00" },
-  { label: "Afternoon", start: "13:00", end: "18:00" },
-  { label: "Any time", start: "09:00", end: "18:00" },
-];
+const nextId = () => `local-${++seq}`;
 
 export default function ChatPage() {
   const router = useRouter();
   const boot = useResource(() => dispatch.bootstrap(), []);
-  const [msgs, setMsgs] = useState<Msg[]>([]);
-  const [phase, setPhase] = useState<"loading" | "ready" | "waiting" | "offered" | "done">("loading");
+
   const [orderId, setOrderId] = useState<string | null>(null);
-  const [run, setRun] = useState<AgentRun | null>(null);
-  const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
+  const [turn, setTurn] = useState<ChatTurn | null>(null);
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [input, setInput] = useState("");
   const [before, setBefore] = useState<PlanVersion | null>(null);
   const [after, setAfter] = useState<ActivePlan | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const feed = useRef<HTMLDivElement>(null);
 
+  // Survives a reload. The conversation itself lives on the server; this is only the pointer to
+  // it, and it is what makes "refresh the browser" a step the demo can actually perform.
   useEffect(() => {
-    if (!boot.data || msgs.length) return;
-    const h = boot.data.horizon;
-    setMsgs([
-      {
-        kind: "them", id: nextId(), time: chatTime(-4),
-        text: "Hi! This is Majestic Fighters Furniture Delivery. I can book your sofa, bed or cabinet delivery.",
-      },
-      {
-        kind: "them", id: nextId(), time: chatTime(-4),
-        text: `Give me two or three times that would work between ${formatDate(h.first)} and ${formatDate(h.last)}, and I'll check which of them we can actually make.`,
-      },
-    ]);
-    setPhase("ready");
-  }, [boot.data, msgs.length]);
+    const saved = sessionStorage.getItem("dispatch:chat-order");
+    if (saved) setOrderId(saved);
+  }, []);
+
+  useEffect(() => {
+    if (orderId) sessionStorage.setItem("dispatch:chat-order", orderId);
+  }, [orderId]);
+
+  const load = useCallback(async (id: string) => {
+    try {
+      setTurn(await dispatch.conversation(id));
+    } catch (err) {
+      setError(err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (orderId) void load(orderId);
+  }, [orderId, load]);
 
   useEffect(() => {
     feed.current?.scrollTo({ top: feed.current.scrollHeight, behavior: "smooth" });
-  }, [msgs]);
+  }, [turn, drafts]);
 
-  const push = (m: Msg) => setMsgs((prev) => [...prev, m]);
-  const dropTyping = () => setMsgs((prev) => prev.filter((m) => m.kind !== "typing"));
+  const messages = turn?.messages ?? [];
+  const openOffer = turn?.open_offer_id ? turn.offers[turn.open_offer_id] : null;
+  const confirmed = turn?.confirmed ?? false;
+  const lastRun = turn?.run ?? null;
 
-  async function book(payload: BookingPayload) {
+  async function send(text: string) {
+    const body = text.trim();
+    if (!body || !orderId || busy) return;
+
     setBusy(true);
     setError(null);
-    push({
-      kind: "me", id: nextId(), time: chatTime(),
-      text: `${payload.job_type} delivery for ${payload.customer_name}.\nI'm free:\n${payload.availability
-        .map((a) => `• ${formatDate(a.date)}, ${a.window_start}–${a.window_end}`)
-        .join("\n")}`,
-    });
-    setPhase("waiting");
-    push({ kind: "typing", id: nextId() });
+    setInput("");
+    setDrafts([
+      { kind: "pending", id: nextId(), text: body },
+      { kind: "typing", id: nextId() },
+    ]);
 
+    // The day under discussion, captured BEFORE the reply, so a confirmation can show what
+    // changed rather than only what the day now looks like.
+    const discussing = openOffer?.options[0]?.date;
+    if (discussing) {
+      const versions = await dispatch.planVersions(discussing).catch(() => []);
+      setBefore(versions.find((v) => v.status === "active") ?? null);
+    }
+
+    try {
+      const next = await dispatch.sendMessage(orderId, body);
+      setTurn(next);
+      if (next.confirmed && next.delivery_date) {
+        setAfter(await dispatch.activePlan(next.delivery_date).catch(() => null));
+      }
+    } catch (err) {
+      setError(err);
+      // The message may already be in the thread on the server. Reload rather than guess, so the
+      // screen and the database agree even when something went wrong.
+      if (orderId) await load(orderId);
+    } finally {
+      setDrafts([]);
+      setBusy(false);
+    }
+  }
+
+  async function start(payload: IntroPayload) {
+    setBusy(true);
+    setError(null);
     try {
       const created = await dispatch.createOrder(payload);
       setOrderId(created.id);
-      // ONE planning call. It returns the offer AND the evaluations behind it, so what the
-      // customer reads and what this panel shows cannot disagree.
-      const result = await dispatch.planAgentic(created.id);
-      setRun(result.run ?? null);
-      setEvaluations(result.evaluations);
-      dropTyping();
-
-      if (!result.offer) {
-        push({
-          kind: "them", id: nextId(), time: chatTime(),
-          text: "I'm sorry — none of those will work. One of our team will call you to sort out a time.",
-        });
-        setPhase("done");
-        return;
-      }
-      push({ kind: "them", id: nextId(), time: chatTime(), text: result.message ?? "We can deliver on:" });
-      push({ kind: "choices", id: nextId(), offer: result.offer });
-      setPhase("offered");
+      setTurn(await dispatch.conversation(created.id));
     } catch (err) {
-      dropTyping();
       setError(err);
-      setPhase("ready");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function accept(offer: Offer, slotId: string) {
-    const slot = offer.options.find((s) => s.id === slotId);
-    if (!slot) return;
-    setBusy(true);
-
-    // The day as it stands BEFORE, so the change can be shown rather than asserted.
-    const prior = await dispatch.planVersions(slot.date).catch(() => []);
-    setBefore(prior.find((v) => v.status === "active") ?? null);
-
-    setMsgs((prev) => prev.filter((m) => m.kind !== "choices"));
-    push({ kind: "me", id: nextId(), time: chatTime(), text: slot.label });
-    push({ kind: "typing", id: nextId() });
-    try {
-      const result = await dispatch.respond(offer.id, true, slotId);
-      dropTyping();
-      push({
-        kind: "confirmed", id: nextId(), time: chatTime(),
-        text: result.message ?? "You're confirmed.",
-      });
-      setAfter(await dispatch.activePlan(slot.date).catch(() => null));
-      setPhase("done");
-    } catch (err) {
-      dropTyping();
-      setError(err);
-      setPhase("offered");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  /** Declining one proposed time. Not declining the day: the agent excludes that interval,
-   *  re-solves the same dates around it and comes back with a different window, which is what the
-   *  thread and the trace beside it then show. */
-  async function decline(offer: Offer, slotId?: string) {
-    const slot = slotId ? offer.options.find((s) => s.id === slotId) : undefined;
-    setBusy(true);
-    setMsgs((prev) => prev.filter((m) => m.kind !== "choices"));
-    push({
-      kind: "me", id: nextId(), time: chatTime(),
-      text: slot ? `${slot.label} doesn't work for me — anything else that day?` : "None of those work for me.",
-    });
-    push({ kind: "typing", id: nextId() });
-
-    try {
-      const result = await dispatch.respond(offer.id, false, slotId);
-      dropTyping();
-      // The run and evaluations come back from the same call, so the panel shows the exclusion and
-      // the re-solve that produced whatever is offered next.
-      if (result.run) setRun(result.run);
-      if (result.evaluations?.length) setEvaluations(result.evaluations);
-
-      if (!result.next_offer) {
-        push({
-          kind: "them", id: nextId(), time: chatTime(),
-          text: "I'm sorry — there's nothing else we can fit in the times you gave us. One of our team will call you.",
-        });
-        setPhase("done");
-        return;
-      }
-      push({
-        kind: "them", id: nextId(), time: chatTime(),
-        text: result.message ?? "Let me try again.",
-      });
-      push({ kind: "choices", id: nextId(), offer: result.next_offer });
-      setPhase("offered");
-    } catch (err) {
-      dropTyping();
-      setError(err);
-      setPhase("offered");
     } finally {
       setBusy(false);
     }
@@ -211,23 +153,23 @@ export default function ChatPage() {
 
   function reset() {
     seq = 0;
-    setMsgs([]);
+    sessionStorage.removeItem("dispatch:chat-order");
     setOrderId(null);
-    setRun(null);
-    setEvaluations([]);
+    setTurn(null);
+    setDrafts([]);
+    setInput("");
     setBefore(null);
     setAfter(null);
     setError(null);
-    setPhase("loading");
     boot.reload();
   }
 
-  const status = phase === "waiting" ? "typing…" : phase === "done" ? "delivery confirmed" : "online";
+  const status = busy ? "typing…" : confirmed ? "delivery confirmed" : "online";
 
   return (
     <Page
       title="Customer Chat"
-      lede="The customer's side, and the agent's working, together. Every reply is the result of a real request — the offer comes from solving each window against the actual route, and the appointment is locked before the confirmation appears."
+      lede="The customer types in their own words. Every reply is the result of a real request — the agent reads the message, solves the route, and offers a window it can actually keep."
       wide
       actions={
         <Button variant="ghost" onClick={reset}>
@@ -249,31 +191,64 @@ export default function ChatPage() {
                     <Skeleton className="h-10 w-[60%]" />
                   </>
                 ) : (
-                  msgs.map((m) => (
-                    <MessageView key={m.id} msg={m} onChoose={accept} onDecline={decline} run={run} busy={busy} />
-                  ))
+                  <>
+                    <Greeting boot={boot.data} />
+                    {messages.map((m) => (
+                      <ThreadMessage
+                        key={m.id}
+                        message={m}
+                        // The run named BY THIS MESSAGE. Not "the latest run", which is the bug
+                        // this replaces and which is invisible until there are two.
+                        run={m.run_id ? (turn?.runs[m.run_id] ?? null) : null}
+                      />
+                    ))}
+                    {drafts.map((d) =>
+                      d.kind === "typing" ? (
+                        <TypingBubble key={d.id} />
+                      ) : (
+                        <Bubble key={d.id} from="me" time="now" ticks="sent">
+                          {d.text}
+                        </Bubble>
+                      ),
+                    )}
+                  </>
                 )}
               </div>
             </Wallpaper>
-            <Composer>
-              <span className="text-[12.5px] text-[color:var(--color-wa-meta)]">
-                {phase === "ready"
-                  ? "Fill in your details →"
-                  : phase === "offered"
-                    ? "Tap a time above"
-                    : phase === "waiting"
-                      ? "Checking availability…"
-                      : "Message"}
-              </span>
-            </Composer>
+
+            {orderId && !confirmed && (
+              <QuickReplies
+                replies={suggestReplies(openOffer, confirmed, messages.length)}
+                onPick={(text) => void send(text)}
+                disabled={busy}
+              />
+            )}
+            <Composer
+              value={input}
+              onChange={setInput}
+              onSend={() => void send(input)}
+              disabled={!orderId || busy || confirmed}
+              placeholder={
+                !orderId
+                  ? "Open the chat first →"
+                  : confirmed
+                    ? "Booking confirmed"
+                    : busy
+                      ? "Checking the route…"
+                      : "Message"
+              }
+            />
           </Phone>
 
-          {phase === "ready" && boot.data && (
+          {!orderId && boot.data && (
             <Card className="px-4 py-3.5">
-              <BookingForm boot={boot.data} busy={busy} onSubmit={book} />
+              <IntroForm boot={boot.data} busy={busy} onSubmit={start} />
             </Card>
           )}
           {error ? <ErrorPanel error={error} onRetry={() => setError(null)} /> : null}
+          {orderId && (
+            <p className="font-mono text-[11px] text-ink-faint">order {orderId} · survives a refresh</p>
+          )}
         </div>
 
         {/* -- the agent -------------------------------------------------- */}
@@ -281,11 +256,13 @@ export default function ChatPage() {
           <div className="flex flex-col gap-1">
             <Eyebrow>Agent decision</Eyebrow>
             <h2 className="text-[17px] font-semibold text-ink">
-              {phase === "ready" || phase === "loading"
+              {!orderId
                 ? "Nothing decided yet"
-                : phase === "waiting"
-                  ? "Solving each requested window against the real route…"
-                  : `${evaluations.filter((e) => e.feasible).length} of ${evaluations.length} requested windows can be served`}
+                : busy
+                  ? "Reading the message and solving the route…"
+                  : lastRun
+                    ? summarise(lastRun, turn)
+                    : "Waiting for the customer"}
             </h2>
             <p className="max-w-[68ch] text-[12.5px] text-ink-muted">
               The customer sees none of this. It is here so you can see the offer was earned by a
@@ -293,49 +270,21 @@ export default function ChatPage() {
             </p>
           </div>
 
-          {run && (
+          {lastRun && (
             <Card className="overflow-hidden p-0">
               <div className="flex items-center justify-between gap-3 border-b border-rail px-4 py-2.5">
                 <Eyebrow>Tools called</Eyebrow>
                 <span className="font-mono text-[11px] text-ink-faint tnum">
-                  {run.actions.length}/6 steps
+                  {lastRun.actions.length} step{lastRun.actions.length === 1 ? "" : "s"} ·{" "}
+                  {providerLabel(lastRun)}
                 </span>
               </div>
               <ol className="flex flex-col">
-                {run.actions.map((a) => (
+                {lastRun.actions.map((a) => (
                   <ActionRow key={a.step} action={a} />
                 ))}
               </ol>
             </Card>
-          )}
-
-          {evaluations.length > 0 && (
-            <section className="flex flex-col gap-2.5">
-              <Eyebrow>Route impact per requested date</Eyebrow>
-              <div className="grid grid-cols-2 gap-3">
-                {evaluations.map((e, i) => (
-                  <Card
-                    key={e.availability_option_id}
-                    tone={i === 0 && e.feasible ? "locked" : "neutral"}
-                    className="flex flex-col gap-2.5 px-4 py-3.5"
-                  >
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="text-[13.5px] font-semibold text-ink">
-                        {formatDate(e.date)}
-                      </span>
-                      {i === 0 && e.feasible ? (
-                        <Pill tone="locked">Recommended</Pill>
-                      ) : (
-                        <span className="font-mono text-[11px] text-ink-faint">
-                          {formatWindow(e.promise_window ?? e.window)}
-                        </span>
-                      )}
-                    </div>
-                    <RouteImpactTable evaluation={e} />
-                  </Card>
-                ))}
-              </div>
-            </section>
           )}
 
           {/* -- what the confirmation did -------------------------------- */}
@@ -398,8 +347,6 @@ export default function ChatPage() {
               </div>
             </section>
           )}
-
-          {orderId && <p className="font-mono text-[11px] text-ink-faint">order {orderId}</p>}
         </div>
       </div>
     </Page>
@@ -408,100 +355,134 @@ export default function ChatPage() {
 
 // -- thread -------------------------------------------------------------------
 
-function MessageView({
-  msg,
-  onChoose,
-  onDecline,
-  run,
-  busy,
-}: {
-  msg: Msg;
-  onChoose: (offer: Offer, slotId: string) => void;
-  onDecline: (offer: Offer, slotId?: string) => void;
-  /** The run that produced this offer, so the inspector opens on the calls behind THESE times. */
-  run: AgentRun | null;
-  busy: boolean;
-}) {
-  if (msg.kind === "typing") return <TypingBubble />;
-
-  if (msg.kind === "choices") {
-    return (
-      <div className="flex w-full flex-col items-start gap-1.5">
-      <ChoiceBubble
-        disabled={busy}
-        options={msg.offer.options.map((slot) => ({
-          id: slot.id,
-          label: slot.label,
-          // The reason comes off the solved route, so it is the same sentence the message body
-          // used -- not a second, prettier explanation invented for the button.
-          sub: slot.reason ?? "Tap to confirm this time",
-        }))}
-        onChoose={(id) => onChoose(msg.offer, id)}
-        // Round two is the last: the cap is enforced in offer_service, and offering a "no" button
-        // that can only fail would be worse than not offering one.
-        onDecline={msg.offer.round_number < 2 ? () => onDecline(msg.offer, msg.offer.options[0]?.id) : undefined}
-      />
-      {/* Under the offer, not filed on another screen: the question an audience has here is
-          "where did those times come from", and the answer is one tap away. */}
-      {run && <FunctionCallsPill run={run} />}
-      </div>
-    );
-  }
-
-  if (msg.kind === "confirmed") {
-    return (
-      <Bubble from="them" time={msg.time} tone="confirmed">
-        {msg.text}
-      </Bubble>
-    );
-  }
-
+function Greeting({ boot }: { boot: Bootstrap | null }) {
+  if (!boot) return null;
   return (
-    <Bubble
-      from={msg.kind === "me" ? "me" : "them"}
-      time={msg.time}
-      ticks={msg.kind === "me" ? "read" : undefined}
-    >
-      {msg.text}
-    </Bubble>
+    <>
+      <Bubble from="them" time="9:02 am">
+        Hi! This is Majestic Fighters Furniture Delivery. I can book your sofa, bed or cabinet
+        delivery.
+      </Bubble>
+      <Bubble from="them" time="9:02 am">
+        {`Just tell me when you're free — anything between ${formatDate(boot.horizon.first)} and ${formatDate(boot.horizon.last)}. One time is plenty.`}
+      </Bubble>
+    </>
   );
 }
 
-// -- booking form -------------------------------------------------------------
+function ThreadMessage({ message, run }: { message: ChatMessage; run: AgentRun | null }) {
+  const mine = message.direction === "inbound";
+  return (
+    <div className={cx("flex w-full flex-col gap-1.5", mine ? "items-end" : "items-start")}>
+      <Bubble
+        from={mine ? "me" : "them"}
+        time={clockOf(message.created_at)}
+        ticks={mine ? "read" : undefined}
+      >
+        {message.body}
+      </Bubble>
+      {/* Under the message it belongs to, opening that message's own run. An inbound message has
+          no run and correctly gets no pill -- the customer's words did not come from a tool call. */}
+      {run && <FunctionCallsPill run={run} />}
+    </div>
+  );
+}
 
-interface BookingPayload {
+function clockOf(iso: string): string {
+  const d = new Date(iso);
+  const h = d.getHours() % 12 || 12;
+  return `${h}:${String(d.getMinutes()).padStart(2, "0")} ${d.getHours() < 12 ? "am" : "pm"}`;
+}
+
+/** Shortcuts for what the customer plausibly wants to say next. Never the only way to say it. */
+function suggestReplies(
+  offer: Offer | null,
+  confirmed: boolean,
+  messageCount: number,
+): Array<{ id: string; label: string }> {
+  if (confirmed) return [];
+
+  if (offer && offer.options.length > 0) {
+    const replies = offer.options.map((slot) => ({
+      id: `Confirm ${prettyTime(slot.window.start)} on ${slot.date}`,
+      label: `Confirm ${prettyTime(slot.window.start)}–${prettyTime(slot.window.end)}`,
+    }));
+    replies.push({ id: "Why this timing?", label: "Why this timing?" });
+    // Only while another round remains -- offering a "no" that can only fail is worse than not
+    // offering one. The cap itself is enforced server-side, from persisted rows.
+    if (offer.round_number < 2) {
+      replies.push({ id: "That doesn't work, can you do later?", label: "Suggest another time" });
+      replies.push({ id: "None of these work.", label: "None of these work" });
+    }
+    return replies;
+  }
+
+  if (messageCount === 0) {
+    return [
+      { id: "I'm free Saturday morning.", label: "Saturday morning" },
+      { id: "Any time after 1 on Tuesday.", label: "Tuesday after 1" },
+    ];
+  }
+  return [];
+}
+
+function prettyTime(hhmm: string): string {
+  const [h, m] = hhmm.split(":").map(Number);
+  const hour = h % 12 || 12;
+  return `${hour}${m ? `:${String(m).padStart(2, "0")}` : ""}${h < 12 ? "am" : "pm"}`;
+}
+
+/** What actually chose this run's actions. Stated, never assumed -- see AgentRunLog.decider. */
+function providerLabel(run: AgentRun): string {
+  if (run.decider === "LLMDecisionAgent") return run.model_id ?? "model";
+  return run.decider_error ? "standard procedure (model unavailable)" : "standard procedure";
+}
+
+function summarise(run: AgentRun, turn: ChatTurn | null): string {
+  const offer = turn?.open_offer_id ? turn.offers[turn.open_offer_id] : null;
+  if (turn?.confirmed) return "Appointment locked and the day republished";
+  if (offer) {
+    const n = offer.options.length;
+    return `${n} window${n === 1 ? "" : "s"} offered, derived from the solved route`;
+  }
+  const tools = run.actions.map((a) => a.tool);
+  if (tools.includes("ask_clarification")) return "Asked one question rather than guessing";
+  if (tools.includes("explain_choice")) return "Explained the timing from the solved route";
+  return `${run.actions.length} tool call${run.actions.length === 1 ? "" : "s"} made`;
+}
+
+// -- who and where ------------------------------------------------------------
+
+interface IntroPayload {
   customer_name: string;
   phone: string;
   address_raw: string;
   postal_code: string;
   job_type: string;
   can_deliver_early: boolean;
-  availability: Array<{ date: string; window_start: string; window_end: string; preference_rank: number }>;
+  availability: never[];
 }
 
-function BookingForm({
+/**
+ * Name, postal code, item. Not when -- that is the conversation's job.
+ *
+ * Not a booking form wearing a smaller hat: an order needs an address before any route can be
+ * solved for it, and asking for a six-digit postal code in free text would be theatre. Everything
+ * a coordinator would actually negotiate is typed.
+ */
+function IntroForm({
   boot,
   busy,
   onSubmit,
 }: {
   boot: Bootstrap;
   busy: boolean;
-  onSubmit: (payload: BookingPayload) => void;
+  onSubmit: (payload: IntroPayload) => void;
 }) {
-  const dates = boot.horizon.dates;
   const [name, setName] = useState("Mrs Lee");
   const [postal, setPostal] = useState("460216");
-  // A sofa (45 min) rather than a cabinet (105): with real drive times a cabinet no longer fits
-  // the tighter windows, and the demo needs more than one feasible option to compare.
   const [jobType, setJobType] = useState("sofa");
   const [early, setEarly] = useState(false);
-  // Defaults chosen so the demo's point is visible: the customer's FIRST preference is the empty
-  // day, which the agent will rank second because opening it costs an hour.
-  const [choices, setChoices] = useState([
-    { date: dates[2], window: 2 },
-    { date: dates[0], window: 0 },
-    { date: dates[1], window: 1 },
-  ]);
 
   return (
     <form
@@ -515,16 +496,12 @@ function BookingForm({
           postal_code: postal,
           job_type: jobType,
           can_deliver_early: early,
-          availability: choices.map((c, i) => ({
-            date: c.date,
-            window_start: WINDOWS[c.window].start,
-            window_end: WINDOWS[c.window].end,
-            preference_rank: i + 1,
-          })),
+          // Deliberately empty. The customer says when, in their own words, in the thread.
+          availability: [],
         });
       }}
     >
-      <Eyebrow>What the customer sends</Eyebrow>
+      <Eyebrow>Who is messaging</Eyebrow>
       <div className="grid grid-cols-[1fr_88px_104px] gap-2">
         <Field label="Name">
           <input value={name} onChange={(e) => setName(e.target.value)} required className={input} />
@@ -550,47 +527,6 @@ function BookingForm({
         </Field>
       </div>
 
-      <fieldset className="flex flex-col gap-1.5">
-        <legend className="font-mono text-[10px] uppercase tracking-[0.11em] text-ink-faint">
-          Times that work, best first
-        </legend>
-        {choices.map((c, i) => (
-          <div key={i} className="grid grid-cols-[14px_1fr_1fr] items-center gap-2">
-            <span className="font-mono text-[11px] text-ink-faint">{i + 1}</span>
-            <select
-              value={c.date}
-              aria-label={`Preference ${i + 1} date`}
-              onChange={(e) =>
-                setChoices((p) => p.map((x, j) => (j === i ? { ...x, date: e.target.value } : x)))
-              }
-              className={input}
-            >
-              {dates.map((d) => (
-                <option key={d} value={d}>
-                  {formatDate(d)}
-                </option>
-              ))}
-            </select>
-            <select
-              value={c.window}
-              aria-label={`Preference ${i + 1} window`}
-              onChange={(e) =>
-                setChoices((p) =>
-                  p.map((x, j) => (j === i ? { ...x, window: Number(e.target.value) } : x)),
-                )
-              }
-              className={input}
-            >
-              {WINDOWS.map((w, idx) => (
-                <option key={w.label} value={idx}>
-                  {w.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        ))}
-      </fieldset>
-
       <label className="flex items-center gap-2 text-[12.5px] text-ink-soft">
         <input
           type="checkbox"
@@ -601,8 +537,13 @@ function BookingForm({
         I&apos;d take an earlier slot if one frees up
       </label>
 
+      <p className="text-[11.5px] leading-[1.45] text-ink-muted">
+        No dates here — type when you&apos;re free once the chat opens. One time is enough. We can
+        deliver between {formatDate(boot.horizon.first)} and {formatDate(boot.horizon.last)}.
+      </p>
+
       <Button type="submit" variant="primary" busy={busy} className="w-full">
-        Send
+        Open the chat
       </Button>
     </form>
   );

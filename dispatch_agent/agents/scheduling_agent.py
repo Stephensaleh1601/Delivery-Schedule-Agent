@@ -68,6 +68,17 @@ class ActionDecision(BaseModel):
         return " ".join(str(value).split())[:240]
 
 
+def _active_model_id() -> str:
+    """The model actually configured, whichever provider is selected.
+
+    This used to hardcode the Bedrock id, so a run driven by OpenAI reported a Claude model in the
+    inspector -- a trace that names the wrong model is worse than one that names none.
+    """
+    if settings.llm_provider == "openai":
+        return settings.openai_model
+    return settings.bedrock_model_id
+
+
 class DecisionAgent(Protocol):
     def decide(self, state: "SchedulingState", allowed: list[str]) -> ActionDecision: ...
 
@@ -136,11 +147,10 @@ class RuleDecisionAgent:
                 return ActionDecision(
                     action="record_availability",
                     reason_summary="Noting the times the customer gave.",
-                    arguments={
-                        "order_id": event.order_id,
-                        "windows": stated,
-                        "is_fixed": bool(event.payload.get("is_fixed")),
-                    },
+                    # The windows are not passed here: the tool reads them off the context, where
+                    # the deterministic parser put them. Nothing that writes a customer's stated
+                    # availability accepts it as an argument.
+                    arguments={"order_id": event.order_id},
                 )
             if stated and _last_failed(state, "record_availability"):
                 # Nothing usable was recorded -- an out-of-horizon date, or a window we could not
@@ -217,6 +227,17 @@ class RuleDecisionAgent:
                 return ActionDecision(
                     action="evaluate_slots",
                     reason_summary="Re-solving their dates around the excluded time.",
+                    arguments={"order_id": event.order_id},
+                )
+            # Then look further afield. The rule is "re-solve the same day once, THEN consider
+            # another" -- and the same-day re-solve often fails outright, because what is left of
+            # the day after carving out the rejected window may not hold the job. Without this the
+            # conversation ended at a coordinator exception the moment a customer said "not that
+            # time" about a busy morning, which is the most ordinary thing a customer can say.
+            if "suggest_route_aware_windows" not in done:
+                return ActionDecision(
+                    action="suggest_route_aware_windows",
+                    reason_summary="Looking for another day that suits the route.",
                     arguments={"order_id": event.order_id},
                 )
             if "create_offer" not in done:
@@ -377,7 +398,7 @@ def _observe_node(ctx: tools.ToolContext):
 def _decide_node(decider: DecisionAgent, fallback: DecisionAgent | None):
     def node(state: SchedulingState) -> SchedulingState:
         primary = type(decider).__name__
-        model_id = settings.bedrock_model_id if isinstance(decider, LLMDecisionAgent) else None
+        model_id = _active_model_id() if isinstance(decider, LLMDecisionAgent) else None
         try:
             decision = decider.decide(state, tools.allowed_actions())
         except Exception as exc:  # noqa: BLE001
@@ -517,13 +538,27 @@ def handle_planning_event(
     # The run row is created just above, so the context can carry its id from the first tool call
     # -- which is what lets offers and messages record their own provenance as they are written.
     ctx.run_id = run.id
+    # The windows the customer stated, already resolved. Put on the context rather than passed as
+    # tool arguments so no decider -- model or rule -- can alter them between reading the message
+    # and recording it.
+    if event.payload.get("stated_windows"):
+        ctx.scratch["stated_windows"] = event.payload["stated_windows"]
+    if event.payload.get("is_fixed"):
+        ctx.scratch["timing_is_fixed"] = True
+    # The one path by which an appointment may be locked. Set only for an acceptance event, so a
+    # decider cannot confirm a booking the customer has not answered -- a live model did exactly
+    # that, successfully, while its own question was still on the table.
+    if event.event_type is PlanningEventType.CUSTOMER_ACCEPTED_OFFER:
+        offer_id, slot_id = event.payload.get("offer_id"), event.payload.get("slot_id")
+        if offer_id and slot_id:
+            ctx.accepted = (offer_id, slot_id)
     if decider is None:
         try:
             decider = LLMDecisionAgent()
         except Exception:  # noqa: BLE001 -- a missing provider must degrade, not 500
             decider = RuleDecisionAgent()
     run.decider = type(decider).__name__
-    run.model_id = settings.bedrock_model_id if isinstance(decider, LLMDecisionAgent) else None
+    run.model_id = _active_model_id() if isinstance(decider, LLMDecisionAgent) else None
     fallback = RuleDecisionAgent() if use_fallback else None
     graph = build_graph(ctx, decider, fallback)
 

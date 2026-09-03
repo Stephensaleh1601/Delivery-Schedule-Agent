@@ -44,8 +44,10 @@ availability.
 - Order them as the customer ranked them, best first, if they expressed a preference.
 - A time WE proposed is never availability, even if they are discussing it.
 
-Set `is_fixed` true only when they say the timing is their only possibility ("that's the only time \
-I can do"), not merely that they prefer it.
+Set `is_fixed` true ONLY when the customer explicitly says no other time is possible -- "that's \
+the only time I can do", "I can only do Saturday", "no other time works". Simply telling us when \
+they are free is NOT fixed: "I'm free Saturday morning" is availability, not an ultimatum. If you \
+are unsure, answer false.
 
 For `accept`, set `refers_to` to the words identifying which option they mean -- "the first one", \
 "Tuesday", "1pm" -- or leave it null if they simply agreed without saying which.
@@ -176,7 +178,7 @@ class MessageReader:
                 fallback_reason=redact_secrets(f"{type(exc).__name__}: {exc}"),
             )
 
-        merged = self._merge(raw, deterministic, has_open_offer, context_date)
+        merged = self._merge(raw, deterministic, has_open_offer, context_date, message)
         return Understanding(
             merged,
             decider="LLMMessageReader",
@@ -193,6 +195,7 @@ class MessageReader:
         deterministic: language.Interpretation,
         has_open_offer: bool,
         context_date: Date | None,
+        message: str = "",
     ) -> language.Interpretation:
         """The model's reading, with every date and time re-derived from its quoted phrases.
 
@@ -210,7 +213,13 @@ class MessageReader:
 
         result = language.Interpretation(
             intent=intent,
-            is_fixed=bool(raw.get("is_fixed")) or deterministic.is_fixed,
+            # NOT the model's answer. A live smoke test had gpt-4o-mini mark "I'm free Saturday
+            # morning" as fixed -- a plain statement of availability, not a declaration that
+            # nothing else is possible. Getting this wrong silently switches off counteroffers, so
+            # the customer is never told about a better slot and nobody can see why. It is a narrow
+            # lexical question (does the message contain an exclusivity phrase) that a regex answers
+            # reliably and a model over-generalises.
+            is_fixed=deterministic.is_fixed,
             rejects_whole_day=bool(raw.get("rejects_whole_day")) or deterministic.rejects_whole_day,
             direction=deterministic.direction,
             note=deterministic.note,
@@ -224,7 +233,11 @@ class MessageReader:
                 for w in parsed:
                     w.preference_rank = rank
                     windows.append(w)
-            result.windows = windows
+            # Re-ranked against the original sentence. The same smoke test had the model return
+            # "Saturday afternoon or Tuesday morning, but Tuesday is better" in the order spoken,
+            # ignoring the stated preference -- and a preference silently dropped is the customer's
+            # wish being overruled by a routing score they cannot see.
+            result.windows = language._apply_preference(message, windows)
 
         # Nothing usable came back from the phrases, but the deterministic parser found something.
         # Prefer the concrete reading over an empty one -- an intent with no windows would send us

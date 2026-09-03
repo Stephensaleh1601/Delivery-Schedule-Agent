@@ -26,13 +26,19 @@ from dispatch_agent.planning.tools import ToolContext, ToolResult, _Args, tool
 
 
 class AvailabilityArgs(_Args):
+    """Just the order. The windows are deliberately NOT an argument.
+
+    They arrive on the ToolContext, already resolved by planning/language from the phrases the
+    customer used. The model's job is to decide that this is the moment to write them down -- not
+    to retype them. Asking it to hand back a nested {date, start, end} structure is asking it to
+    re-key data it did not compute, and a live run duly reformatted "09:00-13:00" into something
+    the parser rejected, three times, before giving up and leaving the customer with silence.
+
+    It also closes the fabrication hole. There is no argument here through which a model could
+    invent a window the customer never offered.
+    """
+
     order_id: str
-    # Windows the CUSTOMER stated, already resolved to concrete dates. The model identifies the
-    # phrases; planning/language turns "next Tuesday" into a date against the Singapore planning
-    # clock. A model asked to do that arithmetic produces a date a week out and nothing catches it.
-    windows: list[dict] = Field(default_factory=list)
-    # They have said this is their only possible time. Stops us counteroffering, for good.
-    is_fixed: bool = False
 
 
 class SuggestArgs(_Args):
@@ -62,8 +68,8 @@ def record_availability(args: AvailabilityArgs, ctx: ToolContext) -> ToolResult:
         return ToolResult(ok=False, tool="record_availability", error="unknown_order",
                           summary=f"No order {args.order_id}.")
 
-    stated = []
-    for i, raw in enumerate(args.windows):
+    stated: list[StatedWindow] = []
+    for i, raw in enumerate(ctx.scratch.get("stated_windows") or []):
         try:
             stated.append(
                 StatedWindow(
@@ -74,12 +80,15 @@ def record_availability(args: AvailabilityArgs, ctx: ToolContext) -> ToolResult:
                 )
             )
         except (KeyError, ValueError, TypeError) as exc:
+            # A malformed entry here is our bug, not the model's -- these came from the parser.
             return ToolResult(ok=False, tool="record_availability", error="bad_window",
                               summary=f"Could not read window {i + 1}: {exc}")
 
     if not stated:
         return ToolResult(ok=False, tool="record_availability", error="no_windows",
-                          summary="No usable time was given, so nothing was recorded.")
+                          summary="The customer's message gave no time we could use.")
+
+    is_fixed = bool(ctx.scratch.get("timing_is_fixed"))
 
     outside = conversation.horizon_complaint([s.date for s in stated])
     if outside:
@@ -92,7 +101,7 @@ def record_availability(args: AvailabilityArgs, ctx: ToolContext) -> ToolResult:
         )
 
     order.availability_options = conversation.merge_availability(order, stated)
-    if args.is_fixed:
+    if is_fixed:
         conversation.mark_timing_fixed(order)
     if order.planning_status is PlanningStatus.PENDING_AVAILABILITY:
         order.set_planning_status(PlanningStatus.PENDING_PLANNING)
@@ -102,8 +111,13 @@ def record_availability(args: AvailabilityArgs, ctx: ToolContext) -> ToolResult:
     return ToolResult(
         ok=True, tool="record_availability",
         summary=(
-            f"Noted {len(stated)} time(s) from {order.customer_name}"
-            + (" -- they say it is their only option." if args.is_fixed else ".")
+            f"Noted {len(stated)} time(s) from {order.customer_name}: "
+            + "; ".join(
+                f"{offer_service.format_date(s.date)} "
+                f"{s.window.start:%H:%M}-{s.window.end:%H:%M}"
+                for s in stated
+            )
+            + (" -- they say it is their only option." if is_fixed else ".")
         ),
         data={
             "options": [
@@ -113,7 +127,7 @@ def record_availability(args: AvailabilityArgs, ctx: ToolContext) -> ToolResult:
                  "preference_rank": o.preference_rank}
                 for o in order.availability_options
             ],
-            "timing_is_fixed": args.is_fixed,
+            "timing_is_fixed": is_fixed,
         },
     )
 

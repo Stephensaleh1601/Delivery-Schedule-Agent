@@ -316,6 +316,39 @@ export interface AgentRun {
   actions: AgentAction[];
 }
 
+/** One persisted message. `run_id` is the authoritative link to the trace behind it -- null for
+ *  the customer's own words, which did not come from a tool call. */
+export interface ChatMessage {
+  id: string;
+  direction: "inbound" | "outbound";
+  body: string;
+  created_at: string;
+  run_id: string | null;
+  offer_id: string | null;
+}
+
+/** The whole conversation as persisted, plus whatever the last message produced.
+ *
+ *  Returned by both sending a message and reloading, and identical either way -- which is what
+ *  makes a browser refresh show exactly what was on screen before it. */
+export interface ChatTurn {
+  order_id: string;
+  intent: string;
+  duplicate: boolean;
+  planning_status: string | null;
+  confirmed: boolean;
+  delivery_date: string | null;
+  inbound_message_id: string | null;
+  messages: ChatMessage[];
+  /** Keyed by id, containing only the runs this thread's messages actually reference. */
+  runs: Record<string, AgentRun>;
+  offers: Record<string, Offer>;
+  open_offer_id: string | null;
+  /** The run this particular turn produced, or null when nothing ran. */
+  run: AgentRun | null;
+  error: string | null;
+}
+
 export interface Metrics {
   horizon: { first: string; last: string };
   scheduled_stops: number;
@@ -387,6 +420,12 @@ export const dispatch = {
   planAgentic: (orderId: string) => api.post<PlanOptions>(`/api/orders/${orderId}/plan-agentic`),
   respond: (offerId: string, accepted: boolean, slotId?: string) =>
     api.post<AcceptResponse>(`/api/offers/${offerId}/respond`, { accepted, slot_id: slotId ?? null }),
+
+  /** One customer message. THE conversational call: one message, one agent run, one offer round. */
+  sendMessage: (orderId: string, body: string) =>
+    api.post<ChatTurn>(`/api/orders/${orderId}/messages`, { body }),
+  /** The persisted thread, for a client that has just reloaded. */
+  conversation: (orderId: string) => api.get<ChatTurn>(`/api/orders/${orderId}/messages`),
 
   activePlan: (date: string) => api.get<ActivePlan>(`/api/plans/${date}`),
   planVersions: (date: string) => api.get<PlanVersion[]>(`/api/plans/${date}/versions`),

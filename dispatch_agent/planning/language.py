@@ -315,9 +315,13 @@ _FIXED = re.compile(
     r"|\bcan only do\b|\bonly free\b",
     re.I,
 )
+# Words that genuinely identify WHICH option. Deliberately excludes bare "one" and "two":
+# "take that one" is a demonstrative, not an ordinal, and reading it as "the first" books a slot
+# the customer never picked -- silently, and against two options they were still choosing between.
+# With nothing else to go on that message is ambiguous, and ambiguous means ask.
 _ORDINALS = {
-    "first": 1, "1st": 1, "one": 1, "former": 1, "earlier one": 1,
-    "second": 2, "2nd": 2, "two": 2, "latter": 2, "later one": 2, "last": 2,
+    "first": 1, "1st": 1, "former": 1, "earlier one": 1,
+    "second": 2, "2nd": 2, "latter": 2, "later one": 2, "last": 2,
 }
 _PREFERS = re.compile(
     r"\b(?P<what>[a-z0-9: ]+?)\s+(?:is|would be|works)\s+(?:better|best|preferred|ideal)\b"
@@ -384,7 +388,11 @@ def interpret(
         result.note = raw
         return result
 
-    if has_open_offer and _ACCEPT.search(lowered) and not windows:
+    # An acceptance word, or an ordinal on its own. "The second one please" contains no yes, but
+    # picking one of two options out loud is not something anyone does by accident.
+    if has_open_offer and not windows and (
+        _ACCEPT.search(lowered) or _accepted_ordinal(lowered) is not None
+    ):
         result.intent = "accept"
         result.accepted_ordinal = _accepted_ordinal(lowered)
         result.accepted_phrase = _accepted_phrase(raw)
