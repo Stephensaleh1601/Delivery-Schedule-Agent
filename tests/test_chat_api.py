@@ -12,9 +12,9 @@ import pytest
 from dispatch_agent import config
 from dispatch_agent.planning.clock import PlanningClock
 
-BASE = date(2026, 9, 3)
+BASE = date(2026, 9, 2)
 SATURDAY = date(2026, 9, 5)
-TUESDAY = date(2026, 9, 8)
+FRIDAY = date(2026, 9, 4)
 
 
 @pytest.fixture(autouse=True)
@@ -35,8 +35,14 @@ def client(temp_db, monkeypatch):
 
 
 def _new_order(client, name="Mrs Lee", postal_code="469123"):
-    """An order with no availability yet -- the state a customer is in before they say anything."""
-    day = PlanningClock.horizon_dates()[0]
+    """An order with no availability yet -- the state a customer is in before they say anything.
+
+    The seeded day is SATURDAY rather than `horizon_dates()[0]`, and that is load-bearing: these
+    tests go on to say "I'm free Saturday", and if the placeholder lands on the other cluster day
+    the order carries two stated availabilities and the assertions stop meaning what they say.
+    Under the old four-day horizon the two happened to coincide, which hid the coupling.
+    """
+    day = SATURDAY
     body = client.post(
         "/api/orders",
         json={
@@ -173,7 +179,7 @@ def test_typing_an_acceptance_confirms_the_appointment(client):
 def test_an_ambiguous_acceptance_asks_instead_of_booking(client):
     """Two slots and a bare "okay". Booking the first one is a van at the wrong door."""
     order_id = _new_order(client)
-    opened = _say(client, order_id, "Saturday morning or Tuesday morning both work.")
+    opened = _say(client, order_id, "Saturday morning or Friday morning both work.")
     offer = opened["offers"].get(opened["open_offer_id"] or "")
     if not offer or len(offer["options"]) < 2:
         pytest.skip("this scenario needs two slots on the table")
@@ -230,7 +236,10 @@ def test_customer_can_propose_a_concrete_time_after_automatic_round_cap(client):
     """The cap limits agent-generated alternatives, not a customer's ability to say exactly when
     they can receive a large delivery."""
     order_id = _new_order(client)
-    _say(client, order_id, "I'm free Sunday after 2pm.")
+    # Saturday, not Sunday: Sunday sat inside the old four-day horizon but is not a delivery
+    # day, so it would draw a "we only deliver Friday and Saturday" reply and never consume
+    # an offer round -- leaving the cap this test is about one round out of reach.
+    _say(client, order_id, "I'm free Saturday after 2pm.")
     _say(client, order_id, "That doesn't work, any other time?")
     capped = _say(client, order_id, "No, that doesn't work either.")
     assert "tell me" in _outbound(capped)[-1]["body"].lower()

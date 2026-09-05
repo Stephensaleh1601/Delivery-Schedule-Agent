@@ -41,6 +41,12 @@ from dispatch_agent.planning.clock import PlanningClock
 
 MAX_SUGGESTIONS = 2
 
+# Where a suggested day sits in the preference order. Any number worse than a customer's own
+# ranking will do; it exists so the two can never tie. Preference is only ever a tiebreak in
+# CandidateService.rank -- the penalty is subtracted back out of the score -- so this cannot buy
+# a bad slot, only lose a coin-flip.
+SUGGESTION_PREFERENCE_RANK = 99
+
 
 def material_saving_minutes() -> int:
     """How much driving another day must save before we ask the customer to move.
@@ -196,7 +202,12 @@ def route_aware_windows(
             date=date,
             window=working_day,
             excluded_windows=already_declined.get(date, []),
-            preference_rank=1,
+            # Ranked behind anything the customer actually stated. A suggestion is a day WE
+            # picked; on a tie it must never displace a day THEY named. With a two-day cycle the
+            # tie is the common case rather than the exotic one -- two empty cluster days score
+            # identically, and the sort then falls through to the date, which would answer "not
+            # that time, anything later on Saturday?" with a slot on Friday.
+            preference_rank=SUGGESTION_PREFERENCE_RANK,
         )
         evaluation = service.evaluate(order, option)
         if not evaluation.feasible or evaluation.promise_window is None:

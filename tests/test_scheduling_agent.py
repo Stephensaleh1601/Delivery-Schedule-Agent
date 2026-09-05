@@ -45,13 +45,19 @@ def _w(start, end):
 
 def _order(repo, name="Mrs Tan", postal_code="018956", option_count=2):
     days = PlanningClock.horizon_dates()
-    windows = [((9, 0), (13, 0)), ((13, 0), (18, 0)), ((9, 0), (18, 0))]
+    # The cycle is two days, so a third option is a second window on the FIRST day rather than a
+    # third date. The windows are chosen not to overlap within a day: two options covering the
+    # same hours would be one choice wearing two hats, and a test asserting "another offer came
+    # back" would pass on a duplicate.
+    windows = [((9, 0), (13, 0)), ((9, 0), (13, 0)), ((13, 0), (18, 0))]
     job = JobRecord(
         customer_name=name,
         address=Address(raw_text=name, postal_code=postal_code, coordinates=postal_code_to_coords(postal_code)),
         job_type=JobType.SOFA,
         availability_options=[
-            AvailabilityOption(date=days[i], window=_w(*windows[i]), preference_rank=i + 1)
+            AvailabilityOption(
+                date=days[i % len(days)], window=_w(*windows[i]), preference_rank=i + 1
+            )
             for i in range(option_count)
         ],
         raw_message="booked via chat",

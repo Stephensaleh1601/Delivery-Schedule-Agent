@@ -31,9 +31,9 @@ from dispatch_agent.planning import conversation, language, negotiation, offer_s
 from dispatch_agent.planning.candidate_service import CandidateService
 from dispatch_agent.planning.clock import PlanningClock
 
-# A Thursday, so "Saturday" is N+2 and "Tuesday" is N+5 -- both inside the horizon, which is what
-# the demo script relies on.
-BASE = date(2026, 9, 3)
+# A Wednesday, so the coordination cycle is that same week's Friday and Saturday -- both clear
+# the two-day notice, which is what the demo script relies on.
+BASE = date(2026, 9, 2)
 
 
 @pytest.fixture(autouse=True)
@@ -84,7 +84,8 @@ def _confirmed(repo, name, postal_code, day, window=(9, 0, 18, 0), duration=45):
 # -- reading the message -------------------------------------------------------
 
 SATURDAY = date(2026, 9, 5)
-TUESDAY = date(2026, 9, 8)
+FRIDAY = date(2026, 9, 4)
+TUESDAY = date(2026, 9, 8)  # not a delivery day; only for the date-parser tests
 
 
 def test_saturday_morning():
@@ -99,22 +100,22 @@ def test_saturday_morning():
 def test_tuesday_after_one():
     """"after 1" is 1pm. Nobody arranging a furniture delivery means one in the morning, and
     reading it that way would produce a window outside the working day and an odd refusal."""
-    said = language.interpret("Any time after 1 on Tuesday")
+    said = language.interpret("Any time after 1 on Friday")
 
     assert [(w.date, w.window.start, w.window.end) for w in said.windows] == [
-        (TUESDAY, time(13, 0), time(18, 0))
+        (FRIDAY, time(13, 0), time(18, 0))
     ]
 
 
 def test_two_alternatives_with_a_stated_preference():
     """Order of mention is the default ranking, and an explicit preference overrides it. The
-    customer said Tuesday is better, so Tuesday is rank 1 even though Saturday was said first."""
+    customer said Friday is better, so Friday is rank 1 even though Saturday was said first."""
     said = language.interpret(
-        "I can do Saturday afternoon or Tuesday morning, but Tuesday is better."
+        "I can do Saturday afternoon or Friday morning, but Friday is better."
     )
 
     ranked = sorted(said.windows, key=lambda w: w.preference_rank)
-    assert [w.date for w in ranked] == [TUESDAY, SATURDAY]
+    assert [w.date for w in ranked] == [FRIDAY, SATURDAY]
     assert ranked[0].window.start == time(9, 0)
 
 
@@ -215,7 +216,7 @@ def test_a_support_question_is_not_read_as_an_answer_to_the_offer():
 
 
 def test_relative_dates_resolve_against_the_planning_clock():
-    """Every one of these is measured from BASE (Thursday 3 September), not from the machine's
+    """Every one of these is measured from BASE (Wednesday 2 September), not from the machine's
     clock. A server in another timezone must not shift what "tomorrow" means."""
     assert language.parse_date("tomorrow") == BASE + timedelta(days=1)
     assert language.parse_date("day after tomorrow") == BASE + timedelta(days=2)
@@ -251,7 +252,7 @@ def test_a_date_outside_the_horizon_is_explained_not_just_refused():
 
 
 def test_a_date_inside_the_horizon_produces_no_complaint():
-    assert conversation.horizon_complaint([SATURDAY, TUESDAY]) is None
+    assert conversation.horizon_complaint([SATURDAY, FRIDAY]) is None
 
 
 # -- one timing is enough -------------------------------------------------------
@@ -293,10 +294,10 @@ def test_restating_a_day_corrects_it_rather_than_adding_a_second_window(temp_db)
 
 
 def test_a_suggestion_is_never_recorded_as_the_customers_availability(temp_db):
-    """The property the whole negotiation rests on. We may ASK about Tuesday; until they say yes,
-    the order must not claim they are free on Tuesday."""
+    """The property the whole negotiation rests on. We may ASK about Friday; until they say yes,
+    the order must not claim they are free on Friday."""
     order = _order(temp_db, options=[AvailabilityOption(date=SATURDAY, window=_w(9, 0, 13, 0))])
-    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    _confirmed(temp_db, "Anchor", "469123", FRIDAY)
 
     suggestions = negotiation.route_aware_windows(order, CandidateService(repo=temp_db))
 
@@ -311,7 +312,7 @@ def test_a_suggestion_becomes_availability_only_when_accepted(temp_db):
     """The other half. Acceptance is the moment a question becomes a commitment, and the order's
     record should then show a window the customer agreed to."""
     order = _order(temp_db, options=[AvailabilityOption(date=SATURDAY, window=_w(9, 0, 13, 0))])
-    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    _confirmed(temp_db, "Anchor", "469123", FRIDAY)
 
     suggestions = negotiation.route_aware_windows(order, CandidateService(repo=temp_db))
     chosen = suggestions[0]
@@ -326,8 +327,8 @@ def test_a_suggestion_becomes_availability_only_when_accepted(temp_db):
 def test_suggestions_never_name_another_customer(temp_db):
     """A suggestion's reason may say where the van will be. It may not say who else is on it."""
     order = _order(temp_db, options=[AvailabilityOption(date=SATURDAY, window=_w(9, 0, 13, 0))])
-    _confirmed(temp_db, "Mrs Devi", "469123", TUESDAY)
-    _confirmed(temp_db, "Mr Ong", "529536", TUESDAY)
+    _confirmed(temp_db, "Mrs Devi", "469123", FRIDAY)
+    _confirmed(temp_db, "Mr Ong", "529536", FRIDAY)
 
     for suggestion in negotiation.route_aware_windows(order, CandidateService(repo=temp_db)):
         reason = suggestion.reason or ""
@@ -336,7 +337,7 @@ def test_suggestions_never_name_another_customer(temp_db):
 
 def test_suggestions_stay_inside_the_horizon_and_working_hours(temp_db):
     order = _order(temp_db, options=[AvailabilityOption(date=SATURDAY, window=_w(9, 0, 13, 0))])
-    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    _confirmed(temp_db, "Anchor", "469123", FRIDAY)
 
     for suggestion in negotiation.route_aware_windows(order, CandidateService(repo=temp_db)):
         assert PlanningClock.is_within_horizon(suggestion.date)
@@ -406,8 +407,8 @@ def test_a_small_saving_is_not_worth_asking_about(temp_db, monkeypatch):
         update={"incremental_drive_minutes": requested.incremental_drive_minutes - 5}
     )
     alternative = negotiation.Suggestion(
-        date=TUESDAY, window=_w(9, 0, 11, 0), evaluation=cheaper,
-        option=AvailabilityOption(date=TUESDAY, window=_w(9, 0, 11, 0)),
+        date=FRIDAY, window=_w(9, 0, 11, 0), evaluation=cheaper,
+        option=AvailabilityOption(date=FRIDAY, window=_w(9, 0, 11, 0)),
     )
 
     assert not negotiation.should_counteroffer(requested, [alternative]).should_ask
@@ -423,8 +424,8 @@ def test_a_material_saving_is_worth_asking_about(temp_db, monkeypatch):
         update={"incremental_drive_minutes": requested.incremental_drive_minutes - 40}
     )
     alternative = negotiation.Suggestion(
-        date=TUESDAY, window=_w(9, 0, 11, 0), evaluation=cheaper,
-        option=AvailabilityOption(date=TUESDAY, window=_w(9, 0, 11, 0)),
+        date=FRIDAY, window=_w(9, 0, 11, 0), evaluation=cheaper,
+        option=AvailabilityOption(date=FRIDAY, window=_w(9, 0, 11, 0)),
     )
 
     decision = negotiation.should_counteroffer(requested, [alternative])
@@ -439,8 +440,8 @@ def test_the_threshold_is_configurable(temp_db, monkeypatch):
         update={"incremental_drive_minutes": requested.incremental_drive_minutes - 10}
     )
     alternative = negotiation.Suggestion(
-        date=TUESDAY, window=_w(9, 0, 11, 0), evaluation=cheaper,
-        option=AvailabilityOption(date=TUESDAY, window=_w(9, 0, 11, 0)),
+        date=FRIDAY, window=_w(9, 0, 11, 0), evaluation=cheaper,
+        option=AvailabilityOption(date=FRIDAY, window=_w(9, 0, 11, 0)),
     )
 
     monkeypatch.setattr(config.settings, "counteroffer_saving_minutes", 20)
@@ -469,10 +470,10 @@ def test_opening_an_empty_day_justifies_one_only_if_there_is_somewhere_else(temp
 
     assert not negotiation.should_counteroffer(requested, []).should_ask
 
-    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    _confirmed(temp_db, "Anchor", "469123", FRIDAY)
     elsewhere = negotiation.route_aware_windows(order, CandidateService(repo=temp_db))
     running = [s for s in elsewhere if not s.evaluation.opens_empty_day]
-    assert running, "Tuesday now has work on it"
+    assert running, "Friday now has work on it"
     assert negotiation.should_counteroffer(requested, running).kind == "opens_new_day"
 
 
@@ -484,7 +485,7 @@ def _two_slot_offer(temp_db):
         temp_db,
         options=[
             AvailabilityOption(date=SATURDAY, window=_w(9, 0, 18, 0), preference_rank=1),
-            AvailabilityOption(date=TUESDAY, window=_w(9, 0, 18, 0), preference_rank=2),
+            AvailabilityOption(date=FRIDAY, window=_w(9, 0, 18, 0), preference_rank=2),
         ],
     )
     evaluations = CandidateService(repo=temp_db).evaluate_all(order)
@@ -703,7 +704,7 @@ def test_a_genuine_exclusivity_phrase_is_still_fixed(temp_db):
 
 def test_a_stated_preference_survives_the_models_ordering(temp_db):
     """The same smoke test returned the phrases in the order they were spoken, ignoring "but
-    Tuesday is better". A dropped preference is the customer's wish being overruled by a routing
+    Friday is better". A dropped preference is the customer's wish being overruled by a routing
     score they cannot see, so the ranking is re-derived from the sentence."""
     from dispatch_agent.agents.understanding import MessageReader
     from tests.conftest import FakeLLM
@@ -711,13 +712,13 @@ def test_a_stated_preference_survives_the_models_ordering(temp_db):
     spoken_order = FakeLLM(
         structured_response={
             "intent": "provide_availability",
-            "availability_phrases": ["Saturday afternoon", "Tuesday morning"],
+            "availability_phrases": ["Saturday afternoon", "Friday morning"],
         }
     )
 
     understood = MessageReader(llm=spoken_order).read(
-        "I can do Saturday afternoon or Tuesday morning, but Tuesday is better."
+        "I can do Saturday afternoon or Friday morning, but Friday is better."
     )
 
     ranked = sorted(understood.interpretation.windows, key=lambda w: w.preference_rank)
-    assert [w.date for w in ranked] == [TUESDAY, SATURDAY]
+    assert [w.date for w in ranked] == [FRIDAY, SATURDAY]

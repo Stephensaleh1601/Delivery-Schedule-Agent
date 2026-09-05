@@ -86,9 +86,12 @@ class Settings:
     # Pins "today" so a recorded demo and the test suite behave identically every run. Blank
     # means use the real date. ISO format, e.g. 2026-09-02.
     demo_base_date: str = os.getenv("DEMO_BASE_DATE", "")
-    # The bookable window, as days from today. A customer may only choose dates in this range.
+    # Notice the operation needs: a customer may only be offered a date this many days out.
     horizon_lead_days_min: int = int(os.getenv("HORIZON_LEAD_DAYS_MIN", "2"))
-    horizon_lead_days_max: int = int(os.getenv("HORIZON_LEAD_DAYS_MAX", "5"))
+    # How many weeks ahead to look for a Friday/Saturday pair that is fully published, before
+    # giving up and escalating. A bound, not a target -- in practice the answer is this week or
+    # next, and this only stops an empty database scanning forever.
+    cycle_search_weeks: int = int(os.getenv("CYCLE_SEARCH_WEEKS", "8"))
     # Scoring weights. A day with no jobs on it costs a fixed penalty to open; a lower-ranked
     # customer preference costs a little, so preference breaks ties without overriding routing.
     day_opening_penalty_minutes: int = int(os.getenv("DAY_OPENING_PENALTY_MINUTES", "60"))

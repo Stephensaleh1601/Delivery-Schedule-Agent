@@ -86,8 +86,8 @@ def test_only_customers_who_opted_in_are_considered(temp_db):
     """Consent to an earlier delivery is never assumed from silence."""
     days = PlanningClock.horizon_dates()
     delayed = _confirmed(temp_db, "Delayed", "018956", days[0])
-    _confirmed(temp_db, "Willing", "486123", days[2], early=True)
-    _confirmed(temp_db, "Not asked", "489123", days[2], early=False)
+    _confirmed(temp_db, "Willing", "486123", days[1], early=True)
+    _confirmed(temp_db, "Not asked", "489123", days[1], early=False)
     plan_service.replan_day(temp_db, days[0], reason="initial")
 
     outcome = recovery_service.mark_readiness(temp_db, delayed.id, ReadinessStatus.DELAYED)
@@ -99,8 +99,8 @@ def test_only_customers_who_opted_in_are_considered(temp_db):
 def test_replacements_are_ranked_by_the_same_scoring_as_a_normal_booking(temp_db):
     days = PlanningClock.horizon_dates()
     delayed = _confirmed(temp_db, "Delayed", "018956", days[0])
-    _confirmed(temp_db, "Near", "018956", days[2], early=True)
-    _confirmed(temp_db, "Far", "738099", days[2], early=True)
+    _confirmed(temp_db, "Near", "018956", days[1], early=True)
+    _confirmed(temp_db, "Far", "738099", days[1], early=True)
     plan_service.replan_day(temp_db, days[0], reason="initial")
 
     outcome = recovery_service.mark_readiness(temp_db, delayed.id, ReadinessStatus.DELAYED)
@@ -112,9 +112,9 @@ def test_replacements_are_ranked_by_the_same_scoring_as_a_normal_booking(temp_db
 def test_a_customer_already_scheduled_earlier_is_not_offered_a_later_slot(temp_db):
     """Recovery moves people forward, never backwards."""
     days = PlanningClock.horizon_dates()
-    delayed = _confirmed(temp_db, "Delayed", "018956", days[2])
+    delayed = _confirmed(temp_db, "Delayed", "018956", days[1])
     _confirmed(temp_db, "Already earlier", "486123", days[0], early=True)
-    plan_service.replan_day(temp_db, days[2], reason="initial")
+    plan_service.replan_day(temp_db, days[1], reason="initial")
 
     outcome = recovery_service.mark_readiness(temp_db, delayed.id, ReadinessStatus.DELAYED)
 
@@ -138,7 +138,7 @@ def test_at_most_two_replacements_are_pursued(temp_db):
     days = PlanningClock.horizon_dates()
     delayed = _confirmed(temp_db, "Delayed", "018956", days[0])
     for i in range(5):
-        _confirmed(temp_db, f"Willing {i}", "486123", days[2], early=True)
+        _confirmed(temp_db, f"Willing {i}", "486123", days[1], early=True)
     plan_service.replan_day(temp_db, days[0], reason="initial")
 
     outcome = recovery_service.mark_readiness(temp_db, delayed.id, ReadinessStatus.DELAYED)
@@ -167,15 +167,17 @@ def test_recovery_offers_are_capped_separately_from_booking_rounds(temp_db):
     from dispatch_agent.planning import offer_service, recovery_service
 
     days = PlanningClock.horizon_dates()
-    willing = _confirmed(temp_db, "Willing", "486123", days[3], early=True)
+    willing = _confirmed(temp_db, "Willing", "486123", days[1], early=True)
 
     offer, _msg, _ev = recovery_service.offer_freed_slot(temp_db, willing.id, days[0])
     assert offer.purpose is OfferPurpose.RECOVERY
     assert offer.round_number == 1
 
-    # Asked once, not repeatedly.
+    # Asked once, not repeatedly. The freed day must still be EARLIER than the customer's own,
+    # or the call is refused as `not_earlier` and never reaches the cap this test is about --
+    # with a two-day cycle, days[0] is the only day earlier than days[1].
     with pytest.raises(offer_service.OfferError) as exc:
-        recovery_service.offer_freed_slot(temp_db, willing.id, days[1])
+        recovery_service.offer_freed_slot(temp_db, willing.id, days[0])
     assert exc.value.kind == "round_cap_reached"
 
     # And the booking budget was never touched.
@@ -211,7 +213,7 @@ def test_a_recovery_offer_leaves_a_record_that_still_loads(temp_db):
     from dispatch_agent.planning import recovery_service
 
     days = PlanningClock.horizon_dates()
-    willing = _confirmed(temp_db, "Willing", "486123", days[3], early=True)
+    willing = _confirmed(temp_db, "Willing", "486123", days[1], early=True)
 
     recovery_service.offer_freed_slot(temp_db, willing.id, days[0])
 
@@ -227,7 +229,7 @@ def test_being_offered_a_freed_slot_does_not_unconfirm_the_customer(temp_db):
     from dispatch_agent.planning import recovery_service
 
     days = PlanningClock.horizon_dates()
-    willing = _confirmed(temp_db, "Willing", "486123", days[2], early=True)
+    willing = _confirmed(temp_db, "Willing", "486123", days[1], early=True)
     original_date, original_window = willing.delivery_date, willing.locked_window
 
     recovery_service.offer_freed_slot(temp_db, willing.id, days[0])
@@ -243,7 +245,7 @@ def test_a_customer_who_did_not_opt_in_is_never_approached(temp_db):
     from dispatch_agent.planning import offer_service, recovery_service
 
     days = PlanningClock.horizon_dates()
-    unwilling = _confirmed(temp_db, "Not asked", "486123", days[2], early=False)
+    unwilling = _confirmed(temp_db, "Not asked", "486123", days[1], early=False)
 
     with pytest.raises(offer_service.OfferError) as exc:
         recovery_service.offer_freed_slot(temp_db, unwilling.id, days[0])
@@ -260,7 +262,7 @@ def test_recovery_never_moves_a_customer_later(temp_db):
     early_already = _confirmed(temp_db, "Already early", "486123", days[0], early=True)
 
     with pytest.raises(offer_service.OfferError) as exc:
-        recovery_service.offer_freed_slot(temp_db, early_already.id, days[2])
+        recovery_service.offer_freed_slot(temp_db, early_already.id, days[1])
     assert exc.value.kind == "not_earlier"
 
 
@@ -271,9 +273,9 @@ def test_accepting_a_freed_slot_republishes_both_days(temp_db):
 
     days = PlanningClock.horizon_dates()
     _confirmed(temp_db, "Stays put", "018956", days[0])
-    willing = _confirmed(temp_db, "Willing", "486123", days[2], early=True)
+    willing = _confirmed(temp_db, "Willing", "486123", days[1], early=True)
     plan_service.replan_day(temp_db, days[0], reason="initial")
-    plan_service.replan_day(temp_db, days[2], reason="initial")
+    plan_service.replan_day(temp_db, days[1], reason="initial")
 
     offer, _msg, _ev = recovery_service.offer_freed_slot(temp_db, willing.id, days[0])
     outcome = offer_service.accept_offer(temp_db, offer.id, offer.options[0].id)
@@ -281,24 +283,24 @@ def test_accepting_a_freed_slot_republishes_both_days(temp_db):
     moved = temp_db.get_job(willing.id)
     assert moved.delivery_date == days[0]
     assert moved.is_locked
-    assert outcome.vacated_date == days[2]
+    assert outcome.vacated_date == days[1]
     assert outcome.vacated_plan is not None
     assert willing.id in {s.job_id for s in temp_db.active_plan(days[0]).sequence.stops}
-    assert willing.id not in {s.job_id for s in temp_db.active_plan(days[2]).sequence.stops}
+    assert willing.id not in {s.job_id for s in temp_db.active_plan(days[1]).sequence.stops}
 
 
 def test_the_other_customers_on_the_vacated_day_keep_their_windows(temp_db):
     from dispatch_agent.planning import offer_service, recovery_service
 
     days = PlanningClock.horizon_dates()
-    willing = _confirmed(temp_db, "Willing", "486123", days[2], early=True)
-    stayed = _confirmed(temp_db, "Stayed", "018956", days[2], window=((14, 0), (16, 0)))
-    plan_service.replan_day(temp_db, days[2], reason="initial")
+    willing = _confirmed(temp_db, "Willing", "486123", days[1], early=True)
+    stayed = _confirmed(temp_db, "Stayed", "018956", days[1], window=((14, 0), (16, 0)))
+    plan_service.replan_day(temp_db, days[1], reason="initial")
 
     offer, _msg, _ev = recovery_service.offer_freed_slot(temp_db, willing.id, days[0])
     offer_service.accept_offer(temp_db, offer.id, offer.options[0].id)
 
-    plan = temp_db.active_plan(days[2])
+    plan = temp_db.active_plan(days[1])
     stop = next(s for s in plan.sequence.stops if s.job_id == stayed.id)
     assert stayed.locked_window.start <= stop.arrival_window.start
     assert stop.arrival_window.end <= stayed.locked_window.end
@@ -310,7 +312,7 @@ def test_the_freed_date_becomes_evaluable_for_that_customer(temp_db):
     from dispatch_agent.planning import recovery_service
 
     days = PlanningClock.horizon_dates()
-    willing = _confirmed(temp_db, "Willing", "486123", days[2], early=True)
+    willing = _confirmed(temp_db, "Willing", "486123", days[1], early=True)
 
     offer, _msg, _ev = recovery_service.offer_freed_slot(temp_db, willing.id, days[0])
 

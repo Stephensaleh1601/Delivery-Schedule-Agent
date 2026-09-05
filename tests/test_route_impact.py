@@ -211,7 +211,8 @@ def test_an_evaluation_reports_the_day_before_and_after(client, temp_db):
 
 def test_opening_an_empty_day_has_no_before_finishing_time(client, temp_db):
     """"This day did not exist yet" is the honest rendering -- not 00:00."""
-    empty_day = PlanningClock.horizon_dates()[2]
+    # The other cluster day, which this test leaves without work of its own.
+    empty_day = PlanningClock.horizon_dates()[1]
 
     order_id = client.post("/api/orders", json={
         "customer_name": "Mr Rajan", "address_raw": "Blk 2", "postal_code": "018956",
@@ -252,7 +253,7 @@ def test_bootstrap_carries_the_constants_a_ui_would_otherwise_hardcode(client):
     body = client.get("/api/bootstrap").json()
 
     assert body["horizon"]["today"] == BASE.isoformat()
-    assert len(body["horizon"]["dates"]) == 4
+    assert len(body["horizon"]["dates"]) == 2
     assert body["map"]["depot"]["lat"]
     operating = body["operating"]
     assert operating["work_day_start"] == "09:00"
