@@ -22,7 +22,6 @@ from __future__ import annotations
 from dispatch_agent.models import OfferPurpose
 from dispatch_agent.planning import clusters, conversation, insertion, offer_service
 from dispatch_agent.planning.clock import PlanningClock
-from dispatch_agent.planning.insertion_tools import _declined, _preferred, _reporter
 from dispatch_agent.planning.tools import OrderArgs, ToolContext, ToolResult, _Args, tool
 
 MAX_ALTERNATIVES = 3
@@ -49,6 +48,11 @@ def _cycle_or_fail(ctx: ToolContext, name: str):
 
 
 def _search(ctx: ToolContext, order, dates, name: str, where: str) -> insertion.InsertionSearch:
+    # Imported here, not at module scope: tools.py loads this module from its own footer, so a
+    # top-level import of insertion_tools closes a cycle and breaks whichever of the three
+    # happens to be imported first.
+    from dispatch_agent.planning.insertion_tools import _declined, _preferred, _reporter
+
     found = insertion.search(
         ctx.repo,
         order,

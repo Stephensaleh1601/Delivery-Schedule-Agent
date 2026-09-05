@@ -206,6 +206,18 @@ def find_insertion_options(args: InsertionArgs, ctx: ToolContext) -> ToolResult:
         )
 
     preferred = _preferred(order)
+    if clusters.placement_of(order).weekday is None:
+        # Never fall through to both routes for an address we cannot place: that offers a day
+        # their region does not belong to and presents it as their normal one.
+        ctx.scratch["customer_message"] = (
+            "Could you send me your 6-digit postal code? I need it to work out which of our "
+            "delivery days covers you."
+        )
+        return ToolResult(
+            ok=False, tool="find_insertion_options", error="unknown_location",
+            summary="Cannot place this address in a delivery region; asked for the postal code.",
+        )
+
     cycle = PlanningClock.coordination_cycle(repo=ctx.repo)
     if cycle is None:
         return ToolResult(
@@ -213,7 +225,10 @@ def find_insertion_options(args: InsertionArgs, ctx: ToolContext) -> ToolResult:
             summary="No published Friday and Saturday pair to search.",
         )
 
-    scope = _scope_for(order, args.scope, ctx, cycle.dates)
+    # The model's `scope` is ignored. This path is reachable only by operational events now,
+    # and which routes may be read is a business rule either way -- taking direction from an
+    # argument was the thing that let it be got wrong.
+    scope = _scope_for(order, ctx, cycle.dates)
     dates = clusters.resolve_scope(order, scope, cycle.dates)
     if scope == "requested" and not dates:
         return ToolResult(
@@ -441,7 +456,7 @@ def _reporter(order_id: str, scope: str = "cluster", day_name: str = ""):
     return report
 
 
-def _scope_for(order, asked: str, ctx: ToolContext, cycle_dates) -> str:
+def _scope_for(order, ctx: ToolContext, cycle_dates) -> str:
     """Which routes this search may look at.
 
     The agent chooses the WORKFLOW by calling this tool; which routes that workflow is allowed to
@@ -454,8 +469,7 @@ def _scope_for(order, asked: str, ctx: ToolContext, cycle_dates) -> str:
     - A day they explicitly named that is not their own is always a `requested` search. Answering
       about their normal day instead is the failure the rule exists to prevent.
 
-    Anything else is a normal booking on their own day. `asked` is honoured only where neither
-    fact applies, so the model still steers and never overrides.
+    Anything else is a normal booking on their own day.
     """
     if ctx.scratch.get("intent") == "reject":
         return "both"
@@ -464,4 +478,4 @@ def _scope_for(order, asked: str, ctx: ToolContext, cycle_dates) -> str:
     if named and any(clusters.is_off_cluster(order, day) for day in named):
         return "requested"
 
-    return asked if asked in ("cluster", "requested", "both") else "cluster"
+    return "cluster"

@@ -849,44 +849,44 @@ def legal_actions(state: dict, ctx: ToolContext) -> list[str]:
     if not searched:
         legal -= NEEDS_SEARCH
 
-    # Nothing may be locked until the customer has accepted a specific slot. The tool refuses this
-    # too; hiding it as well means the model is never shown a booking it could make by mistake.
+    # -- prerequisites, enforced here rather than asked for in the prompt ---------------
+    #
+    # Each of these is an ordering the work genuinely has: you cannot search around a time the
+    # customer gave until it is written down, and you cannot search around a rejection until the
+    # rejection exists. A prompt can only ask; this decides.
+
+    # What the customer just said must be on file before any search reads it. Otherwise the
+    # search prices an order that still holds whatever it held before this message.
+    if ctx.scratch.get("stated_windows") and "record_availability" not in ctx.succeeded:
+        legal -= {"find_normal_slot", "find_requested_day_slot", "find_fallback_options"}
+
+    # The fallback searches "everything except what they turned down" -- which is only true once
+    # the rejection has been recorded and the declined window excluded.
+    if "record_rejection" not in ctx.succeeded:
+        legal.discard("find_fallback_options")
+
+    # Nothing is booked that the customer did not accept. The tool refuses this too; hiding it
+    # means the model is never shown a booking it could make by mistake.
     if ctx.accepted is None:
-        legal.discard("lock_appointment")
+        legal -= {"lock_appointment", "confirm_offer"}
 
     # A message needs wording a tool prepared. Offering `send_message` with nothing written is how
     # a run ends with an empty bubble in the customer's thread.
-    if not (ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")):
+    prepared = ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")
+    if not prepared:
         legal.discard("send_message")
 
-    # Once the customer has been written to, the turn is over. Anything further in the same run is
-    # a second action they will never see a message about.
+    # -- once there is an outcome, there is one move left ------------------------------
+    #
+    # A workflow has produced something to say. Leaving `escalate_booking` or a second search
+    # available invites the model to keep working past the answer it already has -- and the
+    # customer waits through every extra step for a reply that was ready.
+    if prepared and "send_message" not in ctx.succeeded and "send_message" in scope:
+        legal = {"send_message"}
+
+    # And once they have been written to, the turn is over.
     if "send_message" in ctx.succeeded:
         legal = {"finish"}
-
-    # Handing a customer to a coordinator while holding a workable option is not an escalation,
-    # it is giving up. While the search has options and no offer has even been ATTEMPTED, the way
-    # out is to offer one. Attempted rather than succeeded, deliberately: a fallback offer that
-    # legitimately fails for want of a third choice must still be able to escalate afterwards.
-    attempted = {a.tool for a in state.get("actions", [])}
-    offer_actions = {
-        "create_normal_offer", "create_alternative_offer", "create_offer",
-        "find_normal_slot", "find_requested_day_slot", "find_fallback_options",
-    }
-    if searched and not (attempted & offer_actions):
-        legal.discard("create_exception")
-
-    # A run that has written something for the customer may not end without sending it. The
-    # failure this prevents is the worst kind in a conversation: the agent asked a question,
-    # logged that it asked, and finished -- leaving a person watching a thread that simply
-    # stopped. Only withheld while sending is actually available, so this can never trap the loop
-    # in an intent that has no `send_message` to reach.
-    if (
-        "send_message" in legal
-        and "send_message" not in ctx.succeeded
-        and (ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message"))
-    ):
-        legal.discard("finish")
 
     return sorted(legal)
 

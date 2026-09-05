@@ -833,6 +833,9 @@ def handle_planning_event(
     except Exception as exc:  # noqa: BLE001
         run.status = AgentRunStatus.FAILED
         run.final_summary = f"The scheduling agent could not complete: {exc}"
+        # Before the save, on EVERY exit. A crash is the case where the customer is most likely
+        # to be left with silence, and silence is indistinguishable from a broken server.
+        _guarantee_a_reply(repo, event, ctx, run)
         run.completed_at = datetime.now(timezone.utc)
         repo.save_agent_run(run)
         return run
@@ -862,6 +865,10 @@ def handle_planning_event(
         run.final_summary = " ".join(
             a.summary for a in run.actions if a.ok and a.tool != "finish"
         ) or "No action was needed."
+
+    # Every path through this function passes here or through the except above, so there is no
+    # way to leave without the customer having been answered.
+    _guarantee_a_reply(repo, event, ctx, run)
 
     repo.save_agent_run(run)
     return run
