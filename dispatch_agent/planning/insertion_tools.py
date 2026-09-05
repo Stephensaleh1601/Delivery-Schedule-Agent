@@ -223,3 +223,90 @@ def _declined(order, ctx: ToolContext) -> set:
     for date_iso, slot_name in ctx.scratch.get("declined_slots", []):
         declined.add((date_iso, slot_name))
     return declined
+
+
+class OfferArgs(_Args):
+    order_id: str
+
+
+def _offer(ctx: ToolContext, order_id: str, purpose, tool_name: str) -> ToolResult:
+    """Shared body for the two offer tools.
+
+    The options come from `ctx.scratch["insertion"]` -- what the search actually returned -- and
+    never from the model's arguments. That is the structural half of "the LLM cannot reorder or
+    replace the top three": there is no argument through which a different list could arrive.
+    """
+    from dispatch_agent.planning import offer_service
+
+    order = ctx.repo.get_job(order_id)
+    if order is None:
+        return ToolResult(ok=False, tool=tool_name, error="unknown_order",
+                          summary=f"No order {order_id}.")
+
+    found = ctx.scratch.get("insertion")
+    if found is None:
+        return ToolResult(
+            ok=False, tool=tool_name, error="nothing_searched",
+            summary="Run find_insertion_options first -- there is nothing verified to offer.",
+        )
+
+    try:
+        offer = offer_service.offer_insertions(
+            ctx.repo, order, found.options, purpose=purpose, run_id=ctx.run_id
+        )
+    except offer_service.OfferError as exc:
+        return ToolResult(ok=False, tool=tool_name, error=exc.kind, summary=str(exc))
+
+    ctx.offer_id = offer.id
+    ctx.scratch["offer_message"] = offer_service.offer_message(offer)
+    slots = ", ".join(
+        f"{offer_service.format_date(s.date)} {offer_service.format_window(s.window)}"
+        for s in offer.options
+    )
+    return ToolResult(
+        ok=True,
+        tool=tool_name,
+        summary=f"Offered {len(offer.options)}: {slots}.",
+        data={
+            "offer_id": offer.id,
+            "purpose": offer.purpose.value,
+            "slots": [
+                {
+                    "slot_id": s.id,
+                    "date": s.date.isoformat(),
+                    "window": {"start": f"{s.window.start:%H:%M}", "end": f"{s.window.end:%H:%M}"},
+                    "reason": s.reason,
+                    "added_distance_km": s.evidence.added_distance_km if s.evidence else None,
+                    "added_minutes": s.evidence.added_minutes if s.evidence else None,
+                    "anchor_name": s.evidence.anchor_name if s.evidence else None,
+                    "insert_position": s.evidence.insert_position if s.evidence else None,
+                    "source_plan_version": s.evidence.source_plan_version if s.evidence else None,
+                }
+                for s in offer.options
+            ],
+        },
+    )
+
+
+@tool("create_normal_offer", OfferArgs)
+def create_normal_offer(args: OfferArgs, ctx: ToolContext) -> ToolResult:
+    """One proven option on the customer's own cluster day.
+
+    Proven, not assumed: belonging to Friday's region is not evidence that Friday can take you,
+    so this offers the best position the search actually verified.
+    """
+    from dispatch_agent.models import OfferPurpose
+
+    return _offer(ctx, args.order_id, OfferPurpose.BOOKING, "create_normal_offer")
+
+
+@tool("create_alternative_offer", OfferArgs)
+def create_alternative_offer(args: OfferArgs, ctx: ToolContext) -> ToolResult:
+    """Exactly the three the search returned, in its order, after a normal offer was declined.
+
+    Fewer than three is not a smaller version of this answer -- it is the case policy says to hand
+    to a coordinator, and `offer_insertions` refuses rather than trimming.
+    """
+    from dispatch_agent.models import OfferPurpose
+
+    return _offer(ctx, args.order_id, OfferPurpose.ALTERNATIVE, "create_alternative_offer")

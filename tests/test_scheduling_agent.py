@@ -326,7 +326,15 @@ def test_the_loop_falls_back_to_standard_procedure_when_the_model_is_unavailable
 
     assert run.status is AgentRunStatus.COMPLETED
     assert [a.tool for a in run.actions] == ["evaluate_slots", "create_offer", "send_message", "finish"]
-    assert all("model unavailable" in a.reason_summary for a in run.actions)
+
+    # Not one step may be attributed to the model. Every step was either taken by the standard
+    # procedure -- which says so in its own words -- or by the controller, which takes the only
+    # legal move when there is exactly one and does not pretend a judgement was exercised.
+    for action in run.actions:
+        assert action.decider in ("RuleDecisionAgent", "controller"), action.decider
+        if action.decider == "RuleDecisionAgent":
+            assert "model unavailable" in action.reason_summary
+    assert any(a.decider == "RuleDecisionAgent" for a in run.actions)
 
 
 def test_reason_summaries_are_truncated_not_trusted(temp_db):

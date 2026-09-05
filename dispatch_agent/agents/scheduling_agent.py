@@ -492,12 +492,35 @@ def _observe_node(ctx: tools.ToolContext):
     return node
 
 
-def _decide_node(decider: DecisionAgent, fallback: DecisionAgent | None):
+def _decide_node(ctx: tools.ToolContext, decider: DecisionAgent, fallback: DecisionAgent | None):
     def node(state: SchedulingState) -> SchedulingState:
         primary = type(decider).__name__
         model_id = _active_model_id() if isinstance(decider, LLMDecisionAgent) else None
+
+        # What is permissible right now, not the whole registry. The model is shown exactly
+        # what dispatch will accept, so an illegal action is not something the prompt has to
+        # argue it out of.
+        legal = tools.legal_actions(state, ctx)
+
+        if legal == ["finish"]:
+            # There was no choice to make. Asking a model to pick from a list of one and then
+            # recording it as a decision would put a step in the activity log that claims a
+            # judgement nobody exercised.
+            return {
+                "pending_decision": ActionDecision(
+                    action="finish",
+                    reason_summary="Nothing further is permitted in this run.",
+                    arguments={},
+                ),
+                "step_provenance": {
+                    "decider": "controller",
+                    "model_id": None,
+                    "fallback_reason": None,
+                },
+            }
+
         try:
-            decision = decider.decide(state, tools.allowed_actions())
+            decision = decider.decide(state, legal)
         except Exception as exc:  # noqa: BLE001
             if fallback is None:
                 return {
@@ -508,7 +531,7 @@ def _decide_node(decider: DecisionAgent, fallback: DecisionAgent | None):
             # Recorded, not hidden: the log should say the model was unavailable rather than
             # implying it made these calls. Redacted because a provider exception quotes the
             # request it failed on, and this string is persisted and then rendered.
-            decision = fallback.decide(state, tools.allowed_actions())
+            decision = fallback.decide(state, legal)
             decision.reason_summary = f"[model unavailable, using standard procedure] {decision.reason_summary}"
             reason = tools.redact_secrets(f"{type(exc).__name__}: {exc}")
             return {
@@ -586,7 +609,7 @@ def _after_act(state: SchedulingState) -> str:
 def build_graph(ctx: tools.ToolContext, decider: DecisionAgent, fallback: DecisionAgent | None):
     graph = StateGraph(SchedulingState)
     graph.add_node("observe", _observe_node(ctx))
-    graph.add_node("decide", _decide_node(decider, fallback))
+    graph.add_node("decide", _decide_node(ctx, decider, fallback))
     graph.add_node("act", _act_node(ctx))
     graph.set_entry_point("observe")
     graph.add_edge("observe", "decide")

@@ -322,6 +322,12 @@ export interface AgentRun {
   model_id: string | null;
   /** The exception that forced a fallback, kept so a credentials problem is distinguishable. */
   decider_error: string | null;
+  /** Who read the customer's sentence -- a different decision, and often a different provider,
+   *  from the one that chose the actions. Both are shown rather than one standing in for the
+   *  other. */
+  reader: string | null;
+  reader_model_id: string | null;
+  reader_error: string | null;
   started_at: string;
   completed_at: string | null;
   actions: AgentAction[];

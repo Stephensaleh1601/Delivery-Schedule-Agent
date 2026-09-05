@@ -149,6 +149,36 @@ def test_an_insertion_that_would_delay_someone_is_refused(seeded):
     assert len(tight.options) < len(loose.options)
 
 
+def test_a_shift_is_fine_because_a_window_is_a_range(seeded):
+    """Inserting a stop does delay everyone after it. That is allowed, and this is why.
+
+    A promise is a broad arrival window, not a clock time, so a later stop can move within its
+    window without the promise breaking -- the check is against the window, never against the
+    minute the last plan happened to choose. On the seeded Friday every stop has at least two
+    hours of room before its window closes, and the dearest insertion costs eighteen minutes.
+
+    The finishing time usually does not move at all, which is the same fact from the other end:
+    the later stops were already waiting for their windows to open, so the detour is spent out of
+    idle time rather than added to the end of the day.
+    """
+    order = _difficult(seeded)
+    found = insertion.search(seeded, order)
+    assert found.options
+
+    for option in found.options:
+        plan = seeded.active_plan(option.date)
+        slack = []
+        for stop in plan.sequence.stops:
+            job = seeded.get_job(stop.job_id)
+            arrival = stop.arrival_window.start.hour * 60 + stop.arrival_window.start.minute
+            closes = job.locked_window.end.hour * 60 + job.locked_window.end.minute
+            slack.append(closes - arrival)
+        assert min(slack) > option.added_minutes, (
+            "the insertion must cost less than the room the narrowest promise still has"
+        )
+        assert option.finish_after <= option.finish_before or option.added_minutes > 0
+
+
 def test_an_arrival_outside_every_window_is_not_offered(seeded):
     """An arrival is a real time; a delivery window is a promise we have words for. One that falls
     outside all three cannot be offered as morning, afternoon or evening, so it is dropped rather

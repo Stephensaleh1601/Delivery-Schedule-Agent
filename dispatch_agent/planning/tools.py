@@ -627,6 +627,7 @@ INTENT_TOOLS: dict[str, frozenset[str]] = {
         # The fallback search. Without these entries dispatch() refuses them as
         # not_allowed_for_intent, and a declined offer has nowhere to go but a coordinator.
         "retrieve_policy", "get_existing_routes", "find_insertion_options",
+        "create_alternative_offer",
     }),
     "provide_availability": frozenset({
         "record_availability", "evaluate_slots", "suggest_route_aware_windows",
@@ -634,6 +635,7 @@ INTENT_TOOLS: dict[str, frozenset[str]] = {
         # The normal offer is proven the same way the alternatives are: belonging to Friday's
         # region is not evidence that Friday can take you.
         "retrieve_policy", "get_existing_routes", "find_insertion_options",
+        "create_normal_offer",
     }),
     # A question we cannot answer from the schedule. It may ask, or hand over -- never book.
     "general_support": frozenset({"ask_clarification", "create_exception", "send_message", "finish"}),
@@ -644,7 +646,12 @@ INTENT_TOOLS: dict[str, frozenset[str]] = {
 # the customer's thread; a second `lock_appointment` is a second attempt to book something already
 # booked. The live model did both -- three identical offer messages in one run -- because nothing
 # stopped it, and the idempotent second lock only looked harmless.
-ONCE_PER_RUN = frozenset({"send_message", "lock_appointment", "create_offer", "create_exception"})
+ONCE_PER_RUN = frozenset({
+    "send_message", "lock_appointment", "create_offer", "create_exception",
+    # Same rule, same reason: a second offer in one run is a second set of choices in the
+    # customer's thread, and whichever arrives last is the one they answer.
+    "create_normal_offer", "create_alternative_offer",
+})
 
 
 def dispatch(action: str, arguments: dict | None, ctx: ToolContext) -> ToolResult:
@@ -708,6 +715,55 @@ def dispatch(action: str, arguments: dict | None, ctx: ToolContext) -> ToolResul
 
 def allowed_actions() -> list[str]:
     return sorted(TOOL_REGISTRY)
+
+
+# Actions whose whole point is to depend on a verified search having happened first. Offering
+# before searching would be offering something nobody checked.
+NEEDS_SEARCH = frozenset({"create_normal_offer", "create_alternative_offer"})
+
+
+def legal_actions(state: dict, ctx: ToolContext) -> list[str]:
+    """What the agent may do RIGHT NOW, given the booking state -- not the whole registry.
+
+    This is the state gate. `dispatch()` has always refused an action that is out of scope, but
+    the model was still shown every tool in the registry and left to work out which ones made
+    sense; being offered `lock_appointment` before anybody accepted anything is an invitation to
+    call it. The same set is now what the model sees and what dispatch enforces, so an illegal
+    action is not a temptation the prompt has to talk it out of.
+
+    Narrowing, never widening: the intent scope from INTENT_TOOLS still applies on top, and
+    dispatch re-checks everything independently. A bug here can make the agent do less than it
+    should; it cannot make it do something unsafe.
+    """
+    done = {a.tool for a in state.get("actions", []) if getattr(a, "ok", False)}
+    scope = set(ctx.allowed_tools) if ctx.allowed_tools is not None else set(TOOL_REGISTRY)
+
+    # Finishing is always available. An agent with no legal move must still be able to stop.
+    legal = {"finish"} | (scope - ONCE_PER_RUN - done)
+
+    # Once-per-run actions stay legal until they have actually succeeded.
+    legal |= {action for action in scope & ONCE_PER_RUN if action not in ctx.succeeded}
+
+    searched = bool(getattr(ctx.scratch.get("insertion"), "options", None))
+    if not searched:
+        legal -= NEEDS_SEARCH
+
+    # Nothing may be locked until the customer has accepted a specific slot. The tool refuses this
+    # too; hiding it as well means the model is never shown a booking it could make by mistake.
+    if ctx.accepted is None:
+        legal.discard("lock_appointment")
+
+    # A message needs wording a tool prepared. Offering `send_message` with nothing written is how
+    # a run ends with an empty bubble in the customer's thread.
+    if not (ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")):
+        legal.discard("send_message")
+
+    # Once the customer has been written to, the turn is over. Anything further in the same run is
+    # a second action they will never see a message about.
+    if "send_message" in ctx.succeeded:
+        legal = {"finish"}
+
+    return sorted(legal)
 
 
 def describe_arguments() -> dict[str, dict]:

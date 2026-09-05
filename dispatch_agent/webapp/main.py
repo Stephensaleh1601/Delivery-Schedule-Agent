@@ -724,6 +724,12 @@ def _run_to_dict(run) -> dict:
         "decider": run.decider,
         "model_id": run.model_id,
         "decider_error": run.decider_error,
+        # Who read the customer's sentence, which is a different provider from the one that chose
+        # the actions. Both are shown, because a panel that reports one as the other is worse than
+        # a panel that reports neither.
+        "reader": run.reader,
+        "reader_model_id": run.reader_model_id,
+        "reader_error": run.reader_error,
         "started_at": run.started_at.isoformat(),
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
         "actions": [

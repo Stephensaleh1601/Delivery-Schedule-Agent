@@ -19,7 +19,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from dispatch_agent.agents.scheduling_agent import RuleDecisionAgent, handle_planning_event
+from dispatch_agent.agents.scheduling_agent import LLMDecisionAgent, handle_planning_event
 from dispatch_agent.agents.understanding import MessageReader
 from dispatch_agent.db import JobsRepository
 from dispatch_agent.models import (
@@ -107,16 +107,20 @@ def receive_message(order_id: str, payload: InboundMessage) -> dict:
     #
     # The model still makes the decision that matters -- what the customer wants. What follows from
     # that is a procedure, and procedures do not need a language model.
+    # The model chooses the actions, from the set the state gate says are legal right now.
+    # `use_fallback=True` so a provider outage degrades to the standard procedure mid-run
+    # instead of ending the conversation -- and says so, per step, in the activity log.
     run = handle_planning_event(
-        event, repo=repo, ctx=ctx, decider=RuleDecisionAgent(), use_fallback=False
+        event, repo=repo, ctx=ctx, decider=LLMDecisionAgent(), use_fallback=True
     )
 
-    # Provenance of the READING, which is the decision that was actually made by a model. Recorded
-    # so the inspector says who understood the message rather than implying the steps were chosen
-    # by one.
-    run.decider = understanding.decider
-    run.model_id = understanding.model_id
-    run.decider_error = run.decider_error or understanding.fallback_reason
+    # Two providers, two fields. `decider`/`model_id` are set by the loop and say who chose the
+    # actions; these say who read the sentence. They used to be the same field, which was
+    # honest while the steps were rule-driven and would now claim the tools were picked by
+    # whatever parsed the message.
+    run.reader = understanding.decider
+    run.reader_model_id = understanding.model_id
+    run.reader_error = understanding.fallback_reason
     run.final_summary = run.final_summary or f"Read as: {said.intent}."
     repo.save_agent_run(run)
 
