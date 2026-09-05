@@ -57,8 +57,28 @@ def test_the_normal_offer_carries_exactly_one_proven_option(seeded):
     assert result.ok, result.summary
     assert len(result.data["slots"]) == 1
     slot = result.data["slots"][0]
-    assert slot["added_distance_km"] is not None and slot["anchor_name"]
+    assert slot["added_distance_km"] is not None and slot["anchor_stop_number"]
     assert seeded.get_job(order.id).planning_status is PlanningStatus.OFFERED
+
+
+def test_an_offer_never_names_another_customer(seeded):
+    """An offer and its evidence are served to the customer's own page. A stop number says
+    everything the panel needs; a name tells one customer who the others are."""
+    import json
+
+    order, ctx = _searched(seeded, "Mrs Chua")
+    result = tools.dispatch("create_normal_offer", {"order_id": order.id}, ctx)
+
+    others = {j.customer_name for j in seeded.all_jobs() if j.id != order.id}
+    dumped = json.dumps(result.data)
+    for name in others:
+        assert name not in dumped, name
+
+    stored = json.dumps(
+        [s.model_dump(mode="json") for s in seeded.offers_for_order(order.id)[0].options]
+    )
+    for name in others:
+        assert name not in stored, name
 
 
 def test_the_normal_offer_did_not_raise_the_shared_slot_cap(seeded):

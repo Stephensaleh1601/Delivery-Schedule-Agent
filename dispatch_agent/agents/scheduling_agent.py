@@ -44,7 +44,7 @@ from dispatch_agent.planning.clock import PlanningClock
 # customer message can now legitimately need record_availability -> evaluate_slots ->
 # suggest_route_aware_windows -> create_offer -> send_message -> finish, which is already six. The
 # guard exists to stop a loop, not to make the longest honest path fail one step from the end.
-MAX_TOOL_STEPS = 8
+MAX_TOOL_STEPS = 10
 
 
 class ActionDecision(BaseModel):
@@ -132,6 +132,95 @@ def _last_error(state, tool_name: str) -> str | None:
     return attempts[-1].error if attempts else None
 
 
+
+# The conversational path, step by step. Both customer intents walk it; only the first action and
+# the offer at the end differ. It lives here rather than being inlined twice so that the standard
+# procedure and the model cannot drift into following different policies -- a fallback that
+# quietly does something else is worse than no fallback, because the log still says "completed".
+def _insertion_sequence(event, done, state, topic: str, offer_action: str):
+    if "retrieve_policy" not in done:
+        return ActionDecision(
+            action="retrieve_policy",
+            reason_summary="Reading the delivery policy before touching a route.",
+            arguments={"topic": topic},
+        )
+    if "get_existing_routes" not in done:
+        return ActionDecision(
+            action="get_existing_routes",
+            reason_summary="Loading the published Friday and Saturday routes.",
+            arguments={},
+        )
+    if "find_insertion_options" not in done:
+        return ActionDecision(
+            action="find_insertion_options",
+            reason_summary="Measuring where this customer could be fitted in.",
+            arguments={"order_id": event.order_id},
+        )
+    if _last_failed(state, "find_insertion_options"):
+        # Nothing safe on either route. A human takes it -- inventing a position is the one thing
+        # that must not happen here.
+        if "create_exception" not in done:
+            return ActionDecision(
+                action="create_exception",
+                reason_summary="No safe position on either route; asking a coordinator to call.",
+                arguments={
+                    "order_id": event.order_id,
+                    "kind": "no_safe_position",
+                    "message": "No position within the anchor radius can take this customer "
+                               "without making someone else late.",
+                },
+            )
+        if "send_message" not in done:
+            return ActionDecision(
+                action="send_message",
+                reason_summary="Telling the customer a person will be in touch.",
+                arguments={
+                    "order_id": event.order_id,
+                    "body": "I could not find a delivery slot that works without affecting "
+                            "another customer, so one of our coordinators will call you.",
+                },
+            )
+        return ActionDecision(action="finish", reason_summary="Handed to a coordinator.")
+
+    if offer_action not in done:
+        return ActionDecision(
+            action=offer_action,
+            reason_summary="Putting the calculated options to the customer.",
+            arguments={"order_id": event.order_id},
+        )
+    if _last_failed(state, offer_action) and "create_exception" not in done:
+        too_few = _last_error(state, offer_action) == "too_few_alternatives"
+        return ActionDecision(
+            action="create_exception",
+            reason_summary=(
+                "Fewer than three safe options; policy hands this to a coordinator."
+                if too_few else "Could not put an offer together; asking a coordinator to call."
+            ),
+            arguments={
+                "order_id": event.order_id,
+                "kind": "too_few_alternatives" if too_few else "offer_failed",
+                "message": "Company policy requires three safe route options; there were fewer.",
+            },
+        )
+    if _last_failed(state, offer_action) and "send_message" not in done:
+        return ActionDecision(
+            action="send_message",
+            reason_summary="Telling the customer a coordinator will take over.",
+            arguments={
+                "order_id": event.order_id,
+                "body": "I could not find three safe delivery times for you, so one of our "
+                        "coordinators will call to arrange it personally.",
+            },
+        )
+    if "send_message" not in done:
+        return ActionDecision(
+            action="send_message",
+            reason_summary="Sending the offer.",
+            arguments={"order_id": event.order_id, "body": None},
+        )
+    return ActionDecision(action="finish", reason_summary="Offer sent; waiting for a reply.")
+
+
 class RuleDecisionAgent:
     """A deterministic policy over the same state the model sees.
 
@@ -142,6 +231,8 @@ class RuleDecisionAgent:
     def decide(self, state, allowed) -> ActionDecision:
         event = state["event"]
         done = {a.tool for a in state.get("actions", [])}
+
+        conversational = bool(event.payload.get("intent"))
 
         if event.event_type is PlanningEventType.NEW_ORDER:
             # A conversational turn carries the windows the customer just stated. Writing them down
@@ -169,6 +260,11 @@ class RuleDecisionAgent:
                     )
                 return ActionDecision(action="finish",
                                       reason_summary="Waiting for a date we can actually book.")
+            if conversational:
+                return _insertion_sequence(
+                    event, done, state, topic="cluster_days", offer_action="create_normal_offer"
+                )
+
             if "evaluate_slots" not in done:
                 return ActionDecision(action="evaluate_slots",
                                       reason_summary="Checking which of the requested windows we can serve.",
@@ -252,6 +348,12 @@ class RuleDecisionAgent:
                     arguments={"offer_id": event.payload.get("offer_id"),
                                "slot_id": event.payload.get("slot_id")},
                 )
+            if conversational:
+                return _insertion_sequence(
+                    event, done, state, topic="alternatives",
+                    offer_action="create_alternative_offer",
+                )
+
             if "evaluate_slots" not in done:
                 return ActionDecision(
                     action="evaluate_slots",

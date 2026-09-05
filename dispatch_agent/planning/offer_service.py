@@ -482,7 +482,14 @@ def offer_insertions(
             kind="round_cap_reached",
         )
 
-    chosen = list(options)[:wanted]
+    ranked = list(options)
+    if purpose is OfferPurpose.BOOKING:
+        # Preference decides what the NORMAL offer tries first. A customer who says "Saturday
+        # morning" and is handed a Friday has not been listened to, however much cheaper Friday
+        # is -- route efficiency is our problem, not theirs. It is a stable partition, so within
+        # the preferred group the tool's own ranking still decides.
+        ranked.sort(key=lambda o: not getattr(o, "matches_preference", False))
+    chosen = ranked[:wanted]
     offer = AppointmentOffer(
         order_id=order.id,
         run_id=run_id,
@@ -532,13 +539,10 @@ def _slot_from_insertion(order: JobRecord, option) -> OfferedSlot:
         evidence=InsertionEvidence(
             source_plan_id=option.source_plan_id,
             source_plan_version=option.source_plan_version,
-            anchor_name=option.anchor_name,
             anchor_stop_number=option.anchor_stop_number,
             anchor_distance_km=option.anchor_distance_km,
             placement=option.placement,
             insert_position=option.insert_position,
-            previous_stop=option.previous_stop,
-            next_stop=option.next_stop,
             added_distance_km=option.added_distance_km,
             added_minutes=option.added_minutes,
             expected_arrival=option.expected_arrival,

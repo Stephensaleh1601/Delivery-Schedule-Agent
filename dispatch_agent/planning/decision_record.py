@@ -661,9 +661,10 @@ def _candidates_from_offer(offer) -> list[Candidate]:
                 promises_moved=0,
                 opens_new_day=False,
                 feasible=True,
+                # Positions, not names: this panel sits beside the customer's own thread.
                 insertion=(
-                    f"{e.placement.title()} stop {e.anchor_stop_number} ({e.anchor_name}), "
-                    f"{e.anchor_distance_km}km away — between {e.previous_stop} and {e.next_stop}"
+                    f"{e.placement.title()} stop {e.anchor_stop_number}, "
+                    f"{e.anchor_distance_km}km away — new stop {e.insert_position} on the day"
                 ),
                 stops_before=e.insert_position - 1,
                 position=e.insert_position,

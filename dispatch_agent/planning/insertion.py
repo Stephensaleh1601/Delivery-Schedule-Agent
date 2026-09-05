@@ -55,6 +55,9 @@ class InsertionOption:
 
     date: Date
     slot: DeliverySlot
+    # Names of the surrounding customers. Kept on the option because a coordinator view and the
+    # tests both want them -- but deliberately absent from `to_data()` and from the evidence
+    # stored on an offer, because those travel to the customer's own page.
     anchor_name: str
     anchor_stop_number: int
     anchor_distance_km: float
@@ -69,6 +72,9 @@ class InsertionOption:
     finish_after: Time
     source_plan_id: str
     source_plan_version: int
+    # Whether this lands on a (date, window) the customer actually asked for. Preference
+    # decides what the NORMAL offer tries first; it never reorders the fallback ranking.
+    matches_preference: bool = False
 
     @property
     def window(self) -> TimeWindow:
@@ -132,13 +138,14 @@ class InsertionSearch:
                     "date": o.date.isoformat(),
                     "slot": o.slot.name,
                     "window": {"start": f"{o.window.start:%H:%M}", "end": f"{o.window.end:%H:%M}"},
-                    "anchor_name": o.anchor_name,
+                    # Deliberately NOT anchor_name / previous_stop / next_stop. This payload is
+                    # persisted on the run and served to the CUSTOMER's own page, and naming the
+                    # people either side of them is telling one customer who the others are. Stop
+                    # numbers say everything a judge needs and identify nobody.
                     "anchor_stop_number": o.anchor_stop_number,
                     "anchor_distance_km": o.anchor_distance_km,
                     "placement": o.placement,
                     "insert_position": o.insert_position,
-                    "previous_stop": o.previous_stop,
-                    "next_stop": o.next_stop,
                     "added_distance_km": o.added_distance_km,
                     "added_minutes": o.added_minutes,
                     "expected_arrival": f"{o.expected_arrival:%H:%M}",
@@ -147,6 +154,7 @@ class InsertionSearch:
                     "promises_moved": 0,
                     "source_plan_id": o.source_plan_id,
                     "source_plan_version": o.source_plan_version,
+                    "matches_preference": o.matches_preference,
                 }
                 for o in self.options
             ],
@@ -224,11 +232,23 @@ def search(
     depot: Coordinates | None = None,
     exclude: set[tuple[Date, str]] | None = None,
     radius_km: float | None = None,
+    prefer: set[tuple[Date, str]] | None = None,
+    restrict_to: set[tuple[Date, str]] | None = None,
 ) -> InsertionSearch:
     """Every safe place `order` could be inserted into the published routes, best first.
 
     `exclude` is (date, slot name) pairs the customer has already turned down or ruled out. They
     are removed, never re-ranked: a choice someone declined is not a cheaper choice.
+
+    `prefer` is (date, slot name) pairs the customer asked for. Options are flagged, not reordered
+    -- the ranking stays the tool's, and it is `create_normal_offer` that tries a preferred option
+    first. Blending the two would mean a customer's wish quietly outranking a route fact in a list
+    that is supposed to be ordered by cost.
+
+    `restrict_to` is the harder version, for a customer who said their time is the ONLY one that
+    works. Then everything else is excluded rather than ranked below: "only Saturday" means Friday
+    is ruled out, and offering it anyway is not a helpful alternative, it is not having listened.
+    An empty result is the right answer there -- it escalates.
     """
     client = routing_client or RoutingClient()
     depot = depot or company_depot()
@@ -305,6 +325,11 @@ def search(
             if (day, slot.name) in exclude:
                 found.excluded_by_customer += 1
                 continue
+            if restrict_to is not None and (day, slot.name) not in restrict_to:
+                # The customer told us this is their only possible time. Anything else is not
+                # an alternative worth ranking, it is a time they have already ruled out.
+                found.excluded_by_customer += 1
+                continue
 
             anchor_index = position if following is not None else position - 1
             option = InsertionOption(
@@ -324,6 +349,7 @@ def search(
                 finish_after=_clock(home),
                 source_plan_id=plan.id,
                 source_plan_version=plan.version,
+                matches_preference=(day, slot.name) in (prefer or set()),
             )
 
             # One best option per (date, window). Two positions in the same afternoon are one

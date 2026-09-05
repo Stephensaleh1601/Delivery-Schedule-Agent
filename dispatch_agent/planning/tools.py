@@ -607,35 +607,35 @@ def finish(args: NoArgs, ctx: ToolContext) -> ToolResult:
 # was reachable from every intent and only the rule decider ever consulted what had already been
 # done. A question about a booking must not be able to change the booking.
 INTENT_TOOLS: dict[str, frozenset[str]] = {
-    # Read-only with respect to the booking. `evaluate_slots` solves and reports; it writes
-    # nothing, which is what makes it safe to answer a question with.
-    # `suggest_route_aware_windows` is here because it is genuinely read-only -- it solves days and
-    # returns them, and writes nothing. Without it "why Tuesday?" could only see the customer's own
-    # dates, so it answered by explaining Saturday.
+    # The evaluation-based tools (`evaluate_slots`, `create_offer`, `suggest_route_aware_windows`)
+    # are deliberately ABSENT from every customer intent below. They still exist and are still
+    # used by the operational events, which carry no intent and therefore no scoping -- but a
+    # customer conversation must go through the insertion search, because that is the path that
+    # measures a detour, proves nobody already booked becomes late, and can say where in the route
+    # the van would stop.
+    #
+    # Leaving both paths legal was not a harmless superset. A live model offered one alternative
+    # instead of three, using the older tools, and the whole search never ran: given two ways to
+    # do a thing, it picked the one it recognised. Removing the choice is the fix; asking the
+    # prompt to prefer one is not.
+
+    # Read-only with respect to the booking. Answers "why this time?" from the policy and the same
+    # figures the offer was built from, rather than from whatever the model recalls.
     "explain": frozenset({
-        "evaluate_slots", "suggest_route_aware_windows", "explain_choice", "send_message", "finish",
-        # All three write nothing, which is what makes them safe on a question. "Why this one?"
-        # is answered with the policy and the same figures the offer was built from, rather than
-        # from whatever the model remembers about a route it can no longer see.
         "retrieve_policy", "get_existing_routes", "find_insertion_options",
+        "explain_choice", "send_message", "finish",
     }),
     # Nothing here may offer, re-solve or reject. The customer said yes to a specific slot.
     "accept": frozenset({"lock_appointment", "send_message", "finish"}),
+    # The fallback search, after a normal offer was declined.
     "reject": frozenset({
-        "record_rejection", "evaluate_slots", "suggest_route_aware_windows",
-        "create_offer", "send_message", "create_exception", "finish",
-        # The fallback search. Without these entries dispatch() refuses them as
-        # not_allowed_for_intent, and a declined offer has nowhere to go but a coordinator.
-        "retrieve_policy", "get_existing_routes", "find_insertion_options",
-        "create_alternative_offer",
+        "record_rejection", "retrieve_policy", "get_existing_routes", "find_insertion_options",
+        "create_alternative_offer", "send_message", "create_exception", "finish",
     }),
+    # The normal offer: one option, proven by the same search the alternatives come from.
     "provide_availability": frozenset({
-        "record_availability", "evaluate_slots", "suggest_route_aware_windows",
-        "create_offer", "send_message", "create_exception", "finish",
-        # The normal offer is proven the same way the alternatives are: belonging to Friday's
-        # region is not evidence that Friday can take you.
-        "retrieve_policy", "get_existing_routes", "find_insertion_options",
-        "create_normal_offer",
+        "record_availability", "retrieve_policy", "get_existing_routes", "find_insertion_options",
+        "create_normal_offer", "send_message", "create_exception", "finish",
     }),
     # A question we cannot answer from the schedule. It may ask, or hand over -- never book.
     "general_support": frozenset({"ask_clarification", "create_exception", "send_message", "finish"}),

@@ -579,13 +579,13 @@ class InsertionEvidence(BaseModel):
 
     source_plan_id: str
     source_plan_version: int
-    anchor_name: str
+    # Stop NUMBERS, never names. An offer is served to the customer's own page, and naming the
+    # people either side of them tells one customer who the others are. The position says
+    # everything the panel needs and identifies nobody.
     anchor_stop_number: int
     anchor_distance_km: float
     placement: str
     insert_position: int
-    previous_stop: str
-    next_stop: str
     added_distance_km: float
     added_minutes: int
     expected_arrival: Time

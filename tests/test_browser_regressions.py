@@ -39,6 +39,18 @@ def client(temp_db, monkeypatch):
     from fastapi.testclient import TestClient
 
     monkeypatch.setattr(config.settings, "demo_base_date", BASE.isoformat())
+
+    # Both cluster days must carry a published route, or there is no coordination cycle and every
+    # conversation escalates. That is the correct behaviour -- a customer may only be inserted
+    # into a route that exists -- so the fixture has to supply the world the flow assumes.
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "scripts"))
+    import seed_test_clients
+
+    seed_test_clients.seed()
+
     from dispatch_agent.webapp.main import app
 
     return TestClient(app)
