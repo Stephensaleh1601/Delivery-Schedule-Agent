@@ -266,16 +266,17 @@ export default function ChatPage() {
                     )}
                   </>
                 )}
+
+                {/* Inside the wallpaper, under the last message -- where a status line belongs in
+                    a chat. Outside it, the phone's own dark-green header shows through and the
+                    chip sits on a green strip. */}
+                {orderId && agentProgress && agentProgress.stages.length > 0 && (
+                  <div className="flex pt-1">
+                    <ThinkingChip progress={agentProgress} onOpen={() => setTraceOpen(true)} />
+                  </div>
+                )}
               </div>
             </Wallpaper>
-
-            {/* Under the latest message, so a judge watching the thread sees that the agent is
-                working rather than a spinner. One line here; the detail is an overlay. */}
-            {orderId && agentProgress && agentProgress.stages.length > 0 && (
-              <div className="flex px-3 pt-2">
-                <ThinkingChip progress={agentProgress} onOpen={() => setTraceOpen(true)} />
-              </div>
-            )}
 
             {orderId && !confirmed && (
               <QuickReplies

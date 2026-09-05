@@ -112,3 +112,47 @@ def test_a_read_only_intent_is_never_given_a_way_to_book(intent):
         "lock_appointment", "create_offer", "create_normal_offer",
         "create_alternative_offer", "record_rejection", "record_availability",
     }
+
+
+def test_a_run_may_not_end_with_an_unsent_reply():
+    """The worst failure a conversation can have: the agent writes something for the customer,
+    logs that it wrote it, and stops.
+
+    It happened. "why this timing?" before any offer existed was read as unclear, the model asked
+    a clarification, saw wording was ready, asked again, and finished -- leaving a person watching
+    a thread that had simply stopped answering.
+    """
+    ctx = _ctx("unclear", scratch={"customer_message": "Which day suits you?"})
+
+    legal = tools.legal_actions({}, ctx)
+
+    assert "send_message" in legal
+    assert "finish" not in legal, "ending is not allowed while a reply is written but unsent"
+
+
+def test_finishing_is_allowed_again_once_the_reply_is_sent():
+    ctx = _ctx("unclear", scratch={"customer_message": "Which day suits you?"})
+    ctx.succeeded.add("send_message")
+
+    assert tools.legal_actions({}, ctx) == ["finish"]
+
+
+def test_ending_is_not_withheld_where_there_is_no_way_to_send():
+    """The guard must never trap the loop. An intent with no `send_message` in scope can still
+    finish, whatever is sitting in the scratch space."""
+    ctx = tools.ToolContext(repo=None)
+    ctx.allowed_tools = frozenset({"finish"})
+    ctx.scratch["customer_message"] = "Which day suits you?"
+
+    assert tools.legal_actions({}, ctx) == ["finish"]
+
+
+def test_asking_the_same_question_twice_in_one_run_is_refused():
+    """Same duplicate-action failure as sending the same offer three times."""
+    assert "ask_clarification" in tools.ONCE_PER_RUN
+
+    ctx = _ctx("unclear")
+    assert "ask_clarification" in tools.legal_actions({}, ctx)
+
+    ctx.succeeded.add("ask_clarification")
+    assert "ask_clarification" not in tools.legal_actions({}, ctx)

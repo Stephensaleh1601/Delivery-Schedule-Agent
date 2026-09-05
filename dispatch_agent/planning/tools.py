@@ -648,6 +648,10 @@ INTENT_TOOLS: dict[str, frozenset[str]] = {
 # stopped it, and the idempotent second lock only looked harmless.
 ONCE_PER_RUN = frozenset({
     "send_message", "lock_appointment", "create_offer", "create_exception",
+    # Asking the same question three times in one run is the same duplicate-action failure as
+    # sending the same offer three times. It happened: the model called this, saw wording had been
+    # prepared, called it again, and finished without ever sending any of it.
+    "ask_clarification",
     # Same rule, same reason: a second offer in one run is a second set of choices in the
     # customer's thread, and whichever arrives last is the one they answer.
     "create_normal_offer", "create_alternative_offer",
@@ -762,6 +766,18 @@ def legal_actions(state: dict, ctx: ToolContext) -> list[str]:
     # a second action they will never see a message about.
     if "send_message" in ctx.succeeded:
         legal = {"finish"}
+
+    # A run that has written something for the customer may not end without sending it. The
+    # failure this prevents is the worst kind in a conversation: the agent asked a question,
+    # logged that it asked, and finished -- leaving a person watching a thread that simply
+    # stopped. Only withheld while sending is actually available, so this can never trap the loop
+    # in an intent that has no `send_message` to reach.
+    if (
+        "send_message" in legal
+        and "send_message" not in ctx.succeeded
+        and (ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message"))
+    ):
+        legal.discard("finish")
 
     return sorted(legal)
 

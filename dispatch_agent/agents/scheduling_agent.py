@@ -660,6 +660,36 @@ def _decide_node(ctx: tools.ToolContext, decider: DecisionAgent, fallback: Decis
                     "fallback_reason": reason,
                 },
             }
+        # The gate has to bind the decision, not merely inform it. `dispatch()` enforces the
+        # INTENT scope, which is wider, and `finish` never reaches dispatch at all -- it
+        # short-circuits the graph. So a model that answered "finish" could end a turn the gate
+        # had already ruled out, which is how a run asked the customer a question, logged that it
+        # asked, and stopped without sending it.
+        if decision.action not in legal:
+            forced = None
+            if len(legal) == 1:
+                forced = legal[0]
+            elif decision.action == "finish":
+                # Ending is the one illegal choice with no other guard behind it.
+                forced = "send_message" if "send_message" in legal else legal[0]
+
+            if forced is not None:
+                return {
+                    "pending_decision": ActionDecision(
+                        action=forced,
+                        reason_summary=(
+                            f"{forced.replace('_', ' ').capitalize()} is the only step still "
+                            f"permitted here."
+                        ),
+                        arguments={"order_id": ctx.order.id} if ctx.order else {},
+                    ),
+                    "step_provenance": {
+                        "decider": "controller",
+                        "model_id": None,
+                        "fallback_reason": None,
+                    },
+                }
+
         return {
             "pending_decision": decision,
             "step_provenance": {"decider": primary, "model_id": model_id, "fallback_reason": None},

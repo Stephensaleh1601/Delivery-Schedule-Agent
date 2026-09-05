@@ -86,6 +86,7 @@ const GROUPS: Array<{ id: string; label: string; keys: (key: string) => boolean 
     keys: (k) => k === "create_normal_offer" || k === "create_alternative_offer",
   },
   { id: "explain", label: "Explained the choice", keys: (k) => k === "explain_choice" },
+  { id: "ask", label: "Asked you a question", keys: (k) => k === "ask_clarification" },
   { id: "escalate", label: "Handed over to a coordinator", keys: (k) => k === "create_exception" },
   { id: "confirm", label: "Confirmed your booking", keys: (k) => k === "lock_appointment" },
   { id: "reply", label: "Sent the reply", keys: (k) => k === "send_message" },
@@ -110,8 +111,13 @@ export function summarise(stages: AgentProgressStage[]): Headline[] {
       thinking += stage.seconds;
       continue;
     }
-    const group = GROUPS.find((g) => g.keys(stage.key));
-    if (!group) continue;
+    // Falls back to the stage's own label rather than vanishing. A step nobody has grouped yet
+    // is still a step that happened, and dropping it makes the count lie.
+    const group = GROUPS.find((g) => g.keys(stage.key)) ?? {
+      id: stage.key,
+      label: stage.label,
+      keys: () => false,
+    };
 
     const existing = out.find((h) => h.id === group.id);
     if (existing) {
