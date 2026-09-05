@@ -27,7 +27,7 @@ import {
   type PlanVersion,
 } from "@/lib/api";
 import { formatDate, parseDate } from "@/lib/format";
-import { ProgressChip, ProgressPanel, useAgentProgress } from "@/components/AgentProgress";
+import { ThinkingChip, ThinkingOverlay, useAgentProgress } from "@/components/AgentProgress";
 import { useResource } from "@/lib/useResource";
 
 /**
@@ -219,6 +219,19 @@ export default function ChatPage() {
     >
       {boot.error ? <ErrorPanel error={boot.error} onRetry={boot.reload} /> : null}
 
+      {/* Mounted at page level, not inside the phone column: the trace needs room to be read,
+          and squeezing it into 380px is what made its rows collide in the first place. */}
+      {traceOpen && agentProgress && (
+        <ThinkingOverlay
+          progress={agentProgress}
+          onClose={() => setTraceOpen(false)}
+          onRetry={() => {
+            const last = [...messages].reverse().find((m) => m.direction === "inbound");
+            if (last) void send(last.body);
+          }}
+        />
+      )}
+
       <div className="enter grid grid-cols-[380px_minmax(0,1fr)] items-start gap-6">
         {/* -- the phone -------------------------------------------------- */}
         <div className="sticky top-[74px] flex flex-col gap-3">
@@ -256,24 +269,11 @@ export default function ChatPage() {
               </div>
             </Wallpaper>
 
-            {/* What the agent is doing, from real backend events. Under the latest message, so a
-                judge watching the thread sees the work rather than a spinner. */}
+            {/* Under the latest message, so a judge watching the thread sees that the agent is
+                working rather than a spinner. One line here; the detail is an overlay. */}
             {orderId && agentProgress && agentProgress.stages.length > 0 && (
-              <div className="flex flex-col gap-1.5 px-3 pt-2">
-                <ProgressChip
-                  progress={agentProgress}
-                  open={traceOpen}
-                  onToggle={() => setTraceOpen((v) => !v)}
-                />
-                {traceOpen && (
-                  <ProgressPanel
-                    progress={agentProgress}
-                    onRetry={() => {
-                      const last = [...messages].reverse().find((m) => m.direction === "inbound");
-                      if (last) void send(last.body);
-                    }}
-                  />
-                )}
+              <div className="flex px-3 pt-2">
+                <ThinkingChip progress={agentProgress} onOpen={() => setTraceOpen(true)} />
               </div>
             )}
 
