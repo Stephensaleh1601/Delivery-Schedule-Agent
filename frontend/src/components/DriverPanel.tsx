@@ -21,11 +21,11 @@ export function DriverPanel({ sent, onClose }: { sent: DriverDispatch; onClose: 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-6">
       <div className="flex max-h-full w-full max-w-[420px] flex-col gap-3 overflow-y-auto">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between rounded-lg bg-surface px-3 py-2">
           <Eyebrow>Sent to driver</Eyebrow>
           <button
             onClick={onClose}
-            className="rounded px-2 py-1 text-[12px] text-paper/80 hover:text-paper"
+            className="rounded px-2 py-1 text-[12px] text-ink-soft hover:bg-sunk hover:text-ink"
           >
             Close
           </button>
@@ -43,7 +43,7 @@ export function DriverPanel({ sent, onClose }: { sent: DriverDispatch; onClose: 
           </Wallpaper>
         </Phone>
 
-        <div className="flex flex-wrap items-center gap-2 rounded-lg bg-paper p-3">
+        <div className="flex flex-wrap items-center gap-2 rounded-lg bg-surface p-3">
           <Pill tone="locked">{`Route v${sent.plan_version}`}</Pill>
           <Pill>{`${sent.stop_count} stops`}</Pill>
           <Pill>{formatDate(sent.date)}</Pill>

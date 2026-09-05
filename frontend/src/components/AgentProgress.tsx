@@ -66,7 +66,7 @@ function mark(state: string): string {
 
 function markTone(state: string): string {
   if (state === "done") return "text-locked";
-  if (state === "failed") return "text-danger";
+  if (state === "failed") return "text-alert";
   if (state === "running") return "text-accent animate-pulse";
   return "text-ink-faint";
 }
@@ -95,8 +95,8 @@ export function ThinkingChip({
         "flex items-center gap-1.5 self-start rounded-full border px-2.5 py-1",
         "text-[12px] transition-colors",
         failed
-          ? "border-danger/40 bg-danger/5 text-danger hover:bg-danger/10"
-          : "border-rail bg-paper text-ink-soft hover:bg-wash hover:text-ink",
+          ? "border-alert-edge bg-alert-wash text-alert hover:bg-alert-wash"
+          : "border-rail bg-surface text-ink-soft hover:bg-sunk hover:text-ink",
       )}
       title="See what the agent did"
     >
@@ -165,7 +165,7 @@ export function ThinkingOverlay({
       onClick={onClose}
     >
       <div
-        className="flex max-h-[82vh] w-full max-w-[520px] flex-col overflow-hidden rounded-xl bg-paper shadow-[var(--shadow-lift)]"
+        className="flex max-h-[82vh] w-full max-w-[520px] flex-col overflow-hidden rounded-xl bg-surface shadow-[var(--shadow-lift)]"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-start justify-between gap-3 border-b border-rail px-4 py-3">
@@ -180,7 +180,7 @@ export function ThinkingOverlay({
           </div>
           <button
             onClick={onClose}
-            className="shrink-0 rounded px-2 py-1 text-[12px] text-ink-soft hover:bg-wash hover:text-ink"
+            className="shrink-0 rounded px-2 py-1 text-[12px] text-ink-soft hover:bg-sunk hover:text-ink"
           >
             Close
           </button>
@@ -193,21 +193,21 @@ export function ThinkingOverlay({
         </ul>
 
         {(progress.summary || failed || progress.run_id) && (
-          <footer className="flex flex-col gap-2 border-t border-rail bg-wash/50 px-4 py-3">
+          <footer className="flex flex-col gap-2 border-t border-rail bg-sunk/60 px-4 py-3">
             {progress.summary && progress.state !== "running" && (
               <p className="text-[12.5px] leading-snug text-ink">{progress.summary}</p>
             )}
 
             {failed && (
               <div className="flex items-center justify-between gap-3">
-                <span className="text-[12px] text-danger">Failed at “{failed.label}”.</span>
+                <span className="text-[12px] text-alert">Failed at “{failed.label}”.</span>
                 {onRetry && (
                   <button
                     onClick={() => {
                       onClose();
                       onRetry();
                     }}
-                    className="rounded border border-rail bg-paper px-2.5 py-1 text-[12px] hover:bg-wash"
+                    className="rounded border border-rail bg-surface px-2.5 py-1 text-[12px] hover:bg-sunk"
                   >
                     Retry
                   </button>
