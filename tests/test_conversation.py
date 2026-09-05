@@ -102,8 +102,10 @@ def test_tuesday_after_one():
     reading it that way would produce a window outside the working day and an odd refusal."""
     said = language.interpret("Any time after 1 on Friday")
 
+    # Open-ended "after 1" runs to the arrival cutoff, which is the last time we will promise
+    # anyone -- not to the depot's own deadline.
     assert [(w.date, w.window.start, w.window.end) for w in said.windows] == [
-        (FRIDAY, time(13, 0), time(18, 0))
+        (FRIDAY, time(13, 0), config.settings.arrival_cutoff)
     ]
 
 
@@ -342,7 +344,7 @@ def test_suggestions_stay_inside_the_horizon_and_working_hours(temp_db):
     for suggestion in negotiation.route_aware_windows(order, CandidateService(repo=temp_db)):
         assert PlanningClock.is_within_horizon(suggestion.date)
         assert suggestion.window.start >= config.settings.work_day_start
-        assert suggestion.window.end <= config.settings.work_day_end
+        assert suggestion.window.end <= config.settings.arrival_cutoff
 
 
 def test_at_most_two_alternatives_are_offered(temp_db):

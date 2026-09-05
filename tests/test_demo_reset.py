@@ -117,7 +117,7 @@ def test_a_booking_turns_the_baseline_into_v2(seeded):
         if job.id == outcome.job.id or not job.locked_window:
             continue
         assert job.locked_window.start <= stop.arrival_window.start
-        assert stop.arrival_window.end <= job.locked_window.end
+        assert stop.arrival_window.start <= job.locked_window.end
 
 
 def test_reset_preserves_the_provider_caches(tmp_path, monkeypatch):

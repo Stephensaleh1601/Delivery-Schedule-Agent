@@ -81,11 +81,22 @@ def _normalised_windows(job: JobRecord, day_start: int, day_end: int, require_fi
     and 13:00-14:00) would otherwise produce RemoveInterval(781, 779) -- an inverted, meaningless
     range. Merging first guarantees every gap we punch out is real and non-empty.
     """
+    # A locked window is a promised delivery SLOT, and a slot is a promise about arrival: we said
+    # we would turn up between 5 and 9, not that we would be finished by 9. Reserving the service
+    # duration inside it would shorten every slot we promise by the job length -- an evening slot
+    # would silently stop accepting arrivals after 20:45 -- and at the limit it pins the arrival
+    # exactly, so one leg re-estimating by a minute makes the day infeasible for everyone on it.
+    #
+    # Stated availability is the opposite case and keeps the reservation: "I'm home 9 to 9:30"
+    # says when the customer is THERE, so a 30-minute job arriving at 9:22 runs through a gap
+    # they told us about.
+    reserve_service = require_fit and not job.is_locked
+
     raw: NodeWindows = []
     for window in _effective_windows(job):
         start = max(day_start, _minutes_since_midnight(window.start))
         end = min(day_end, _minutes_since_midnight(window.end))
-        if require_fit:
+        if reserve_service:
             # CumulVar is the ARRIVAL time, so reserving the service duration here is what makes
             # "finishes inside the window" true rather than merely "starts inside it".
             end -= job.duration_minutes
@@ -144,21 +155,28 @@ def sequence_day(
         matrix = routing_client.matrix(points)
 
     day_start = _minutes_since_midnight(settings.work_day_start)
-    day_end = _minutes_since_midnight(settings.work_day_end)
+    day_end = _minutes_since_midnight(settings.arrival_cutoff)
     limit = time_limit_seconds or settings.solver_time_limit_seconds
 
-    # node 0 is the depot; nodes 1..n are jobs[0..n-1]
-    windows: list[NodeWindows] = [[(day_start, day_end)]]
+    # node 0 is the depot; nodes 1..n are jobs[0..n-1].
+    #
+    # The depot's window runs to the HARD route end, not to the arrival cutoff. They are different
+    # deadlines: the cutoff is the latest we will promise a customer we arrive, while the hard end
+    # is the latest the van can be back. A stop arriving at 20:55 still has its service and its
+    # drive home ahead of it, and bounding the depot at the cutoff would make every late-evening
+    # delivery infeasible -- silently deleting the evening window rather than reporting anything.
+    route_end = _minutes_since_midnight(settings.hard_route_end)
+    windows: list[NodeWindows] = [[(day_start, route_end)]]
     for job in jobs:
         windows.append(
             _normalised_windows(job, day_start, day_end, settings.require_service_within_window)
         )
 
-    solution, model = _solve(jobs, matrix, windows, day_start, day_end, limit)
+    solution, model = _solve(jobs, matrix, windows, day_start, route_end, limit)
     if solution is not None:
         return _extract(jobs, matrix, delivery_date, solution, model)
 
-    raise _diagnose(jobs, matrix, windows, delivery_date, day_start, day_end, limit)
+    raise _diagnose(jobs, matrix, windows, delivery_date, day_start, day_end, route_end, limit)
 
 
 def _solve(
@@ -166,7 +184,7 @@ def _solve(
     matrix: list[list[int]],
     windows: list[NodeWindows],
     day_start: int,
-    day_end: int,
+    route_end: int,
     limit: int,
 ):
     """Build and solve one model. Returns (solution|None, model_bits) -- OR-Tools hands back
@@ -186,8 +204,12 @@ def _solve(
 
     routing.AddDimension(
         transit_callback_index,
-        day_end - day_start,  # slack: how long a vehicle may wait for a window to open
-        day_end,  # capacity: cumul values are absolute minutes-since-midnight, up to day_end
+        route_end - day_start,  # slack: how long a vehicle may wait for a window to open
+        # Capacity: cumul values are absolute minutes-since-midnight. This is the HARD route end,
+        # not the arrival cutoff -- the dimension caps every cumul including the depot's closing
+        # one, so a capacity at the cutoff would forbid the van getting home after it and quietly
+        # make every late-evening delivery infeasible.
+        route_end,
         False,
         "Time",
     )
@@ -255,6 +277,7 @@ def _diagnose(
     delivery_date: Date,
     day_start: int,
     day_end: int,
+    route_end: int,
     limit: int,
 ) -> UnsolvableDayError:
     """Work out *why* a day is infeasible, and in particular whether the confirmed appointments
@@ -280,7 +303,7 @@ def _diagnose(
             out.append(windows[i + 1] if keep_lock else [(day_start, day_end)])
         return out
 
-    solution, _ = _solve(jobs, matrix, relaxed(), day_start, day_end, limit)
+    solution, _ = _solve(jobs, matrix, relaxed(), day_start, route_end, limit)
     if solution is not None:
         unconfirmed = [j.customer_name for i, j in enumerate(jobs) if i not in locked_indices]
         return UnsolvableDayError(
@@ -292,7 +315,7 @@ def _diagnose(
     blocking_job_id = None
     if len(locked_indices) <= 8:
         for i in locked_indices:
-            solution, _ = _solve(jobs, matrix, relaxed(skip=i), day_start, day_end, limit)
+            solution, _ = _solve(jobs, matrix, relaxed(skip=i), day_start, route_end, limit)
             if solution is not None:
                 blocking_job_id = jobs[i].id
                 break

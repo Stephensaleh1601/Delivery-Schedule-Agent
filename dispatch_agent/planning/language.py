@@ -107,7 +107,7 @@ def clamp_to_working_day(window: TimeWindow) -> TimeWindow | None:
     saying so is better than silently delivering at 5.
     """
     start = max(window.start, settings.work_day_start)
-    end = min(window.end, settings.work_day_end)
+    end = min(window.end, settings.arrival_cutoff)
     if start >= end:
         return None
     return TimeWindow(start=start, end=end)
@@ -236,8 +236,8 @@ def parse_window(text: str) -> TimeWindow | None:
     after = _AFTER.search(lowered)
     if after:
         start = parse_time(after.group("t"), assume_afternoon=True)
-        if start and start < settings.work_day_end:
-            return clamp_to_working_day(TimeWindow(start=start, end=settings.work_day_end))
+        if start and start < settings.arrival_cutoff:
+            return clamp_to_working_day(TimeWindow(start=start, end=settings.arrival_cutoff))
 
     before = _BEFORE.search(lowered)
     if before:
@@ -250,7 +250,7 @@ def parse_window(text: str) -> TimeWindow | None:
             return TimeWindow(start=start, end=end)
 
     if re.search(r"\b(any\s*time|anytime|whole\s*day|all\s*day|any)\b", lowered):
-        return TimeWindow(start=settings.work_day_start, end=settings.work_day_end)
+        return TimeWindow(start=settings.work_day_start, end=settings.arrival_cutoff)
 
     at = _AT.search(lowered)
     if at:
@@ -259,7 +259,7 @@ def parse_window(text: str) -> TimeWindow | None:
             # A point in time is not a window. Read it as the two hours around it, which is the
             # width we would promise anyway, then let the solver narrow it.
             start = max(settings.work_day_start, moment)
-            end = min(settings.work_day_end, Time(min(23, start.hour + 2), start.minute))
+            end = min(settings.arrival_cutoff, Time(min(23, start.hour + 2), start.minute))
             if start < end:
                 return TimeWindow(start=start, end=end)
 
@@ -270,7 +270,7 @@ def parse_window(text: str) -> TimeWindow | None:
         moment = parse_time(bare_time.group("t"), assume_afternoon=True)
         if moment:
             start = max(settings.work_day_start, moment)
-            end = min(settings.work_day_end, Time(min(23, start.hour + 2), start.minute))
+            end = min(settings.arrival_cutoff, Time(min(23, start.hour + 2), start.minute))
             if start < end:
                 return TimeWindow(start=start, end=end)
 
@@ -546,7 +546,7 @@ def _extract_windows(text: str, context_date: Date | None = None) -> list[Stated
 def _dates_without_times(text: str) -> list[StatedWindow]:
     """Days the customer named with no time attached, as whole working days."""
     base = today()
-    whole_day = TimeWindow(start=settings.work_day_start, end=settings.work_day_end)
+    whole_day = TimeWindow(start=settings.work_day_start, end=settings.arrival_cutoff)
 
     found: list[StatedWindow] = []
     seen: set[Date] = set()

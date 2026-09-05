@@ -254,7 +254,7 @@ def test_a_replan_cannot_move_a_confirmed_appointment(temp_db):
 
     stop = next(s for s in plan.sequence.stops if s.job_id == promised.id)
     assert promised.locked_window.start <= stop.arrival_window.start
-    assert stop.arrival_window.end <= promised.locked_window.end
+    assert stop.arrival_window.start <= promised.locked_window.end
 
 
 def test_assert_locks_respected_catches_a_plan_that_would_move_someone(temp_db):
@@ -354,7 +354,7 @@ def test_end_to_end_booking_to_locked_route(temp_db):
         stopped_job = temp_db.get_job(stop.job_id)
         if stopped_job.is_locked:
             assert stopped_job.locked_window.start <= stop.arrival_window.start
-            assert stop.arrival_window.end <= stopped_job.locked_window.end
+            assert stop.arrival_window.start <= stopped_job.locked_window.end
 
     # 6. The customer was actually told, and it is recorded.
     sent = [m for m in temp_db.messages(order.id) if m.direction is MessageDirection.OUTBOUND]

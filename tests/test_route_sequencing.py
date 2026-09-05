@@ -126,7 +126,7 @@ def test_a_locked_promise_is_honoured_while_the_rest_is_reordered():
 
     stop = next(s for s in sequence.stops if s.job_id == locked.id)
     assert locked.locked_window.start <= stop.arrival_window.start
-    assert stop.arrival_window.end <= locked.locked_window.end
+    assert stop.arrival_window.start <= locked.locked_window.end
 
 
 def test_the_solver_is_deterministic_enough_to_demo():

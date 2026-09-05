@@ -180,7 +180,7 @@ def _planning_rules(order) -> list[str]:
     duration = getattr(order, "duration_minutes", None)
     rules = [
         "Confirmed promises are never moved to fit a new booking",
-        f"Driver hours {settings.work_day_start:%H:%M}–{settings.work_day_end:%H:%M}, "
+        f"Driver hours {settings.work_day_start:%H:%M}–{settings.arrival_cutoff:%H:%M}, "
         f"overtime counted after {settings.soft_day_end:%H:%M}",
         f"Every route starts and ends at {settings.depot_address}",
     ]

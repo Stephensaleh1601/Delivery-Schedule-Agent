@@ -79,7 +79,7 @@ def test_the_other_customers_keep_their_promised_windows(temp_db):
 
     stop = next(s for s in outcome.plan.sequence.stops if s.job_id == kept.id)
     assert kept.locked_window.start <= stop.arrival_window.start
-    assert stop.arrival_window.end <= kept.locked_window.end
+    assert stop.arrival_window.start <= kept.locked_window.end
 
 
 def test_only_customers_who_opted_in_are_considered(temp_db):
@@ -303,7 +303,7 @@ def test_the_other_customers_on_the_vacated_day_keep_their_windows(temp_db):
     plan = temp_db.active_plan(days[1])
     stop = next(s for s in plan.sequence.stops if s.job_id == stayed.id)
     assert stayed.locked_window.start <= stop.arrival_window.start
-    assert stop.arrival_window.end <= stayed.locked_window.end
+    assert stop.arrival_window.start <= stayed.locked_window.end
 
 
 def test_the_freed_date_becomes_evaluable_for_that_customer(temp_db):

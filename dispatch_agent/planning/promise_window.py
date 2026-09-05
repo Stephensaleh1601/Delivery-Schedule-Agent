@@ -80,7 +80,7 @@ def promise_window(
     # Clamp to the working day exactly as the solver does (solver._normalised_windows), so we never
     # offer a window whose edges the solver would silently trim.
     day_start = minutes_of(settings.work_day_start)
-    day_end = minutes_of(settings.work_day_end)
+    day_end = minutes_of(settings.arrival_cutoff)
     available_start = max(minutes_of(availability.start), day_start)
     available_end = min(minutes_of(availability.end), day_end)
 

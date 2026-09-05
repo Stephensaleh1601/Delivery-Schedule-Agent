@@ -257,7 +257,7 @@ def test_bootstrap_carries_the_constants_a_ui_would_otherwise_hardcode(client):
     assert body["map"]["depot"]["lat"]
     operating = body["operating"]
     assert operating["work_day_start"] == "09:00"
-    assert operating["soft_day_end"] == "17:00"
+    assert operating["soft_day_end"] == "22:00"
     assert operating["day_opening_penalty_minutes"] == config.settings.day_opening_penalty_minutes
 
 

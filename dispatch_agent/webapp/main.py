@@ -467,7 +467,7 @@ def bootstrap() -> dict:
         },
         "operating": {
             "work_day_start": settings.work_day_start.strftime("%H:%M"),
-            "work_day_end": settings.work_day_end.strftime("%H:%M"),
+            "work_day_end": settings.arrival_cutoff.strftime("%H:%M"),
             "soft_day_end": settings.soft_day_end.strftime("%H:%M"),
             "day_opening_penalty_minutes": settings.day_opening_penalty_minutes,
             "preference_penalty_per_rank": settings.preference_penalty_per_rank,
@@ -1002,8 +1002,9 @@ def metrics() -> dict:
             job = repo.get_job(stop.job_id)
             if job is None or not job.is_locked:
                 continue
-            lock = job.locked_window
-            if not (lock.start <= stop.arrival_window.start and stop.arrival_window.end <= lock.end):
+            # Same predicate the publish-time check uses, deliberately shared: a metric that
+            # disagrees with the guard reports moves that never happened.
+            if not plan_service.promise_kept(job, stop):
                 appointments_moved += 1
 
     outbound = [m for m in repo.messages() if m.direction.value == "outbound"]

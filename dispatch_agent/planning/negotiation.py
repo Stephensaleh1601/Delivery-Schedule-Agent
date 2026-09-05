@@ -181,7 +181,7 @@ def route_aware_windows(
     Returns at most `limit`, and never a date the customer already ruled out.
     """
     exclude = exclude_dates or set()
-    working_day = TimeWindow(start=settings.work_day_start, end=settings.work_day_end)
+    working_day = TimeWindow(start=settings.work_day_start, end=settings.arrival_cutoff)
     # Times this customer has already turned down, per date. Carried onto the search so a
     # suggestion can never be the window they just rejected -- which is not merely untidy, it is
     # the agent appearing not to have listened, immediately after being told no.

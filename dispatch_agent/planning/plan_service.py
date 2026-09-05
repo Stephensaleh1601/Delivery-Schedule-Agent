@@ -32,6 +32,7 @@ from dispatch_agent.models import (
     PlanStatus,
     PlanningStatus,
     RoutePlanVersion,
+    StopAssignment,
 )
 from dispatch_agent.solver import LockedPlanInfeasibleError, sequence_day
 
@@ -69,17 +70,42 @@ def content_hash(sequence: DaySequence) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
+def promise_kept(job: JobRecord, stop: StopAssignment) -> bool:
+    """Whether this stop still honours what the customer was promised.
+
+    The one definition of that question. It was written out three times -- here, in the
+    coordinator metric, and in the tests -- and three copies of a predicate is three chances for
+    the published plan, the headline number and the test suite to disagree about whether anybody
+    was moved.
+
+    Measured on the ARRIVAL. A locked window says the van turns up between 5 and 9; it does not
+    say the delivery is finished by 9, and solver._normalised_windows deliberately stops reserving
+    the service duration inside a locked window for exactly that reason.
+    """
+    lock = job.locked_window
+    return bool(lock) and lock.start <= stop.arrival_window.start <= lock.end
+
+
 def assert_locks_respected(sequence: DaySequence, jobs_by_id: dict[str, JobRecord]) -> None:
-    """Fail loudly if a published plan would move someone who was already promised a time."""
+    """Fail loudly if a published plan would move someone who was already promised a time.
+
+    Checked on the ARRIVAL, because that is what a locked window promises: we said the van would
+    turn up between 5 and 9, not that it would be finished by 9. Requiring the whole visit inside
+    the lock re-imposes the service reservation that solver._normalised_windows deliberately drops
+    for locked jobs -- which does not merely reject a few plans, it rejects them at publish time,
+    after the customer has already accepted, surfacing as "that slot was taken while we were
+    confirming" for a slot nobody took.
+    """
     for stop in sequence.stops:
         job = jobs_by_id.get(stop.job_id)
         if job is None or not job.is_locked:
             continue
         lock = job.locked_window
-        if not (lock.start <= stop.arrival_window.start and stop.arrival_window.end <= lock.end):
+        if not promise_kept(job, stop):
             raise LockedPlanInfeasibleError(
-                f"{job.customer_name} was promised {lock.start:%H:%M}-{lock.end:%H:%M} but the "
-                f"plan places them at {stop.arrival_window.start:%H:%M}-{stop.arrival_window.end:%H:%M}",
+                f"{job.customer_name} was promised arrival between {lock.start:%H:%M} and "
+                f"{lock.end:%H:%M} but the plan has the van reaching them at "
+                f"{stop.arrival_window.start:%H:%M}",
                 delivery_date=sequence.delivery_date,
                 locked_job_ids=[job.id],
                 blocking_job_id=job.id,
