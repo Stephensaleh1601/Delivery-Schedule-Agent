@@ -614,16 +614,26 @@ INTENT_TOOLS: dict[str, frozenset[str]] = {
     # dates, so it answered by explaining Saturday.
     "explain": frozenset({
         "evaluate_slots", "suggest_route_aware_windows", "explain_choice", "send_message", "finish",
+        # All three write nothing, which is what makes them safe on a question. "Why this one?"
+        # is answered with the policy and the same figures the offer was built from, rather than
+        # from whatever the model remembers about a route it can no longer see.
+        "retrieve_policy", "get_existing_routes", "find_insertion_options",
     }),
     # Nothing here may offer, re-solve or reject. The customer said yes to a specific slot.
     "accept": frozenset({"lock_appointment", "send_message", "finish"}),
     "reject": frozenset({
         "record_rejection", "evaluate_slots", "suggest_route_aware_windows",
         "create_offer", "send_message", "create_exception", "finish",
+        # The fallback search. Without these entries dispatch() refuses them as
+        # not_allowed_for_intent, and a declined offer has nowhere to go but a coordinator.
+        "retrieve_policy", "get_existing_routes", "find_insertion_options",
     }),
     "provide_availability": frozenset({
         "record_availability", "evaluate_slots", "suggest_route_aware_windows",
         "create_offer", "send_message", "create_exception", "finish",
+        # The normal offer is proven the same way the alternatives are: belonging to Friday's
+        # region is not evidence that Friday can take you.
+        "retrieve_policy", "get_existing_routes", "find_insertion_options",
     }),
     # A question we cannot answer from the schedule. It may ask, or hand over -- never book.
     "general_support": frozenset({"ask_clarification", "create_exception", "send_message", "finish"}),
@@ -741,4 +751,4 @@ def render_argument_help() -> str:
 # deliberately: that module imports `tool`, `ToolResult` and `_Args` from here, so it can only be
 # loaded once this module is fully defined. Importing either module now yields the whole allow-list,
 # which matters because `allowed_actions()` is what the model is shown.
-from dispatch_agent.planning import negotiation_tools as _negotiation_tools  # noqa: E402,F401
+from dispatch_agent.planning import insertion_tools, negotiation_tools as _negotiation_tools  # noqa: E402,F401

@@ -88,6 +88,10 @@ class Settings:
     demo_base_date: str = os.getenv("DEMO_BASE_DATE", "")
     # Notice the operation needs: a customer may only be offered a date this many days out.
     horizon_lead_days_min: int = int(os.getenv("HORIZON_LEAD_DAYS_MIN", "2"))
+    # A customer may only be inserted next to an existing stop within this many kilometres.
+    # Straight-line, and used only to decide which positions are worth testing -- the ranking
+    # is by added detour, which is a different and larger number.
+    anchor_radius_km: float = float(os.getenv("ANCHOR_RADIUS_KM", "10"))
     # How many weeks ahead to look for a Friday/Saturday pair that is fully published, before
     # giving up and escalating. A bound, not a target -- in practice the answer is this week or
     # next, and this only stops an empty database scanning forever.
