@@ -366,8 +366,8 @@ function Greeting({ boot }: { boot: Bootstrap | null }) {
   return (
     <>
       <Bubble from="them" time="9:02 am">
-        Hi! This is Majestic Fighters Furniture Delivery. I can book your sofa, bed or cabinet
-        delivery.
+        Hi! This is Majestic Fighters Fresh Pet Food. Your food is made fresh and can&apos;t be
+        left at the door, so I just need a time you&apos;ll be home.
       </Bubble>
       <Bubble from="them" time="9:02 am">
         {`Just tell me when you're free — anything between ${formatDate(boot.horizon.first)} and ${formatDate(boot.horizon.last)}. One time is plenty.`}
@@ -425,8 +425,8 @@ function suggestReplies(
 
   if (messageCount === 0) {
     return [
-      { id: "I'm free Saturday morning.", label: "Saturday morning" },
-      { id: "Any time after 1 on Tuesday.", label: "Tuesday after 1" },
+      { id: "Friday morning works for me.", label: "Friday morning" },
+      { id: "I'm free Saturday afternoon.", label: "Saturday afternoon" },
     ];
   }
   return [];
@@ -484,7 +484,7 @@ function IntroForm({
   // old default shared a district with a seeded stop, so the map drew a 0 km leg between them and
   // the whole route looked fabricated.
   const [postal, setPostal] = useState("828761");
-  const [jobType, setJobType] = useState("sofa");
+  const [jobType, setJobType] = useState("pet_food_box");
   const [early, setEarly] = useState(false);
 
   return (
@@ -520,11 +520,10 @@ function IntroForm({
             className={cx(input, "font-mono")}
           />
         </Field>
-        <Field label="Item">
+        <Field label="Order">
           <select value={jobType} onChange={(e) => setJobType(e.target.value)} className={input}>
-            <option value="sofa">Sofa</option>
-            <option value="bed">Bed</option>
-            <option value="cabinet">Cabinet</option>
+            <option value="pet_food_box">Subscription box</option>
+            <option value="one_off_pet_order">One-off order</option>
             <option value="other">Other</option>
           </select>
         </Field>

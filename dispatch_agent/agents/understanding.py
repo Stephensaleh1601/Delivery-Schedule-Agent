@@ -21,7 +21,7 @@ from dispatch_agent.planning import language
 from dispatch_agent.planning.clock import PlanningClock
 
 UNDERSTANDING_SYSTEM_PROMPT = """You are reading one WhatsApp message from a customer of a \
-Singapore furniture delivery company, and classifying what they want by calling the \
+Singapore fresh pet-food delivery company, and classifying what they want by calling the \
 `read_message` tool.
 
 You do NOT schedule anything, calculate anything, or decide what we can deliver. You only say what \

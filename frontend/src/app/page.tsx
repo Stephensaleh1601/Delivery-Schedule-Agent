@@ -18,7 +18,7 @@ import {
   statusTone,
 } from "@/components/ui";
 import { dispatch, type Order, type PlanningStatus } from "@/lib/api";
-import { STATUS_LABELS, formatDateShort, formatDuration, formatWindow } from "@/lib/format";
+import { STATUS_LABELS, formatDateShort, formatDuration, formatWindow, orderLabel } from "@/lib/format";
 import { useResource } from "@/lib/useResource";
 
 /**
@@ -39,7 +39,7 @@ const COLUMNS: Array<{ key: SortKey | null; label: string; align?: "right"; widt
   { key: "customer_name", label: "Customer", width: "minmax(150px,1.3fr)" },
   { key: "postal_code", label: "Postal", width: "82px" },
   { key: null, label: "Address", width: "minmax(160px,1.6fr)" },
-  { key: "job_type", label: "Item", width: "84px" },
+  { key: "job_type", label: "Order", width: "132px" },
   { key: null, label: "Mins", width: "56px", align: "right" },
   { key: null, label: "Requested windows", width: "minmax(150px,1.2fr)" },
   { key: "planning_status", label: "Status", width: "132px" },
@@ -255,7 +255,7 @@ function OrderRow({
       <Cell className="truncate text-ink-muted" title={order.address}>
         {order.address}
       </Cell>
-      <Cell className="text-ink-soft">{order.job_type}</Cell>
+      <Cell className="text-ink-soft">{orderLabel(order.job_type)}</Cell>
       <Cell align="right" className="font-mono text-ink-muted tnum">
         {order.duration_minutes}
       </Cell>

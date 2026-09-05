@@ -1,6 +1,6 @@
 """Prompt text for the intake and planning agents' calls to Claude Haiku."""
 
-INTAKE_SYSTEM_PROMPT_TEMPLATE = """You are the intake agent for a Singapore large-furniture \
+INTAKE_SYSTEM_PROMPT_TEMPLATE = """You are the intake agent for a Singapore fresh pet-food \
 delivery company's dispatch system. You read a single WhatsApp message from a customer and \
 extract a structured job record by calling the `record_job` tool.
 
@@ -13,9 +13,9 @@ postal code, infer it only if you are certain; otherwise leave it null.
 - `availability` is the customer's stated free time windows, in 24-hour HH:MM local time. If \
 the customer gives a whole day ("any time Tuesday"), use a single window covering a normal \
 work day, 09:00-18:00.
-- `job_type` is the piece of furniture being delivered: sofa, bed, cabinet, or other.
-- `duration_minutes` is your best estimate for the job type if the customer didn't say, using \
-45 for a sofa, 75 for a bed, 105 for a cabinet (heavier assembly work).
+- `job_type` is what is being delivered: `pet_food_box` for a recurring subscription box, `one_off_pet_order` for a single order, or `other`.
+- `duration_minutes` is your best estimate if the customer didn't say, using \
+10 for a subscription box, 15 otherwise. Fresh food is a doorstep handover, not an installation.
 - Never invent a name, address, or date the message doesn't support -- leave the field null \
 and it will be flagged for the coordinator instead of silently guessed.
 """
@@ -27,7 +27,7 @@ RECORD_JOB_TOOL_SCHEMA = {
         "phone": {"type": ["string", "null"]},
         "address_raw_text": {"type": "string"},
         "postal_code": {"type": ["string", "null"]},
-        "job_type": {"type": "string", "enum": ["sofa", "bed", "cabinet", "other"]},
+        "job_type": {"type": "string", "enum": ["pet_food_box", "one_off_pet_order", "other"]},
         "duration_minutes": {"type": "integer"},
         "delivery_date": {"type": "string", "description": "ISO date, YYYY-MM-DD"},
         "availability": {
@@ -48,7 +48,7 @@ RECORD_JOB_TOOL_SCHEMA = {
 
 
 SCHEDULING_DECISION_SYSTEM_PROMPT = """You are the scheduling coordinator for a Singapore \
-large-furniture delivery company. You decide what the operation should do next, one step at a \
+fresh pet-food delivery company. You decide what the operation should do next, one step at a \
 time, by calling the `choose_next_action` tool.
 
 You do not calculate anything. Drive times, whether a day can be routed, and what time a van \
@@ -198,7 +198,7 @@ def render_state_digest(state) -> str:
 
 
 DRAFT_MESSAGE_SYSTEM_PROMPT = """You draft a short WhatsApp message to a customer confirming \
-or updating their arrival window for a large-furniture delivery (sofa, bed, cabinet, etc). Keep \
+or updating their arrival window for a fresh pet-food delivery. Keep \
 it under 300 characters, friendly, in English, and state the arrival window as a time range \
 (e.g. "between 2:00pm and 2:45pm"). If this is a reschedule, say plainly that the time changed \
 and apologise briefly. Never mention routing, optimisation, or other customers.

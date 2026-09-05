@@ -18,19 +18,43 @@ def _utcnow() -> datetime:
 
 
 class JobType(str, Enum):
+    """What is being delivered.
+
+    The pet-food values are the live ones. The three furniture values below them are kept only so
+    that rows written before the business changed still validate when they are read back -- this
+    is a string enum persisted straight into SQLite, so removing a member turns old rows into
+    validation errors rather than migrating them. Nothing customer-facing produces them any more.
+    """
+
+    PET_FOOD_BOX = "pet_food_box"
+    ONE_OFF_PET_ORDER = "one_off_pet_order"
+    OTHER = "other"
+
+    # Legacy. Readable, never offered.
     SOFA = "sofa"
     BED = "bed"
     CABINET = "cabinet"
-    OTHER = "other"
 
 
-# Default job duration by furniture type, used when a customer/coordinator doesn't specify one --
-# heavier assembly work (cabinets) gets more time than a straightforward sofa drop-off.
+# The live job types a customer can be booked for. Excludes the legacy furniture values, so an
+# intake schema or a UI dropdown built from this cannot offer one by accident.
+BOOKABLE_JOB_TYPES: tuple[JobType, ...] = (
+    JobType.PET_FOOD_BOX,
+    JobType.ONE_OFF_PET_ORDER,
+    JobType.OTHER,
+)
+
+
+# Default duration when nobody specifies one. Fresh pet food is a doorstep handover -- the driver
+# is on a motorcycle and the customer is expecting them -- so these are minutes, not the hours a
+# furniture delivery with assembly used to take.
 DEFAULT_DURATION_MINUTES_BY_JOB_TYPE: dict[JobType, int] = {
+    JobType.PET_FOOD_BOX: 10,
+    JobType.ONE_OFF_PET_ORDER: 15,
+    JobType.OTHER: 15,
     JobType.SOFA: 45,
     JobType.BED: 75,
     JobType.CABINET: 105,
-    JobType.OTHER: 60,
 }
 
 
