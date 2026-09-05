@@ -57,6 +57,86 @@ export function useAgentProgress(orderId: string | null, active: boolean) {
   return progress;
 }
 
+/** Which headline step a raw stage belongs to.
+ *
+ *  The backend reports finely -- five separate "deciding what to do next" rows, four phases
+ *  inside one search -- because that is what honestly happened. Seventeen rows is not what a
+ *  person wants to read, so the UI groups them into the shape of the work. Nothing is dropped:
+ *  a decision's seconds are charged to the step it decided on, because deciding to read the
+ *  policy is part of reading the policy.
+ */
+const GROUPS: Array<{ id: string; label: string; keys: (key: string) => boolean }> = [
+  { id: "read", label: "Understood your request", keys: (k) => k === "understanding" },
+  {
+    id: "noted",
+    label: "Noted what you told us",
+    keys: (k) => k === "record_availability" || k === "record_rejection",
+  },
+  { id: "policy", label: "Read the delivery policy", keys: (k) => k === "retrieve_policy" },
+  { id: "routes", label: "Loaded the published routes", keys: (k) => k === "get_existing_routes" },
+  {
+    id: "search",
+    label: "Searched both routes for a place to fit you",
+    keys: (k) =>
+      ["find_insertion_options", "nearby", "positions", "timing", "ranking"].includes(k),
+  },
+  {
+    id: "offer",
+    label: "Chose what to offer",
+    keys: (k) => k === "create_normal_offer" || k === "create_alternative_offer",
+  },
+  { id: "explain", label: "Explained the choice", keys: (k) => k === "explain_choice" },
+  { id: "escalate", label: "Handed over to a coordinator", keys: (k) => k === "create_exception" },
+  { id: "confirm", label: "Confirmed your booking", keys: (k) => k === "lock_appointment" },
+  { id: "reply", label: "Sent the reply", keys: (k) => k === "send_message" },
+];
+
+export interface Headline {
+  id: string;
+  label: string;
+  detail: string;
+  seconds: number;
+  state: "running" | "done" | "failed";
+}
+
+export function summarise(stages: AgentProgressStage[]): Headline[] {
+  const out: Headline[] = [];
+  // Time spent by the model choosing the next action. Charged forward to whatever it chose --
+  // shown on its own it is five identical rows that tell a reader nothing.
+  let thinking = 0;
+
+  for (const stage of stages) {
+    if (stage.key.startsWith("decide-")) {
+      thinking += stage.seconds;
+      continue;
+    }
+    const group = GROUPS.find((g) => g.keys(stage.key));
+    if (!group) continue;
+
+    const existing = out.find((h) => h.id === group.id);
+    if (existing) {
+      existing.seconds += stage.seconds + thinking;
+      // The last phase to report something wins: inside the search that is the ranking, which
+      // carries the count a reader actually wants.
+      if (stage.detail) existing.detail = stage.detail;
+      if (stage.state !== "done") existing.state = stage.state;
+    } else {
+      out.push({
+        id: group.id,
+        label: group.label,
+        detail: stage.detail,
+        seconds: stage.seconds + thinking,
+        state: stage.state,
+      });
+    }
+    thinking = 0;
+  }
+
+  // A turn that ended while the model was still choosing still has to account for that time.
+  if (thinking > 0 && out.length > 0) out[out.length - 1].seconds += thinking;
+  return out;
+}
+
 function mark(state: string): string {
   if (state === "done") return "✓";
   if (state === "failed") return "✕";
@@ -81,12 +161,13 @@ export function ThinkingChip({
 }) {
   const running = progress.state === "running";
   const failed = progress.stages.some((s) => s.state === "failed");
+  const steps = summarise(progress.stages);
 
   const label = failed
     ? "Something went wrong — see what happened"
     : running
       ? "Thinking…"
-      : `Thought for ${progress.seconds.toFixed(1)}s · ${progress.stages.length} steps`;
+      : `Thought for ${progress.seconds.toFixed(1)}s · ${steps.length} steps`;
 
   return (
     <button
@@ -108,32 +189,34 @@ export function ThinkingChip({
   );
 }
 
-function Row({ stage }: { stage: AgentProgressStage }) {
+function Row({ step }: { step: Headline }) {
   return (
-    <li className="flex items-start gap-2.5 py-1.5">
-      <span aria-hidden className={cx("mt-[1px] w-3 shrink-0 text-center text-[11px]", markTone(stage.state))}>
-        {mark(stage.state)}
+    <li className="flex items-start gap-2.5 py-2">
+      <span
+        aria-hidden
+        className={cx("mt-[2px] w-3 shrink-0 text-center text-[11px]", markTone(step.state))}
+      >
+        {mark(step.state)}
       </span>
 
-      {/* min-w-0 is what stops a long detail from shoving the duration off the row. */}
+      {/* min-w-0 is what stops a long finding from shoving the duration off the row. */}
       <div className="min-w-0 flex-1">
-        <div className={cx("text-[13px] leading-tight", stage.state === "running" ? "text-ink" : "text-ink-soft")}>
-          {stage.label}
+        <div
+          className={cx(
+            "text-[13px] leading-tight",
+            step.state === "running" ? "text-ink" : "text-ink-soft",
+          )}
+        >
+          {step.label}
         </div>
-        {stage.reason && (
-          <div className="mt-0.5 text-[11.5px] leading-snug text-ink-faint">{stage.reason}</div>
-        )}
-        {stage.detail && (
-          <div className="mt-0.5 text-[11.5px] leading-snug text-ink-soft">{stage.detail}</div>
-        )}
-        {stage.tool && stage.tool !== "(model)" && (
-          <div className="mt-0.5 font-mono text-[10px] text-ink-faint">{stage.tool}</div>
+        {step.detail && (
+          <div className="mt-1 text-[11.5px] leading-snug text-ink-faint">{step.detail}</div>
         )}
       </div>
 
       {/* Where the time actually went. Sub-100ms steps are noise at this scale. */}
-      <span className="shrink-0 pt-[1px] font-mono text-[11px] tabular-nums text-ink-faint">
-        {stage.seconds >= 0.1 ? `${stage.seconds.toFixed(1)}s` : ""}
+      <span className="shrink-0 pt-[2px] font-mono text-[11px] tabular-nums text-ink-faint">
+        {step.seconds >= 0.1 ? `${step.seconds.toFixed(1)}s` : ""}
       </span>
     </li>
   );
@@ -175,7 +258,8 @@ export function ThinkingOverlay({
               What the agent did
             </div>
             <p className="mt-0.5 text-[11.5px] leading-snug text-ink-faint">
-              Every step below is a real action with its real duration — not a progress animation.
+              Real steps with real timings, not an animation. Full tool inputs and results are in
+              the agent drawer.
             </p>
           </div>
           <button
@@ -187,8 +271,8 @@ export function ThinkingOverlay({
         </header>
 
         <ul className="flex-1 divide-y divide-rail/60 overflow-y-auto px-4 py-1">
-          {progress.stages.map((stage) => (
-            <Row key={stage.key} stage={stage} />
+          {summarise(progress.stages).map((step) => (
+            <Row key={step.id} step={step} />
           ))}
         </ul>
 
@@ -215,12 +299,9 @@ export function ThinkingOverlay({
               </div>
             )}
 
-            <p className="text-[11px] text-ink-faint">
-              Full tool inputs and results are in the agent drawer.
-              {progress.run_id && (
-                <span className="ml-1 font-mono text-[10px]">{progress.run_id}</span>
-              )}
-            </p>
+            {progress.run_id && (
+              <p className="font-mono text-[10px] text-ink-faint">{progress.run_id}</p>
+            )}
           </footer>
         )}
       </div>
