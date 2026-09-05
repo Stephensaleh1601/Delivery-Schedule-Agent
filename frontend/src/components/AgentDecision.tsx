@@ -76,6 +76,34 @@ export function AgentDecision({ decision }: { decision: Decision }) {
         </section>
       )}
 
+      {decision.evidence.length > 0 && (
+        <section className="flex flex-col gap-1">
+          <Eyebrow>What the agent checked</Eyebrow>
+          <ul className="flex flex-col gap-0.5">
+            {decision.evidence.map((row) => (
+              <li
+                key={row.text}
+                className="flex gap-2 text-[12.5px] leading-[1.5] text-ink-soft"
+              >
+                <span
+                  aria-hidden
+                  className={cx(
+                    "mt-[5px] text-[10px]",
+                    row.tone === "removed" && "text-ink-faint",
+                    row.tone === "solved" && "text-locked",
+                    row.tone === "found" && "text-accent",
+                    row.tone === "neutral" && "text-ink-faint",
+                  )}
+                >
+                  {row.tone === "removed" ? "−" : row.tone === "solved" ? "✓" : "·"}
+                </span>
+                {row.text}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {decision.outcome.length > 0 && (
         <section className="flex flex-col gap-1">
           <Eyebrow>Outcome</Eyebrow>

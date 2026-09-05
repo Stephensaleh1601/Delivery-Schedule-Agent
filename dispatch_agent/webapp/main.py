@@ -22,10 +22,12 @@ from dispatch_agent import config
 from dispatch_agent.geo.zones import company_depot, company_depot_address
 from dispatch_agent.agents.scheduling_agent import handle_planning_event
 from dispatch_agent.models import (
+    CustomerMessage,
     DaySequence,
     JobRecord,
     JobStatus,
     AgentRunStatus,
+    MessageDirection,
     Notification,
     PlanningEvent,
     PlanningEventType,
@@ -1060,3 +1062,93 @@ def client_form() -> FileResponse:
 @app.get("/admin")
 def admin_dashboard() -> FileResponse:
     return FileResponse(STATIC_DIR / "admin.html")
+
+
+# -- driver dispatch -----------------------------------------------------------
+#
+# Deliberately NOT an agent tool. `send_driver_route` is absent from TOOL_REGISTRY entirely, which
+# is what makes it unreachable from a customer conversation -- stronger than leaving it out of an
+# intent list, because that only holds while the list stays correct. A customer must never be able
+# to talk the agent into sending a half-finished route to a driver.
+
+
+def _driver_for(day: Date) -> dict:
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parents[2] / "scripts"))
+    import seed_test_clients
+
+    return seed_test_clients.driver_for(day.weekday())
+
+
+def _maps_link(depot, stops: list) -> str:
+    """Google's public directions URL scheme -- no API key, no OAuth.
+
+    The driver opens it on their own phone, signed into their own account, and gets turn-by-turn
+    navigation through every stop in the order we solved. That is the whole integration.
+    """
+    points = [f"{depot['lat']},{depot['lng']}"] + [f"{s['lat']},{s['lng']}" for s in stops]
+    if len(points) < 2:
+        return ""
+    origin, destination = points[0], points[-1]
+    waypoints = "|".join(points[1:-1])
+    url = (
+        f"https://www.google.com/maps/dir/?api=1&origin={origin}"
+        f"&destination={destination}&travelmode=driving"
+    )
+    return f"{url}&waypoints={waypoints}" if waypoints else url
+
+
+@app.post("/api/plans/{plan_date}/dispatch")
+def dispatch_to_driver(plan_date: Date) -> dict:
+    """Send the finished route to the day's driver. A coordinator action, never the agent's."""
+    repo = JobsRepository()
+    plan = repo.active_plan(plan_date)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="no published route for that date")
+
+    stops = [_stop_to_dict(stop, repo.get_job(stop.job_id)) for stop in plan.sequence.stops]
+    driver = _driver_for(plan_date)
+    depot = {"lat": company_depot().lat, "lng": company_depot().lng}
+    link = _maps_link(depot, stops)
+
+    lines = [
+        f"Hi {driver['name']}, here is your run for {plan_date:%A %d %B}.",
+        f"{len(stops)} stops, back at base by {_clock_of(plan.sequence.completion_minutes)}.",
+        "",
+    ]
+    for stop in stops:
+        window = stop["locked_window"]
+        when = f"{window['start']}-{window['end']}" if window else stop["arrival"]
+        lines.append(f"{stop['sequence_index']}. {when}  {stop['customer_name']} — {stop['address']}")
+    lines += ["", f"Route map: {link}", f"(plan v{plan.version})"]
+
+    message = "\n".join(lines)
+    repo.save_message(
+        CustomerMessage(
+            order_id=f"driver:{driver['id']}",
+            direction=MessageDirection.OUTBOUND,
+            body=message,
+        )
+    )
+    return {
+        "date": plan_date.isoformat(),
+        "driver": driver,
+        "plan_version": plan.version,
+        "plan_id": plan.id,
+        "stop_count": len(stops),
+        "maps_url": link,
+        "message": message,
+        "sent_at": _utcnow_iso(),
+    }
+
+
+def _clock_of(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _utcnow_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()

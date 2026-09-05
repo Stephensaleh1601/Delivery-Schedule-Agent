@@ -211,6 +211,19 @@ export interface PlanOptions {
   error: string | null;
 }
 
+/** What was sent to a driver, and when. `plan_version` is read at send time, so a route sent
+ *  before a late booking cannot silently be the stale one. */
+export interface DriverDispatch {
+  date: string;
+  driver: { id: string; name: string; phone: string };
+  plan_version: number;
+  plan_id: string;
+  stop_count: number;
+  maps_url: string;
+  message: string;
+  sent_at: string;
+}
+
 export interface PlanVersion {
   id: string;
   delivery_date: string;
@@ -415,6 +428,10 @@ export interface Decision {
   asked: string;
   what_changed: string;
   steps: DecisionStep[];
+  /** What the search looked at, in counts read straight off the tool result: stops compared,
+   *  anchors found, positions tested, choices thrown away and why. A judge can check every
+   *  one of these against the routes. */
+  evidence: DecisionStep[];
   candidates: DecisionCandidate[];
   decision: string;
   outcome: string[];
@@ -504,6 +521,9 @@ export const dispatch = {
   activePlan: (date: string) => api.get<ActivePlan>(`/api/plans/${date}`),
   planVersions: (date: string) => api.get<PlanVersion[]>(`/api/plans/${date}/versions`),
   routePlan: (date: string) => api.post<RoutePlanResponse>("/api/route-plan", { date }),
+  /** Send the finished route to the day's driver. A coordinator's action -- the customer-facing
+   *  agent has no tool for this, by construction rather than by rule. */
+  sendToDriver: (date: string) => api.post<DriverDispatch>(`/api/plans/${date}/dispatch`),
 
   setReadiness: (orderId: string, readiness: ReadinessStatus) =>
     api.post<ReadinessResponse>(`/api/orders/${orderId}/readiness`, { readiness_status: readiness }),

@@ -335,6 +335,10 @@ def _decision_for(repo: JobsRepository, order_id: str, extra_run, evaluations, s
             evaluations=evaluations if run is extra_run else None,
             suggestions=suggestions if run is extra_run else None,
             on_the_table=on_the_table,
+            # The live offer, so the cards can be built from the evidence stored on its slots
+            # rather than recomputed -- what the panel shows and what the customer was sent
+            # then cannot drift apart.
+            offer=live,
         )
         if record.meaningful:
             return {"decision": record.to_dict(), "decision_run_id": run.id}

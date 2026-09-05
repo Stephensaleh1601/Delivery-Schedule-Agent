@@ -257,7 +257,7 @@ export default function ChatPage() {
         {/* -- the agent -------------------------------------------------- */}
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1">
-            <Eyebrow>Agent decision</Eyebrow>
+            <Eyebrow>Agent decisions and tool results</Eyebrow>
             {/* The heading is the question this run answers. "Why these times?" and "Why the offer
                 changed" are different questions, and one panel titled for both answers neither. */}
             <h2 className="text-[17px] font-semibold text-ink">
