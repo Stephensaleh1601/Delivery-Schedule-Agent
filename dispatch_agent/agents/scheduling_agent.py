@@ -38,7 +38,7 @@ from dispatch_agent.models import (
     PlanningEventType,
 )
 from dispatch_agent.agents import progress
-from dispatch_agent.planning import plan_service, tools
+from dispatch_agent.planning import clusters, plan_service, tools
 from dispatch_agent.planning.clock import PlanningClock
 
 # The bound on one run. Raised from 6 when the conversation became natural-language: a single
@@ -138,88 +138,44 @@ def _last_error(state, tool_name: str) -> str | None:
 # the offer at the end differ. It lives here rather than being inlined twice so that the standard
 # procedure and the model cannot drift into following different policies -- a fallback that
 # quietly does something else is worse than no fallback, because the log still says "completed".
-def _insertion_sequence(event, done, state, topic: str, offer_action: str):
-    if "retrieve_policy" not in done:
-        return ActionDecision(
-            action="retrieve_policy",
-            reason_summary="Reading the delivery policy before touching a route.",
-            arguments={"topic": topic},
-        )
-    if "get_existing_routes" not in done:
-        return ActionDecision(
-            action="get_existing_routes",
-            reason_summary="Loading the published Friday and Saturday routes.",
-            arguments={},
-        )
-    if "find_insertion_options" not in done:
-        return ActionDecision(
-            action="find_insertion_options",
-            reason_summary="Measuring where this customer could be fitted in.",
-            arguments={"order_id": event.order_id},
-        )
-    if _last_failed(state, "find_insertion_options"):
-        # Nothing safe on either route. A human takes it -- inventing a position is the one thing
-        # that must not happen here.
-        if "create_exception" not in done:
-            return ActionDecision(
-                action="create_exception",
-                reason_summary="No safe position on either route; asking a coordinator to call.",
-                arguments={
-                    "order_id": event.order_id,
-                    "kind": "no_safe_position",
-                    "message": "No position within the anchor radius can take this customer "
-                               "without making someone else late.",
-                },
-            )
-        if "send_message" not in done:
-            return ActionDecision(
-                action="send_message",
-                reason_summary="Telling the customer a person will be in touch.",
-                arguments={
-                    "order_id": event.order_id,
-                    "body": "I could not find a delivery slot that works without affecting "
-                            "another customer, so one of our coordinators will call you.",
-                },
-            )
-        return ActionDecision(action="finish", reason_summary="Handed to a coordinator.")
+def _insertion_sequence(event, done, state, topic: str, offer_action: str, scope: str = "cluster"):
+    """The conversational path as one composite action, then the reply.
 
-    if offer_action not in done:
+    Both customer intents walk it; only which search runs differs. Written once so the standard
+    procedure and the model follow the same policy -- a fallback that quietly does something else
+    is worse than no fallback, because the log still says "completed".
+    """
+    search = {
+        "cluster": "find_normal_slot",
+        "requested": "find_requested_day_slot",
+        "both": "find_fallback_options",
+    }[scope]
+
+    if search not in done:
         return ActionDecision(
-            action=offer_action,
-            reason_summary="Putting the calculated options to the customer.",
+            action=search,
+            reason_summary={
+                "cluster": "Checking their normal delivery day.",
+                "requested": "Checking the day they asked for.",
+                "both": "Searching both published routes.",
+            }[scope],
             arguments={"order_id": event.order_id},
         )
-    if _last_failed(state, offer_action) and "create_exception" not in done:
-        too_few = _last_error(state, offer_action) == "too_few_alternatives"
+
+    if _last_failed(state, search) and "escalate_booking" not in done:
         return ActionDecision(
-            action="create_exception",
-            reason_summary=(
-                "Fewer than three safe options; policy hands this to a coordinator."
-                if too_few else "Could not put an offer together; asking a coordinator to call."
-            ),
-            arguments={
-                "order_id": event.order_id,
-                "kind": "too_few_alternatives" if too_few else "offer_failed",
-                "message": "Company policy requires three safe route options; there were fewer.",
-            },
+            action="escalate_booking",
+            reason_summary="Nothing safe to offer; asking a coordinator to call.",
+            arguments={"order_id": event.order_id, "reason": _last_error(state, search) or ""},
         )
-    if _last_failed(state, offer_action) and "send_message" not in done:
-        return ActionDecision(
-            action="send_message",
-            reason_summary="Telling the customer a coordinator will take over.",
-            arguments={
-                "order_id": event.order_id,
-                "body": "I could not find three safe delivery times for you, so one of our "
-                        "coordinators will call to arrange it personally.",
-            },
-        )
+
     if "send_message" not in done:
         return ActionDecision(
             action="send_message",
-            reason_summary="Sending the offer.",
-            arguments={"order_id": event.order_id, "body": None},
+            reason_summary="Sending the reply.",
+            arguments={"order_id": event.order_id},
         )
-    return ActionDecision(action="finish", reason_summary="Offer sent; waiting for a reply.")
+    return ActionDecision(action="finish", reason_summary="Replied; waiting for the customer.")
 
 
 class RuleDecisionAgent:
@@ -262,8 +218,12 @@ class RuleDecisionAgent:
                 return ActionDecision(action="finish",
                                       reason_summary="Waiting for a date we can actually book.")
             if conversational:
+                # The standard procedure always takes the customer's own day. Distinguishing
+                # an off-cluster request is the model's job on the live path; a fallback that has
+                # to make that call as well is a fallback with its own failure modes.
                 return _insertion_sequence(
-                    event, done, state, topic="cluster_days", offer_action="create_normal_offer"
+                    event, done, state, topic="cluster_days",
+                    offer_action="find_normal_slot", scope="cluster",
                 )
 
             if "evaluate_slots" not in done:
@@ -352,7 +312,7 @@ class RuleDecisionAgent:
             if conversational:
                 return _insertion_sequence(
                     event, done, state, topic="alternatives",
-                    offer_action="create_alternative_offer",
+                    offer_action="find_fallback_options", scope="both",
                 )
 
             if "evaluate_slots" not in done:
@@ -575,6 +535,13 @@ def _observe_node(ctx: tools.ToolContext):
                 update["error"] = f"unknown order {event.order_id}"
             else:
                 ctx.order = order
+                # Which delivery day is theirs, so choosing a search scope is a reading task for
+                # the model rather than a geography one.
+                placement = clusters.placement_of(order)
+                update["placement"] = {
+                    "region": placement.region or "unknown",
+                    "normal_day": placement.day_name,
+                }
                 update["order_summary"] = {
                     "customer_name": order.customer_name,
                     "job_type": order.job_type.value,
@@ -669,6 +636,13 @@ def _decide_node(ctx: tools.ToolContext, decider: DecisionAgent, fallback: Decis
             forced = None
             if len(legal) == 1:
                 forced = legal[0]
+            elif "send_message" in legal and (
+                ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")
+            ):
+                # The outcome already exists. Whatever it reached for, the useful move now is to
+                # tell the customer -- and letting the illegal call through just adds a refused
+                # step they sit and wait through.
+                forced = "send_message"
             elif decision.action == "finish":
                 # Ending is the one illegal choice with no other guard behind it.
                 forced = "send_message" if "send_message" in legal else legal[0]
@@ -834,6 +808,11 @@ def handle_planning_event(
     intent = event.payload.get("intent")
     if intent in tools.INTENT_TOOLS:
         ctx.allowed_tools = tools.INTENT_TOOLS[intent]
+    if intent:
+        # The tools need it too: which routes a search may look at is decided by the intent, not
+        # by judgement, and a model that picks the scope differently on two runs of the same
+        # conversation makes the demo unrepeatable.
+        ctx.scratch["intent"] = intent
 
     if decider is None:
         try:
@@ -886,3 +865,50 @@ def handle_planning_event(
 
     repo.save_agent_run(run)
     return run
+
+
+def _guarantee_a_reply(repo, event, ctx: tools.ToolContext, run: AgentRunLog) -> None:
+    """Send something if the run did not, so no customer turn ends in silence.
+
+    Deliberately last and deliberately dumb: it does not decide anything, it only notices that a
+    message was owed and never sent. Anything smarter here would be a second decision-maker
+    competing with the loop.
+    """
+    if "send_message" in ctx.succeeded or ctx.order is None:
+        return
+    if event.event_type not in (
+        PlanningEventType.NEW_ORDER,
+        PlanningEventType.CUSTOMER_REJECTED_OFFER,
+        PlanningEventType.CUSTOMER_ACCEPTED_OFFER,
+        PlanningEventType.MANUAL_RETRY,
+    ):
+        return  # operational events have no customer waiting on them
+
+    prepared = ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")
+    body = prepared or (
+        "Sorry -- I could not sort that out automatically just now. One of our coordinators "
+        "will call you shortly to arrange your delivery."
+    )
+
+    from dispatch_agent.planning import offer_service
+
+    offer_service.record_message(repo, ctx.order.id, body, run_id=run.id)
+    run.actions.append(
+        AgentActionLog(
+            step=len(run.actions) + 1,
+            tool="send_message",
+            ok=True,
+            arguments={"order_id": ctx.order.id},
+            summary=f"Reply sent by the completion guarantee ({len(body)} chars).",
+            reason_summary="The run ended without answering the customer.",
+            decider="controller",
+        )
+    )
+    if not prepared:
+        plan_service.raise_coordinator_exception(
+            repo,
+            "A customer message ended without the agent producing a reply; they were told a "
+            "coordinator would call.",
+            kind="unanswered_message",
+            order_id=ctx.order.id,
+        )

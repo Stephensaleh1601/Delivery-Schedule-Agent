@@ -572,7 +572,20 @@ def _evidence(run: AgentRunLog) -> list[Step]:
         count = len(routes.data.get("routes", []))
         rows.append(Step(f"Loaded {count} published route{'s' if count != 1 else ''}", "neutral"))
 
-    search = next((a for a in run.actions if a.tool == "find_insertion_options"), None)
+    search = next(
+        (
+            a
+            for a in run.actions
+            if a.tool
+            in (
+                "find_insertion_options",
+                "find_normal_slot",
+                "find_requested_day_slot",
+                "find_fallback_options",
+            )
+        ),
+        None,
+    )
     if search is None:
         return rows
 
@@ -610,12 +623,23 @@ def _evidence(run: AgentRunLog) -> list[Step]:
         rows.append(Step(f"Produced {data['valid_count']} valid choices", "solved"))
 
     offered = next(
-        (a for a in run.actions
-         if a.tool in ("create_normal_offer", "create_alternative_offer") and a.ok),
+        (
+            a
+            for a in run.actions
+            if a.ok
+            and a.tool
+            in (
+                "create_normal_offer",
+                "create_alternative_offer",
+                "find_normal_slot",
+                "find_requested_day_slot",
+                "find_fallback_options",
+            )
+        ),
         None,
     )
     if offered:
-        count = len(offered.data.get("slots", []))
+        count = len(offered.data.get("offered", offered.data.get("slots", [])))
         rows.append(Step(f"Offered the calculated top {count}", "solved"))
 
     return rows

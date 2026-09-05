@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from dispatch_agent.planning import conversation, insertion
+from dispatch_agent.planning import clusters, conversation, insertion
 from dispatch_agent.planning.clock import PlanningClock
 from dispatch_agent.planning.tools import OrderArgs, ToolContext, ToolResult, _Args, tool
 
@@ -174,8 +174,15 @@ def _finish_time(plan) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
-@tool("find_insertion_options", OrderArgs)
-def find_insertion_options(args: OrderArgs, ctx: ToolContext) -> ToolResult:
+class InsertionArgs(_Args):
+    order_id: str
+    # The WORKFLOW, not the dates. A model choosing "their normal day" is choosing a path; a
+    # model choosing "2026-09-12" is doing arithmetic it has no business doing.
+    scope: str = "cluster"
+
+
+@tool("find_insertion_options", InsertionArgs)
+def find_insertion_options(args: InsertionArgs, ctx: ToolContext) -> ToolResult:
     """Every safe place this customer could go on the published routes, ranked, best first.
 
     This is the tool that does the arithmetic. It compares the customer with every stop, keeps the
@@ -199,9 +206,37 @@ def find_insertion_options(args: OrderArgs, ctx: ToolContext) -> ToolResult:
         )
 
     preferred = _preferred(order)
+    cycle = PlanningClock.coordination_cycle(repo=ctx.repo)
+    if cycle is None:
+        return ToolResult(
+            ok=False, tool="find_insertion_options", error="no_coordination_cycle",
+            summary="No published Friday and Saturday pair to search.",
+        )
+
+    scope = _scope_for(order, args.scope, ctx, cycle.dates)
+    dates = clusters.resolve_scope(order, scope, cycle.dates)
+    if scope == "requested" and not dates:
+        return ToolResult(
+            ok=False,
+            tool="find_insertion_options",
+            error="no_requested_day",
+            summary=(
+                "No requested day has been recorded for this customer yet. Call "
+                "record_availability first, or use scope 'cluster' for their normal day."
+            ),
+        )
+    placement = clusters.placement_of(order)
+    ctx.scratch["insertion_scope"] = {
+        "scope": scope,
+        "region": placement.region,
+        "normal_day": placement.day_name,
+        "dates": [d.isoformat() for d in dates],
+    }
+
     found = insertion.search(
         ctx.repo,
         order,
+        dates=dates,
         routing_client=ctx.routing_client,
         exclude=_declined(order, ctx),
         prefer=preferred,
@@ -209,7 +244,7 @@ def find_insertion_options(args: OrderArgs, ctx: ToolContext) -> ToolResult:
         # different day then is not a helpful alternative -- it is not having listened, and the
         # policy says so (ALT-8).
         restrict_to=preferred if (preferred and conversation.is_only_option(order)) else None,
-        on_phase=_reporter(order.id),
+        on_phase=_reporter(order.id, scope, placement.day_name),
     )
     ctx.scratch["insertion"] = found
 
@@ -378,7 +413,7 @@ def create_alternative_offer(args: OfferArgs, ctx: ToolContext) -> ToolResult:
     return _offer(ctx, args.order_id, OfferPurpose.ALTERNATIVE, "create_alternative_offer")
 
 
-def _reporter(order_id: str):
+def _reporter(order_id: str, scope: str = "cluster", day_name: str = ""):
     """Turn the search's phase callbacks into live progress stages.
 
     Separate from the search itself so that module stays free of anything to do with a screen: it
@@ -386,9 +421,47 @@ def _reporter(order_id: str):
     """
     from dispatch_agent.agents import progress
 
+    # The trace should say which routes are being looked at, because that is the difference
+    # between the normal flow and the fallback and a judge should be able to see which one ran.
+    where = (
+        f"your normal {day_name} route"
+        if scope == "cluster" and day_name
+        else "the day you asked for"
+        if scope == "requested"
+        else "both published routes"
+    )
+
     def report(key: str, label: str, reason: str, detail: str) -> None:
+        if key == "nearby":
+            label = f"Checking {where}"
         progress.stage(order_id, key, label, reason, tool="find_insertion_options")
         if detail:
             progress.finish_stage(order_id, key, detail=detail)
 
     return report
+
+
+def _scope_for(order, asked: str, ctx: ToolContext, cycle_dates) -> str:
+    """Which routes this search may look at.
+
+    The agent chooses the WORKFLOW by calling this tool; which routes that workflow is allowed to
+    read is a business rule, and business rules are not judgement calls. Two facts decide it and
+    both are already known:
+
+    - A rejection is always a search of both routes. There is nowhere else for a declined
+      customer to go, and a model that picked `cluster` here would re-offer the day they just
+      turned down.
+    - A day they explicitly named that is not their own is always a `requested` search. Answering
+      about their normal day instead is the failure the rule exists to prevent.
+
+    Anything else is a normal booking on their own day. `asked` is honoured only where neither
+    fact applies, so the model still steers and never overrides.
+    """
+    if ctx.scratch.get("intent") == "reject":
+        return "both"
+
+    named = clusters.requested_dates(order, cycle_dates)
+    if named and any(clusters.is_off_cluster(order, day) for day in named):
+        return "requested"
+
+    return asked if asked in ("cluster", "requested", "both") else "cluster"

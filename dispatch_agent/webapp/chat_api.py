@@ -211,15 +211,19 @@ def _event_for(order_id: str, said, live_offer, order):
             payload=payload,
         )
 
-    if said.intent == "provide_availability" and said.windows:
+    if said.intent == "provide_availability":
+        # Deliberately NOT `and said.windows`. "Any time works for me" is availability with no
+        # window in it, and treating that as unclear made the agent ask which day they wanted --
+        # a question we can already answer, because their delivery day comes from their address.
+        # The booking path handles an empty window list: the cluster search needs nothing stated.
+        payload = {
+            "intent": "provide_availability",
+            "is_fixed": said.is_fixed or conversation.is_only_option(order),
+        }
+        if said.windows:
+            payload["stated_windows"] = _windows_payload(said)
         return PlanningEvent(
-            event_type=PlanningEventType.NEW_ORDER,
-            order_id=order_id,
-            payload={
-                "intent": "provide_availability",
-                "stated_windows": _windows_payload(said),
-                "is_fixed": said.is_fixed or conversation.is_only_option(order),
-            },
+            event_type=PlanningEventType.NEW_ORDER, order_id=order_id, payload=payload
         )
 
     if said.intent == "explain":

@@ -203,6 +203,9 @@ class AcceptArgs(_Args):
 
 class OfferIdArgs(_Args):
     offer_id: str
+    # Accepted and ignored. The run is already about one order, and refusing this produced a
+    # failed step in the middle of a customer turn over information nobody was missing.
+    order_id: str | None = None
     # Which slot was declined. Omitted means the customer declined the whole offer ("none of these
     # work"), and every window in it is excluded.
     slot_id: str | None = None
@@ -214,7 +217,9 @@ class ReplanArgs(_Args):
 
 
 class MessageArgs(_Args):
-    order_id: str
+    # Optional: the run is already about one order, and a model that omits it was producing a
+    # validation failure in the middle of a customer turn for no information anybody lacked.
+    order_id: str | None = None
     # Optional, and ignored whenever a tool has already produced the wording. See send_message:
     # the customer-facing text is built deterministically from the solved route, and a model
     # rewriting it drops the reason it was built to carry.
@@ -380,7 +385,7 @@ def send_message(args: MessageArgs, ctx: ToolContext) -> ToolResult:
     # Linked to the run that produced it and, when this message is presenting an offer, to that
     # offer -- so the inspector under this bubble opens THESE calls after a refresh.
     message = offer_service.record_message(
-        ctx.repo, args.order_id, body,
+        ctx.repo, args.order_id or (ctx.order.id if ctx.order else None), body,
         MessageDirection.OUTBOUND, run_id=ctx.run_id, offer_id=ctx.offer_id,
     )
     return ToolResult(
@@ -607,39 +612,28 @@ def finish(args: NoArgs, ctx: ToolContext) -> ToolResult:
 # was reachable from every intent and only the rule decider ever consulted what had already been
 # done. A question about a booking must not be able to change the booking.
 INTENT_TOOLS: dict[str, frozenset[str]] = {
-    # The evaluation-based tools (`evaluate_slots`, `create_offer`, `suggest_route_aware_windows`)
-    # are deliberately ABSENT from every customer intent below. They still exist and are still
-    # used by the operational events, which carry no intent and therefore no scoping -- but a
-    # customer conversation must go through the insertion search, because that is the path that
-    # measures a detour, proves nobody already booked becomes late, and can say where in the route
-    # the van would stop.
+    # SIX actions, one per thing a coordinator actually does -- not sixteen small ones. The model
+    # makes one choice per turn: which situation is this? Everything inside each one is fixed.
     #
-    # Leaving both paths legal was not a harmless superset. A live model offered one alternative
-    # instead of three, using the older tools, and the whole search never ran: given two ways to
-    # do a thing, it picked the one it recognised. Removing the choice is the fix; asking the
-    # prompt to prefer one is not.
+    # Route scope is a property of the tool rather than an argument. `find_normal_slot` reads the
+    # customer's own day, `find_requested_day_slot` the day they named, `find_fallback_options`
+    # both. There is no scope to pass, so there is no scope to get wrong -- and the tool name in
+    # the trace says which routes were searched.
+    #
+    # The granular tools are still registered and still used by the operational events (a
+    # readiness delay, the morning run), which carry no intent and so are not scoped here.
 
-    # Read-only with respect to the booking. Answers "why this time?" from the policy and the same
-    # figures the offer was built from, rather than from whatever the model recalls.
-    "explain": frozenset({
-        "retrieve_policy", "get_existing_routes", "find_insertion_options",
-        "explain_choice", "send_message", "finish",
-    }),
-    # Nothing here may offer, re-solve or reject. The customer said yes to a specific slot.
-    "accept": frozenset({"lock_appointment", "send_message", "finish"}),
-    # The fallback search, after a normal offer was declined.
+    "explain": frozenset({"explain_offer", "send_message", "finish"}),
+    "accept": frozenset({"confirm_offer", "send_message", "finish"}),
     "reject": frozenset({
-        "record_rejection", "retrieve_policy", "get_existing_routes", "find_insertion_options",
-        "create_alternative_offer", "send_message", "create_exception", "finish",
+        "record_rejection", "find_fallback_options", "escalate_booking", "send_message", "finish",
     }),
-    # The normal offer: one option, proven by the same search the alternatives come from.
     "provide_availability": frozenset({
-        "record_availability", "retrieve_policy", "get_existing_routes", "find_insertion_options",
-        "create_normal_offer", "send_message", "create_exception", "finish",
+        "record_availability", "find_normal_slot", "find_requested_day_slot",
+        "escalate_booking", "send_message", "finish",
     }),
-    # A question we cannot answer from the schedule. It may ask, or hand over -- never book.
-    "general_support": frozenset({"ask_clarification", "create_exception", "send_message", "finish"}),
-    "unclear": frozenset({"ask_clarification", "create_exception", "send_message", "finish"}),
+    "general_support": frozenset({"ask_clarification", "escalate_booking", "send_message", "finish"}),
+    "unclear": frozenset({"ask_clarification", "escalate_booking", "send_message", "finish"}),
 }
 
 # Actions that must succeed at most once per run. A second `send_message` is a duplicate bubble in
@@ -648,6 +642,8 @@ INTENT_TOOLS: dict[str, frozenset[str]] = {
 # stopped it, and the idempotent second lock only looked harmless.
 ONCE_PER_RUN = frozenset({
     "send_message", "lock_appointment", "create_offer", "create_exception",
+    "confirm_offer", "escalate_booking", "explain_offer",
+    "find_normal_slot", "find_requested_day_slot", "find_fallback_options",
     # Asking the same question three times in one run is the same duplicate-action failure as
     # sending the same offer three times. It happened: the model called this, saw wording had been
     # prepared, called it again, and finished without ever sending any of it.
@@ -717,6 +713,107 @@ def dispatch(action: str, arguments: dict | None, ctx: ToolContext) -> ToolResul
     return result
 
 
+# What each action is for, in the model's terms: when to reach for it, when not to, and what
+# has to follow. Held here rather than in the system prompt because the permitted set changes
+# every turn -- describing all sixteen up front would spend the prompt on actions that are not
+# available, and leave the available ones undescribed.
+TOOL_GUIDE: dict[str, str] = {
+    "find_normal_slot": (
+        "Searches the customer's OWN delivery day -- the one their address belongs to -- and "
+        "offers the best proven slot on it. Use for a normal booking, including when they simply "
+        "say they are flexible. Do not use after a rejection, or when they asked for a different "
+        "day. Followed by send_message."
+    ),
+    "find_requested_day_slot": (
+        "Searches ONLY the day the customer explicitly asked for, even when it is not theirs. Use "
+        "when they named a day; record_availability first so the day is on file. If it will not "
+        "take them, it says so and offers to check their own day. Followed by send_message."
+    ),
+    "find_fallback_options": (
+        "Searches BOTH published routes and offers the calculated top three. Use only after the "
+        "customer has turned an offer down. Fewer than three means escalate, not offer two. Never "
+        "reorder what it returns. Followed by send_message."
+    ),
+    "confirm_offer": (
+        "Books the slot the customer accepted. Use only on a clear acceptance of a specific "
+        "option they were shown. Never read an acceptance as new availability."
+    ),
+    "explain_offer": (
+        "Says why the offered times were chosen, from evidence already calculated. Read-only: it "
+        "cannot reject, confirm or change anything. Followed by send_message."
+    ),
+    "escalate_booking": (
+        "Hands the customer to a coordinator and tells them so. Use when nothing fits, fewer than "
+        "three alternatives exist, or a person must decide. Followed by send_message."
+    ),
+    "record_availability": (
+        "Use when the customer names a day or time they can receive a delivery. Not for "
+        "questions, rejections or confirmations. Takes only an order id -- the times come from "
+        "the parser. Next: check a route."
+    ),
+    "record_rejection": (
+        "Use when the customer turns down a time they were offered. Excludes that WINDOW, not "
+        "the whole day. Next: search for alternatives."
+    ),
+    "retrieve_policy": (
+        "Reads the written delivery rules. Use before touching a route so the reply can cite the "
+        "policy rather than paraphrase it. Read-only."
+    ),
+    "get_existing_routes": (
+        "Lists the published Friday and Saturday routes. Read-only. Use to see what exists "
+        "before searching it."
+    ),
+    "find_insertion_options": (
+        "Tests real insertion positions without changing any route. `scope` picks the workflow: "
+        "'cluster' for a normal booking (their own delivery day only -- do not look at the other "
+        "day, they did not ask), 'requested' when they explicitly named a day that is not "
+        "theirs, 'both' only after they have rejected an offer and will consider anything. "
+        "'requested' needs the day recorded first, and refuses rather than quietly searching "
+        "their own day instead. 'cluster' needs nothing stated at all -- their day comes "
+        "from their address, so a customer who just says 'any time' is a normal booking. "
+        "Results come back already ranked; never reorder or re-select them."
+    ),
+    "create_normal_offer": (
+        "Use after the search proves ONE option on their own -- or explicitly requested -- day. "
+        "Creates a single offer. Must be followed by send_message."
+    ),
+    "create_alternative_offer": (
+        "Use only after a rejection. Requires exactly three calculated options. Never invent, "
+        "drop or reorder them; if there are fewer than three, escalate instead. Must be followed "
+        "by send_message."
+    ),
+    "explain_choice": (
+        "Answers 'why this time?' from evidence already calculated. Read-only: it must not "
+        "reject, confirm or alter an offer. Must be followed by send_message."
+    ),
+    "ask_clarification": (
+        "Use when the message is unclear. ONE specific question, never a guessed date. Once per "
+        "run. Must be followed by send_message."
+    ),
+    "create_exception": (
+        "Use when no route fits, fewer than three fallback options exist, or a person must "
+        "decide. Must be followed by send_message."
+    ),
+    "send_message": (
+        "Sends the reply the previous step prepared -- you do not write it. Exactly once, after "
+        "an offer, explanation, clarification or escalation. Never end a customer turn without "
+        "calling this."
+    ),
+    "lock_appointment": (
+        "Use only when the customer clearly accepts one option they were offered. Needs the "
+        "exact offer_id and slot_id from the digest. Never read an acceptance as new "
+        "availability."
+    ),
+    "finish": "Ends the turn. Only after the customer has been sent a reply.",
+}
+
+
+def guide_for(actions: list[str]) -> str:
+    """The descriptions for just the actions permitted right now."""
+    lines = [f"- `{a}`: {TOOL_GUIDE[a]}" for a in actions if a in TOOL_GUIDE]
+    return "\n".join(lines)
+
+
 def allowed_actions() -> list[str]:
     return sorted(TOOL_REGISTRY)
 
@@ -766,6 +863,18 @@ def legal_actions(state: dict, ctx: ToolContext) -> list[str]:
     # a second action they will never see a message about.
     if "send_message" in ctx.succeeded:
         legal = {"finish"}
+
+    # Handing a customer to a coordinator while holding a workable option is not an escalation,
+    # it is giving up. While the search has options and no offer has even been ATTEMPTED, the way
+    # out is to offer one. Attempted rather than succeeded, deliberately: a fallback offer that
+    # legitimately fails for want of a third choice must still be able to escalate afterwards.
+    attempted = {a.tool for a in state.get("actions", [])}
+    offer_actions = {
+        "create_normal_offer", "create_alternative_offer", "create_offer",
+        "find_normal_slot", "find_requested_day_slot", "find_fallback_options",
+    }
+    if searched and not (attempted & offer_actions):
+        legal.discard("create_exception")
 
     # A run that has written something for the customer may not end without sending it. The
     # failure this prevents is the worst kind in a conversation: the agent asked a question,
@@ -823,4 +932,8 @@ def render_argument_help() -> str:
 # deliberately: that module imports `tool`, `ToolResult` and `_Args` from here, so it can only be
 # loaded once this module is fully defined. Importing either module now yields the whole allow-list,
 # which matters because `allowed_actions()` is what the model is shown.
-from dispatch_agent.planning import insertion_tools, negotiation_tools as _negotiation_tools  # noqa: E402,F401
+from dispatch_agent.planning import (  # noqa: E402,F401
+    insertion_tools,
+    negotiation_tools as _negotiation_tools,
+    workflows as _workflows,
+)

@@ -167,6 +167,12 @@ TOOL_STAGES: dict[str, tuple[str, str]] = {
         "Loading Friday and Saturday routes",
         "Only routes already published can take a new stop",
     ),
+    "find_normal_slot": ("Checking their normal delivery day", "Searching the route their address belongs to"),
+    "find_requested_day_slot": ("Checking the day they asked for", "Searching only that day's route"),
+    "find_fallback_options": ("Searching both published routes", "Looking for the three best alternatives"),
+    "confirm_offer": ("Confirming the booking", "Locking the window and republishing the day"),
+    "explain_offer": ("Explaining the choice", "Answering from the measured insertion"),
+    "escalate_booking": ("Handing over to a coordinator", "A person can do what the rules cannot"),
     "find_insertion_options": (
         "Searching the routes",
         "Measuring where you could be fitted in",

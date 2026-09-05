@@ -76,15 +76,21 @@ const GROUPS: Array<{ id: string; label: string; keys: (key: string) => boolean 
   { id: "routes", label: "Loaded the published routes", keys: (k) => k === "get_existing_routes" },
   {
     id: "search",
-    label: "Searched both routes for a place to fit you",
+    label: "Checked the route for a place to fit you",
     keys: (k) =>
-      ["find_insertion_options", "nearby", "positions", "timing", "ranking"].includes(k),
+      [
+        "find_insertion_options", "find_normal_slot", "find_requested_day_slot",
+        "find_fallback_options", "nearby", "positions", "timing", "ranking",
+      ].includes(k),
   },
   {
     id: "offer",
     label: "Chose what to offer",
     keys: (k) => k === "create_normal_offer" || k === "create_alternative_offer",
   },
+  { id: "confirm2", label: "Confirmed your booking", keys: (k) => k === "confirm_offer" },
+  { id: "explain2", label: "Explained the choice", keys: (k) => k === "explain_offer" },
+  { id: "escalate2", label: "Handed over to a coordinator", keys: (k) => k === "escalate_booking" },
   { id: "explain", label: "Explained the choice", keys: (k) => k === "explain_choice" },
   { id: "ask", label: "Asked you a question", keys: (k) => k === "ask_clarification" },
   { id: "escalate", label: "Handed over to a coordinator", keys: (k) => k === "create_exception" },
@@ -125,7 +131,10 @@ export function summarise(stages: AgentProgressStage[]): Headline[] {
       // The last phase to report something wins: inside the search that is the ranking, which
       // carries the count a reader actually wants.
       if (stage.detail) existing.detail = stage.detail;
-      if (stage.state !== "done") existing.state = stage.state;
+      // A group succeeds if any attempt in it did. A refused first try followed by a working
+      // second is a success with a retry, not a failure.
+      if (stage.state === "done") existing.state = "done";
+      else if (existing.state !== "done") existing.state = stage.state;
     } else {
       out.push({
         id: group.id,
@@ -166,7 +175,10 @@ export function ThinkingChip({
   onOpen: () => void;
 }) {
   const running = progress.state === "running";
-  const failed = progress.stages.some((s) => s.state === "failed");
+  // The RUN failing, not a step failing. An intermediate refusal the agent recovered from is
+  // normal -- the guards exist to refuse things -- and showing it as an error made a successful
+  // turn look broken.
+  const failed = progress.state === "failed";
   const steps = summarise(progress.stages);
 
   const label = failed

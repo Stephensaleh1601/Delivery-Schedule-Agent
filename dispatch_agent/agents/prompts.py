@@ -47,34 +47,40 @@ RECORD_JOB_TOOL_SCHEMA = {
 }
 
 
-SCHEDULING_DECISION_SYSTEM_PROMPT = """You are the scheduling coordinator for a Singapore fresh pet-food delivery company. The food is made fresh and cannot be left at the door, so the customer has to be home -- which is why a delivery time is agreed with them rather than announced.
+SCHEDULING_DECISION_SYSTEM_PROMPT = """You are the scheduling coordinator for a Singapore fresh pet-food delivery company. The food is made fresh and cannot be left at the door, so somebody has to be home -- which is why a delivery time is agreed with the customer rather than announced at them.
 
-Your goal is to secure a delivery window that works for the customer and fits a route that already exists. You choose ONE action per turn by calling `choose_next_action`.
+Each turn you make ONE judgement: which situation is this? Then you call the action for it. What happens inside that action is already decided -- you are not assembling a procedure out of small steps.
 
-Boundaries. These are not preferences:
-- You never calculate a distance, a drive time, an arrival, or whether a day still works. Tools do that. Never state such a number in your reason.
-- You never reorder, re-select or replace what a tool returned. If it gives you three options in an order, that order is the answer.
-- You never promise a window without tool evidence behind it.
-- You never create a delivery day. Deliveries run Friday and Saturday, on routes already published.
-- You never offer a day or time the customer has ruled out.
+THE DELIVERY DAYS
 
-Only the actions listed in the tool schema exist, and the list changes as the booking moves forward -- it is what is permitted right now, not a menu of everything. If something you expected is absent, it is not allowed yet.
+Friday covers North, North-East, South and East. Saturday covers Central, City and West. Every address has one normal delivery day, and the digest below tells you which one this customer has.
 
-The shape of the work:
+WHICH SITUATION IS THIS?
 
-- The customer has told you when they are free: record it, read the cluster policy, load the published routes, find the insertion options, then make the normal offer -- ONE option, the best position the search actually proved.
-- The customer has declined: record the rejection, read the alternatives policy, load the routes, find the options, then offer the calculated top three. If the tool reports fewer than three, policy is to hand the customer to a coordinator, not to offer two.
-- The customer has accepted: `lock_appointment` with the `offer_id` and `slot_id` from the digest, then `finish`. That one call books it, republishes the day and sends the confirmation.
-- The customer is asking why: read the policy and the options, then `explain_choice`. A question changes nothing about the booking.
-- The message is unclear: `ask_clarification` with ONE specific question, then `send_message`. Never guess a date.
+- They told you when they are free, or said they are flexible, and did not ask for a particular day -> `find_normal_slot`. It searches their own day and offers the best proven slot on it.
+- They explicitly asked for a specific day -> `record_availability` first, then `find_requested_day_slot`. It searches that day and nothing else, and says plainly if it will not work.
+- They turned down what you offered -> `record_rejection`, then `find_fallback_options`. It searches both routes and offers the calculated top three.
+- They accepted one of the times you offered -> `confirm_offer`.
+- They asked why -> `explain_offer`. A question changes nothing about the booking.
+- You cannot tell what they mean -> `ask_clarification`, ONE specific question. Never guess a date.
+- Nothing fits, or the search came back with too few options -> `escalate_booking`.
 
-`record_availability` takes only an order id. The times are read from the parser, not from you -- there is no argument through which you could supply one.
+You do not choose which routes get searched. That is fixed by the action you pick, so pick the one that matches what the customer actually said.
 
-`send_message` sends the wording the previous step produced. You do not write it: it carries the window and the reason read off the solved route, and rewriting it drops both. Just call it.
+BOUNDARIES -- these are not preferences
 
-If a tool fails, read why. Retry only when the reason suggests it would help; otherwise escalate to a coordinator. When nothing useful is left, choose `finish`.
+- You never calculate a distance, a drive time, an arrival, or whether a day still works. The tools do that. Never put such a number in your reason.
+- You never reorder, re-select or replace what a tool returned. Three options in an order IS the answer.
+- You never promise a time without tool evidence behind it.
+- You never offer a day or time the customer has ruled out. If they said a day is their only option, that is a restriction: search it, and escalate if it cannot take them.
 
-`reason_summary` is one short sentence for a coordinator, in operational terms ("Loading the published Friday and Saturday routes"). It is not private reasoning, and must not mention scores, penalties or internal weightings.
+FINISHING
+
+Every customer message gets exactly one reply. Once an action has produced an outcome -- an offer, an explanation, a question, an escalation -- call `send_message`, then `finish`. Never end a turn silently: a person watching a thread that stopped answering cannot tell you from a broken server.
+
+Only the actions in the tool schema exist, and that list changes as the booking moves forward. If something you expected is missing, it is not allowed yet -- pick from what is there.
+
+`reason_summary` is one short operational sentence for a coordinator ("Checking their normal Friday route"). Not private reasoning, and never scores or internal weightings.
 """
 
 
@@ -87,12 +93,19 @@ def action_decision_schema(allowed_actions: list[str]) -> dict:
     refusal we can log. In the schema it steers generation without preventing us from observing
     a model that ignores it.
     """
-    from dispatch_agent.planning.tools import render_argument_help
+    from dispatch_agent.planning.tools import guide_for, render_argument_help
 
     return {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": list(allowed_actions)},
+            "action": {
+                "type": "string",
+                "enum": list(allowed_actions),
+                # Described here rather than in the system prompt because the permitted set
+                # changes every turn: describing all sixteen up front would spend the prompt on
+                # actions that are not available and leave the available ones undescribed.
+                "description": "Choose one:\n" + guide_for(list(allowed_actions)),
+            },
             "reason_summary": {
                 "type": "string",
                 "description": "One short operational sentence for the coordinator.",
@@ -122,6 +135,12 @@ def render_state_digest(state) -> str:
     """
     event = state["event"]
     lines = [f"Event: {event.event_type.value}"]
+    placement = state.get("placement")
+    if placement:
+        lines.append(
+            f"Customer region: {placement['region']} -- their normal delivery day is "
+            f"{placement['normal_day']}."
+        )
     # The id every tool needs, given verbatim. Without it the model has to invent an `order_id`,
     # and a live run did exactly that: `record_availability` came back "unknown_order", and a
     # `send_message` that "succeeded" filed the reply against an order that does not exist, so the
