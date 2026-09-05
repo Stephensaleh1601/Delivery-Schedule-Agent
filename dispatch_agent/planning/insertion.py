@@ -197,13 +197,18 @@ def _simulate(
     after a promised window has closed is not, and neither is getting home after the hard route
     end. Returning None rather than a score is deliberate: an infeasible day is not an expensive
     one, and nothing downstream should be able to rank it anyway.
+
+    Reads legs through `client.leg`, which is the cache and never the provider. The caller warms
+    every pair with one batched request first; going back to `drive_minutes` here would make the
+    day's whole route a fresh round trip per candidate position, which is how this search came to
+    take thirty-four seconds.
     """
     at = _minutes(settings.work_day_start)
     here = depot
     arrivals: list[int] = []
 
     for leg in legs:
-        at += client.drive_minutes(here, leg.coords)
+        at += client.leg(here, leg.coords)["minutes"]
         if leg.window is not None:
             opens, closes = _minutes(leg.window.start), _minutes(leg.window.end)
             at = max(at, opens)
@@ -213,7 +218,7 @@ def _simulate(
         at += leg.duration
         here = leg.coords
 
-    at += client.drive_minutes(here, depot)
+    at += client.leg(here, depot)["minutes"]
     if at > _minutes(settings.hard_route_end):
         return None
     return arrivals, at
@@ -234,6 +239,7 @@ def search(
     radius_km: float | None = None,
     prefer: set[tuple[Date, str]] | None = None,
     restrict_to: set[tuple[Date, str]] | None = None,
+    on_phase=None,
 ) -> InsertionSearch:
     """Every safe place `order` could be inserted into the published routes, best first.
 
@@ -256,6 +262,12 @@ def search(
     exclude = exclude or set()
     radius = radius_km if radius_km is not None else settings.anchor_radius_km
 
+    # One tool, four things worth watching separately. The callback is optional so the search
+    # stays usable from a test or a script with nothing to report to.
+    def phase(key: str, label: str, reason: str = "", detail: str = "") -> None:
+        if on_phase is not None:
+            on_phase(key, label, reason, detail)
+
     found = InsertionSearch()
     if order.address.coordinates is None:
         return found
@@ -271,9 +283,17 @@ def search(
             continue
         found.routes_checked += 1
 
+        # One batched provider request covering the depot, every stop and the customer -- so every
+        # lookup below is a dictionary read. Without it each pair is its own round trip, and the
+        # search made 236 of them.
+        client.matrix([depot, customer] + [leg.coords for leg in legs])
+
+        phase("nearby", "Finding nearby stops",
+              f"Measuring you against every stop on {day:%A}'s route")
+
         # Every stop is measured, not just the ones we expect to be near. "Compared 18 stops" has
         # to be true, and a cheap early exit would quietly make it a guess.
-        distances = [client.distance_km(customer, leg.coords) for leg in legs]
+        distances = [client.leg(customer, leg.coords)["km"] for leg in legs]
         found.stops_checked += len(legs)
 
         anchors = [i for i, km in enumerate(distances) if km <= radius]
@@ -281,13 +301,26 @@ def search(
         if not anchors:
             continue
 
+        phase("positions", "Testing insertion positions",
+              "Trying before and after each stop within range")
         baseline_finish = _finish(legs, depot, client)
 
         # Before and after each anchor. Two anchors side by side produce the same gap twice, so
         # the positions are deduplicated -- otherwise `positions_tested` overstates the work and
         # the same option competes with itself.
-        positions = sorted({p for i in anchors for p in (i, i + 1)})
-        for position in positions:
+        # Which anchor justified each position. Deriving it back from the index was wrong:
+        # "after anchor i" is position i+1, and reading legs[i+1] there reports the NEXT stop as
+        # the anchor -- which is how a 13.2km stop appeared as the reason for an option that
+        # qualified on a 4km one. Where two anchors justify the same gap, the nearer one is the
+        # honest answer.
+        position_anchor: dict[int, int] = {}
+        for i in anchors:
+            for p in (i, i + 1):
+                current = position_anchor.get(p)
+                if current is None or distances[i] < distances[current]:
+                    position_anchor[p] = i
+
+        for position in sorted(position_anchor):
             found.positions_tested += 1
             previous = legs[position - 1] if position > 0 else None
             following = legs[position] if position < len(legs) else None
@@ -295,15 +328,15 @@ def search(
             after_coords = following.coords if following else depot
 
             added_km = round(
-                client.distance_km(before_coords, customer)
-                + client.distance_km(customer, after_coords)
-                - client.distance_km(before_coords, after_coords),
+                client.leg(before_coords, customer)["km"]
+                + client.leg(customer, after_coords)["km"]
+                - client.leg(before_coords, after_coords)["km"],
                 2,
             )
             added_minutes = (
-                client.drive_minutes(before_coords, customer)
-                + client.drive_minutes(customer, after_coords)
-                - client.drive_minutes(before_coords, after_coords)
+                client.leg(before_coords, customer)["minutes"]
+                + client.leg(customer, after_coords)["minutes"]
+                - client.leg(before_coords, after_coords)["minutes"]
             )
 
             candidate = _Leg(order.customer_name, customer, order.duration_minutes, None)
@@ -331,14 +364,14 @@ def search(
                 found.excluded_by_customer += 1
                 continue
 
-            anchor_index = position if following is not None else position - 1
+            anchor_index = position_anchor[position]
             option = InsertionOption(
                 date=day,
                 slot=slot,
                 anchor_name=legs[anchor_index].name,
                 anchor_stop_number=anchor_index + 1,
                 anchor_distance_km=round(distances[anchor_index], 1),
-                placement="before" if following is not None else "after",
+                placement="before" if position == anchor_index else "after",
                 insert_position=position + 1,
                 previous_stop=previous.name if previous else "Depot",
                 next_stop=following.name if following else "Depot",
@@ -358,5 +391,10 @@ def search(
             if existing is None or option.rank_key < existing.rank_key:
                 best[option.key] = option
 
+    phase("timing", "Checking existing deliveries stay on time",
+          "Re-driving the day with you in it",
+          f"{found.rejected_would_delay} position(s) would have made someone late")
     found.options = sorted(best.values(), key=lambda o: o.rank_key)
+    phase("ranking", "Ranking valid choices", "Cheapest detour first",
+          f"{len(found.options)} valid from {found.positions_tested} positions tested")
     return found

@@ -37,6 +37,7 @@ from dispatch_agent.models import (
     PlanningEvent,
     PlanningEventType,
 )
+from dispatch_agent.agents import progress
 from dispatch_agent.planning import plan_service, tools
 from dispatch_agent.planning.clock import PlanningClock
 
@@ -604,6 +605,18 @@ def _decide_node(ctx: tools.ToolContext, decider: DecisionAgent, fallback: Decis
         # argue it out of.
         legal = tools.legal_actions(state, ctx)
 
+        # The model's turn is where most of the wall clock goes -- several round trips at a second
+        # or so each. Leaving it unlabelled made the panel show tool steps of 0.03s adding up to
+        # eleven seconds, which reads as the screen lying rather than the model thinking.
+        if ctx.order is not None and legal != ["finish"]:
+            progress.stage(
+                ctx.order.id,
+                f"decide-{state.get('step_count', 0)}",
+                "Deciding what to do next",
+                f"Choosing from {len(legal)} permitted actions",
+                tool="(model)",
+            )
+
         if legal == ["finish"]:
             # There was no choice to make. Asking a model to pick from a list of one and then
             # recording it as a decision would put a step in the activity log that claims a
@@ -658,9 +671,20 @@ def _decide_node(ctx: tools.ToolContext, decider: DecisionAgent, fallback: Decis
 def _act_node(ctx: tools.ToolContext):
     def node(state: SchedulingState) -> SchedulingState:
         decision: ActionDecision = state["pending_decision"]
+        # Reported before the call, so the screen names the tool that is running rather than
+        # the one that just finished.
+        label, why = progress.TOOL_STAGES.get(decision.action, (decision.action, ""))
+        if ctx.order is not None and decision.action != "finish":
+            progress.stage(ctx.order.id, decision.action, label, why, tool=decision.action)
         step = state.get("step_count", 0) + 1
 
         result = tools.dispatch(decision.action, decision.arguments, ctx)
+        if ctx.order is not None and decision.action != "finish":
+            # The tool's own summary is the detail -- it is already written for a coordinator and
+            # already carries the real figures, so the panel quotes it rather than paraphrasing.
+            progress.finish_stage(
+                ctx.order.id, decision.action, detail=result.summary, ok=result.ok
+            )
         entry = AgentActionLog(
             step=step,
             tool=decision.action,

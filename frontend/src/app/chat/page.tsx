@@ -26,7 +26,8 @@ import {
   type Offer,
   type PlanVersion,
 } from "@/lib/api";
-import { formatDate } from "@/lib/format";
+import { formatDate, parseDate } from "@/lib/format";
+import { ProgressChip, ProgressPanel, useAgentProgress } from "@/components/AgentProgress";
 import { useResource } from "@/lib/useResource";
 
 /**
@@ -60,6 +61,7 @@ export default function ChatPage() {
 
   const [orderId, setOrderId] = useState<string | null>(null);
   const [turn, setTurn] = useState<ChatTurn | null>(null);
+  const [traceOpen, setTraceOpen] = useState(false);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [input, setInput] = useState("");
   const [before, setBefore] = useState<PlanVersion | null>(null);
@@ -96,6 +98,9 @@ export default function ChatPage() {
   }, [turn, drafts]);
 
   const messages = turn?.messages ?? [];
+  // Polls while a turn is in flight; one more read after it lands swaps the live trace for
+  // the one rebuilt from the persisted run, which is what survives a refresh.
+  const agentProgress = useAgentProgress(orderId, busy);
   const openOffer = turn?.open_offer_id ? turn.offers[turn.open_offer_id] : null;
   const confirmed = turn?.confirmed ?? false;
   const lastRun = turn?.run ?? null;
@@ -136,6 +141,38 @@ export default function ChatPage() {
       if (orderId) await load(orderId);
     } finally {
       setDrafts([]);
+      setBusy(false);
+    }
+  }
+
+  /** Accept one specific slot of one specific offer.
+   *
+   *  Deliberately not a chat message. A confirm button already knows exactly which slot it means,
+   *  and turning that certainty back into a sentence for the reader to re-derive is how a click
+   *  ended up understood as new availability -- opening a second offer rather than booking the
+   *  one on screen.
+   */
+  async function accept(offerId: string, slotId: string) {
+    if (!orderId || busy) return;
+    setBusy(true);
+    setError(null);
+
+    const discussing = openOffer?.options.find((o) => o.id === slotId)?.date;
+    if (discussing) {
+      const versions = await dispatch.planVersions(discussing).catch(() => []);
+      setBefore(versions.find((v) => v.status === "active") ?? null);
+    }
+
+    try {
+      await dispatch.respond(offerId, true, slotId);
+      // Reload the thread rather than patching it: the acceptance writes a confirmation message
+      // and republishes the day, and the server's version of both is the one to show.
+      await load(orderId);
+      if (discussing) setAfter(await dispatch.activePlan(discussing).catch(() => null));
+    } catch (err) {
+      setError(err);
+      await load(orderId);
+    } finally {
       setBusy(false);
     }
   }
@@ -219,10 +256,40 @@ export default function ChatPage() {
               </div>
             </Wallpaper>
 
+            {/* What the agent is doing, from real backend events. Under the latest message, so a
+                judge watching the thread sees the work rather than a spinner. */}
+            {orderId && agentProgress && agentProgress.stages.length > 0 && (
+              <div className="flex flex-col gap-1.5 px-3 pt-2">
+                <ProgressChip
+                  progress={agentProgress}
+                  open={traceOpen}
+                  onToggle={() => setTraceOpen((v) => !v)}
+                />
+                {traceOpen && (
+                  <ProgressPanel
+                    progress={agentProgress}
+                    onRetry={() => {
+                      const last = [...messages].reverse().find((m) => m.direction === "inbound");
+                      if (last) void send(last.body);
+                    }}
+                  />
+                )}
+              </div>
+            )}
+
             {orderId && !confirmed && (
               <QuickReplies
                 replies={suggestReplies(openOffer, confirmed, messages.length)}
-                onPick={(text) => void send(text)}
+                onPick={(id) => {
+                  const reply = suggestReplies(openOffer, confirmed, messages.length).find(
+                    (r) => r.id === id,
+                  );
+                  // A confirm button is an answer to a specific slot, not a sentence to be read.
+                  // Routing it through the language reader let a click be understood as new
+                  // availability, which opened a second offer instead of booking the first.
+                  if (reply?.slotId && openOffer) void accept(openOffer.id, reply.slotId);
+                  else void send(id);
+                }}
                 disabled={busy}
               />
             )}
@@ -405,14 +472,19 @@ function suggestReplies(
   offer: Offer | null,
   confirmed: boolean,
   messageCount: number,
-): Array<{ id: string; label: string }> {
+): Array<{ id: string; label: string; slotId?: string }> {
   if (confirmed) return [];
 
   if (offer && offer.options.length > 0) {
-    const replies = offer.options.map((slot) => ({
-      id: `Confirm ${prettyTime(slot.window.start)} on ${slot.date}`,
-      label: `Confirm ${prettyTime(slot.window.start)}–${prettyTime(slot.window.end)}`,
-    }));
+    // The day is part of the label because the alternatives span two of them. "Confirm 2-5pm"
+    // beside another "Confirm 2-5pm" is a coin flip for whoever is clicking.
+    const replies: Array<{ id: string; label: string; slotId?: string }> = offer.options.map(
+      (slot) => ({
+        id: slot.id,
+        slotId: slot.id,
+        label: `Confirm ${weekdayShort(slot.date)} ${prettyTime(slot.window.start)}–${prettyTime(slot.window.end)}`,
+      }),
+    );
     replies.push({ id: "Why this timing?", label: "Why this timing?" });
     // Only while another round remains -- offering a "no" that can only fail is worse than not
     // offering one. The cap itself is enforced server-side, from persisted rows.
@@ -430,6 +502,12 @@ function suggestReplies(
     ];
   }
   return [];
+}
+
+/** "Fri" / "Sat". The alternatives span both cluster days, so a confirm button that names
+ *  only a time is ambiguous by construction. */
+function weekdayShort(iso: string): string {
+  return parseDate(iso).toLocaleDateString("en-GB", { weekday: "short" });
 }
 
 function prettyTime(hhmm: string): string {

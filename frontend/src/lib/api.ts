@@ -224,6 +224,30 @@ export interface DriverDispatch {
   sent_at: string;
 }
 
+/** One observable step the agent took, with how long it took.
+ *
+ *  Real backend events, never a timed animation: a stage that did not run does not appear. */
+export interface AgentProgressStage {
+  key: string;
+  label: string;
+  /** One plain sentence for why this step is running. Not deliberation. */
+  reason: string;
+  tool: string | null;
+  state: "running" | "done" | "failed";
+  /** What it found, quoted from the tool's own summary. */
+  detail: string;
+  seconds: number;
+}
+
+export interface AgentProgressState {
+  order_id: string;
+  run_id?: string | null;
+  state: "idle" | "running" | "done" | "failed";
+  summary: string;
+  seconds: number;
+  stages: AgentProgressStage[];
+}
+
 export interface PlanVersion {
   id: string;
   delivery_date: string;
@@ -515,6 +539,9 @@ export const dispatch = {
   /** One customer message. THE conversational call: one message, one agent run, one offer round. */
   sendMessage: (orderId: string, body: string) =>
     api.post<ChatTurn>(`/api/orders/${orderId}/messages`, { body }),
+  /** What the agent is doing, or what it did. Live while a turn is in flight; rebuilt from
+   *  the persisted run afterwards, so a refresh keeps the completed trace. */
+  progress: (orderId: string) => api.get<AgentProgressState>(`/api/orders/${orderId}/progress`),
   /** The persisted thread, for a client that has just reloaded. */
   conversation: (orderId: string) => api.get<ChatTurn>(`/api/orders/${orderId}/messages`),
 

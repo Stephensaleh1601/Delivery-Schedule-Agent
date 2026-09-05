@@ -209,6 +209,7 @@ def find_insertion_options(args: OrderArgs, ctx: ToolContext) -> ToolResult:
         # different day then is not a helpful alternative -- it is not having listened, and the
         # policy says so (ALT-8).
         restrict_to=preferred if (preferred and conversation.is_only_option(order)) else None,
+        on_phase=_reporter(order.id),
     )
     ctx.scratch["insertion"] = found
 
@@ -375,3 +376,19 @@ def create_alternative_offer(args: OfferArgs, ctx: ToolContext) -> ToolResult:
     from dispatch_agent.models import OfferPurpose
 
     return _offer(ctx, args.order_id, OfferPurpose.ALTERNATIVE, "create_alternative_offer")
+
+
+def _reporter(order_id: str):
+    """Turn the search's phase callbacks into live progress stages.
+
+    Separate from the search itself so that module stays free of anything to do with a screen: it
+    reports what it is doing, and this decides whether anyone is listening.
+    """
+    from dispatch_agent.agents import progress
+
+    def report(key: str, label: str, reason: str, detail: str) -> None:
+        progress.stage(order_id, key, label, reason, tool="find_insertion_options")
+        if detail:
+            progress.finish_stage(order_id, key, detail=detail)
+
+    return report

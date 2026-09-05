@@ -116,10 +116,17 @@ def main() -> int:
     preserved = _read_caches(path)
 
     if path.exists():
-        path.unlink()
-        print(f"Deleted {path}")
+        try:
+            path.unlink()
+            print(f"Deleted {path}")
+        except PermissionError:
+            # Windows will not unlink a file another process has open, and during a demo that
+            # other process is the running server. Reseeding between takes has to work without
+            # stopping it, so fall back to emptying the tables in place -- which is what the seed
+            # does anyway, and reaches the same state by a different route.
+            print(f"{path} is open in another process (the server?) -- clearing it in place.")
     init_db(path)
-    print(f"Recreated schema at {path}")
+    print(f"Schema ready at {path}")
 
     restored = _write_caches(path, preserved)
     if restored:

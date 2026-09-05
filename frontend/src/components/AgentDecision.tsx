@@ -45,7 +45,11 @@ export function AgentDecision({ decision }: { decision: Decision }) {
       {decision.candidates.length > 0 && (
         <section className="flex flex-col gap-2">
           <Eyebrow>
-            {decision.candidates.length === 1 ? "The option" : "The two real choices"}
+            {/* Counted, not hard-coded: the fallback offers three, and a heading that says "two"
+              while three cards sit under it is the panel contradicting itself. */}
+            {decision.candidates.length === 1
+              ? "The option"
+              : `Route-friendly options (${decision.candidates.length})`}
           </Eyebrow>
           <div
             className={cx(
