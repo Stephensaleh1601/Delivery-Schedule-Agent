@@ -392,7 +392,7 @@ export default function AboutPage() {
           <Headline>We check it. We don&rsquo;t just claim it.</Headline>
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <Metric figure="429" label="Automatic tests" note="Every rule on the last slide is one of them." />
+            <Metric figure="440" label="Automatic tests" note="Every rule on the last slide is one of them." />
             <Metric figure="0" label="Tests that call the internet" note="On purpose — results never drift." />
             <Metric figure="10" label="Steps, then it stops" note="A counter it cannot argue with." />
             <Metric figure="100%" label="Replies traceable to a rule" note="Every answer names the rule behind it." />

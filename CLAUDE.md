@@ -8,7 +8,7 @@ Windows: the virtualenv interpreter is `.venv/Scripts/python.exe`. Use it rather
 `python`, which resolves to a system interpreter without the dependencies installed.
 
 ```bash
-.venv/Scripts/python.exe -m pytest                          # full suite, ~6-7 min, 386 tests
+.venv/Scripts/python.exe -m pytest                          # full suite; slow, run a file while iterating
 .venv/Scripts/python.exe -m pytest tests/test_negotiation.py -q
 .venv/Scripts/python.exe -m pytest tests/test_negotiation.py::test_name -q
 .venv/Scripts/python.exe -m uvicorn dispatch_agent.webapp.main:app --reload   # FastAPI on :8000
@@ -62,7 +62,7 @@ the system.
 
 - `dispatch_agent/planning/` — the deterministic core. Solve, score, negotiate, promise, record.
 - `dispatch_agent/agents/scheduling_agent.py` — a bounded LangGraph loop
-  (`observe → decide → act → … → finish`), capped at `MAX_TOOL_STEPS = 8`. Its own `step_count`
+  (`observe → decide → act → … → finish`), capped at `MAX_TOOL_STEPS = 10`. Its own `step_count`
   is the real guard; LangGraph's `recursion_limit` is a backstop that must never be the normal
   path (it aborts the graph and discards the run log).
 - `dispatch_agent/planning/tools.py` (plus `negotiation_tools.py`, imported at its bottom) — the

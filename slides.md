@@ -317,7 +317,7 @@ else has to change around it.
 
 | What we check | Where it stands |
 |---|---|
-| **Automatic tests** | 429 of them — they run every rule on slide 7 |
+| **Automatic tests** | 440 passing — they run every rule on slide 7 |
 | **Tests that call the internet** | none, on purpose. So results never change by accident |
 | **Can it get stuck in a loop?** | no — it's cut off after 10 steps, and it can't argue |
 | **Can it invent an action?** | no — anything it makes up is refused, not guessed at |

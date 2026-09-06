@@ -1,438 +1,250 @@
-# Delivery-Schedule-Agent
+<h1 align="center">Delivery Schedule Agent</h1>
 
-Dispatch sequencing agent for a Singapore large-furniture delivery company (sofas, beds,
-cabinets). A customer messages a WhatsApp-style chat, an agent (or, for the chat's own booking
-form, a plain structured submit) turns it into a job record, a second agent works out where it
-fits in the day's route, and the coordinator approves, edits or rejects the proposed schedule
-before anything goes to a customer. See `PRD.md` for the original brief; this README covers
-what's actually built and how to run it.
+<p align="center">
+  A customer texts when they are free. The agent finds where they fit on the day's real route, offers one window it can keep, explains why when asked, negotiates when it has to, and locks the promise without moving anyone already booked.
+</p>
 
-Built for IGNITE Agentic AI Hackathon 2026, digital track.
+<p align="center">
+  <a href="#what-it-does">What it does</a> &middot;
+  <a href="#run-it">Run it</a> &middot;
+  <a href="#how-it-works">How it works</a> &middot;
+  <a href="#engineering-decisions">Engineering decisions</a> &middot;
+  <a href="#what-is-real-and-what-is-demo">Real vs demo</a> &middot;
+  <a href="#judging-criteria">Judging criteria</a> &middot;
+  <a href="#repo-map">Repo map</a> &middot;
+  <a href="#tests">Tests</a>
+</p>
 
-## Running the App
+Built for the IGNITE Agentic AI Hackathon 2026, digital track, around a Singapore pet-food delivery operator with one van, two delivery days a week, and a coordinator who spends most of a working day on WhatsApp working out when each customer is home. The scheduling is not the hard part. The negotiation is.
 
-Open two PowerShell terminals.
+## What it does
 
-### 1. Start the Backend
+The coordinator's job, done by an agent, with the coordinator still in charge of the route.
 
-From the project root:
+**A customer says when they are free.** "Friday morning works for me." The agent reads that, looks at the route the van is already running on that customer's delivery day, finds the stop it can be inserted after, and answers with a window it can actually keep:
+
+> We can deliver on Saturday, 5 September, between 2:00pm and 5:00pm. We are already delivering near you that afternoon -- 4.1km away, just after stop 5. Does that work?
+
+**A customer asks why.** "Why are you suggesting this time?" The answer is read off the solved route, not written by a model: how far the nearest stop is, how much driving the visit adds, and that nobody already promised a time gets moved. A question never changes a booking; the tool that answers it is the only one the agent is allowed to call on that turn.
+
+**A customer says no.** The agent records the refusal, searches both delivery days around what they turned down, and offers exactly three alternatives. If none of them works, a coordinator takes over and the customer is told so. It never loops.
+
+**A customer says yes.** The slot is locked, the day's route is republished as a new version, and the old version stays readable. The driver gets the sequence and a maps link.
+
+**Every reply names the rule behind it.** The dashboard's decision panel shows what the customer asked, which tools ran, what changed, and which delivery-policy rule applied.
+
+## Run it
+
+Python 3.12 and Node 22. Two terminals.
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn dispatch_agent.webapp.main:app `
-  --reload `
-  --host 127.0.0.1 `
-  --port 8000
+# once
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+cd frontend; npm install; cd ..
+copy .env.example .env          # fill in what you have; everything has an offline fallback
+.\.venv\Scripts\python.exe scripts\reset_demo.py --yes   # seeded orders and two published routes
+
+# terminal 1: backend
+.\.venv\Scripts\python.exe -m uvicorn dispatch_agent.webapp.main:app --reload --host 127.0.0.1 --port 8000
+
+# terminal 2: dashboard
+cd frontend; npm run dev
 ```
 
-### 2. Start the Frontend
+Then open [localhost:3000](http://localhost:3000). Orders, Daily Routes, Customer Chat and the About deck are in the top bar. The Next.js app proxies `/api/*` to the backend, so nothing else needs configuring.
 
-In a second terminal:
+**Without any credentials it still runs end to end.** `LLM_PROVIDER=none` makes the agent use its deterministic fallback decider and `ROUTING_PROVIDER=haversine` uses straight-line estimates. That is also how the test suite runs, on purpose.
 
-```powershell
-cd frontend
-npm run dev
+**With credentials** set `LLM_PROVIDER=bedrock` and an AWS profile or key pair for Claude Haiku 4.5 (or `LLM_PROVIDER=openai`), and `ROUTING_PROVIDER=google` with a Distance Matrix key (or `onemap`, free). See `.env.example` for each.
+
+## How it works
+
+```mermaid
+flowchart TD
+    C[Customer message<br/>WhatsApp-style chat] --> P[Deterministic parser<br/>planning/language.py<br/>intent + the phrases that say when]
+    P --> E[PlanningEvent<br/>carries the intent]
+
+    subgraph LOOP [LangGraph StateGraph, at most 10 tool steps]
+        O[observe<br/>load order, offers, routes] --> D{decide}
+        D -->|Claude Haiku 4.5 via Bedrock| A[act]
+        D -->|model unavailable: RuleDecisionAgent| A
+        A --> G{dispatch gate<br/>intent scope AND state gate}
+        G -->|legal| T[tool runs, result logged]
+        G -->|refused| R[refusal logged, nothing changes]
+        T --> D
+        R --> D
+    end
+
+    E --> O
+    D -->|finish| Q[reply guarantee<br/>a turn never ends unsent]
+
+    subgraph TOOLS [Six workflow actions over deterministic services]
+        W1[find_normal_slot<br/>find_requested_day_slot<br/>find_fallback_options]
+        W2[confirm_offer<br/>explain_offer<br/>escalate_booking]
+        I[insertion search<br/>planning/insertion.py]
+        S[OR-Tools TSP with time windows<br/>solver.py]
+        K[policy knowledge base<br/>knowledge/delivery-policy.md]
+        W1 --> I --> S
+        W2 --> I
+    end
+
+    T -.calls.-> TOOLS
+
+    Q --> DB[(SQLite<br/>orders, offers, route versions,<br/>messages, agent runs)]
+    DB --> UI[Next.js dashboard<br/>orders, routes, chat, decision panel]
+    DB --> DRV[Driver dispatch<br/>sequence + maps link]
+
+    classDef det fill:#dbeafe,stroke:#2563eb,color:#0f172a
+    classDef llm fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef store fill:#ede9fe,stroke:#7c3aed,color:#3b0764
+    class P,G,Q,W1,W2,I,S,K det
+    class D llm
+    class DB,UI,DRV store
 ```
 
-### Open the App
+A message arrives. A deterministic parser decides what kind of turn it is (availability, accept, reject, a why-question, a policy question, unclear) and quotes the phrases that say when; it never lets a model compute a date. That intent rides on the event into a bounded LangGraph loop: observe the booking, decide the next action, act, repeat. The model chooses which of a short list of approved actions to take. It does not choose what is true. Every action passes a gate that knows both the intent (a why-question may only explain) and the state of the run (nothing can be locked until the customer accepted a slot). The tools underneath are ordinary code: an insertion search over the published route, an OR-Tools solver for the day's sequence, a policy file the agent can cite. When the model is unreachable, a rule-based decider takes the same steps and the run says so. A turn cannot end with a reply written and unsent.
 
-- App: [http://localhost:3000](http://localhost:3000)
-- Customer Chat: [http://localhost:3000/chat](http://localhost:3000/chat)
-- Backend API: [http://localhost:8000](http://localhost:8000)
+## Engineering decisions
 
-> Keep both terminals open. Backend and frontend changes reload automatically.
+The parts worth a judge's five minutes. Each one is a rule the code enforces, not a sentence in a prompt.
 
-## What's built
+<details>
+<summary><strong>1. The model chooses; deterministic code decides what is true.</strong></summary>
 
-### The customer types
+The model's output is one of a fixed set of action names plus arguments checked by a Pydantic schema with `extra="forbid"`. Dates never come from the model. "Saturday morning" comes back as those words and `planning/language.py` resolves them against the planning clock, so a model that confidently says "next Tuesday is the 15th" has no field to put that date in. Availability is recorded by a tool that takes no windows argument; the windows arrive on the tool context from the parser. There is no path through which a model can invent a time the customer never offered.
 
-There is no availability form. A customer writes "I'm free Saturday morning" and the agent reads
-it, solves the route, and answers with a window it can keep. One stated timing is enough; nothing
-asks for two or three.
+Where: `dispatch_agent/planning/language.py`, `dispatch_agent/planning/tools.py` (`record_availability`), `tests/test_conversation.py`.
+</details>
 
-The model decides *what the customer wants* and quotes the phrases that say when. It never computes
-a date: "Saturday morning" comes back as those two words and is resolved by
-`planning/language.py` against the Singapore planning clock. A model that confidently answers
-"next Tuesday is the 15th" cannot introduce that date, because there is no field for it to arrive
-in. The same module is the deterministic fallback when a provider is unreachable, and it is what
-the tests assert on -- so no test calls a model (`LLM_PROVIDER=none` is pinned by an autouse
-fixture).
+<details>
+<summary><strong>2. Six actions instead of sixteen, and a scope you cannot get wrong.</strong></summary>
 
-Four things are kept distinct, and one boundary is structural:
+The conversational turns use six workflow tools, one per thing a coordinator actually does: find a slot on the customer's own day, find one on the day they named, find fallbacks on both, confirm, explain, escalate. Route scope is a property of the tool, not an argument, so there is no scope to pass and no scope to get wrong, and the tool name in the trace says which routes were searched. Each intent maps to the handful of actions it may take: `INTENT_TOOLS["explain"]` is `{explain_offer, send_message, finish}`, so a why-question cannot end in a booking whatever the model decides it wants.
 
-| | what it is |
-|---|---|
-| **stated availability** | what the customer said. Only they can create it |
-| **tentative suggestion** | a window we are asking about. Not availability |
-| **offered promise** | a tentative window put to them formally |
-| **locked appointment** | one they accepted |
+Where: `dispatch_agent/planning/workflows.py`, `INTENT_TOOLS` in `dispatch_agent/planning/tools.py`, `tests/test_state_gate.py`.
+</details>
 
-A suggestion becomes availability only by being accepted. `record_availability` takes no windows
-argument at all -- they arrive on the tool context from the parser -- so there is no path through
-which a model could invent a time the customer never offered.
+<details>
+<summary><strong>3. The state gate narrows, never widens.</strong></summary>
 
-**Counteroffers are policy, not judgement.** A time they asked for that we can serve is served.
-`planning/negotiation.py` states the exceptions: infeasible, overtime, opening an otherwise-empty
-delivery day, or another day saving `COUNTEROFFER_SAVING_MINUTES` (15) or more. A customer who
-says their timing is fixed is never asked again.
+`legal_actions()` computes what the agent may do right now from the run's state: once-per-run actions disappear after they succeed, a search cannot run until the customer's stated times are written down, a fallback search cannot run until the rejection is recorded, nothing can be locked until the customer accepted a slot. The same list is what the model is shown and what `dispatch()` enforces, so an illegal action is not a temptation the prompt has to talk it out of. A bug in the gate can make the agent do less than it should. It cannot make it do something unsafe.
 
-**Two guards are structural rather than prompted**, because a live smoke test showed prose is not
-enough. `lock_appointment` refuses unless the customer actually accepted that slot -- gpt-4o-mini
-called it while its own question was still unanswered, and succeeded. And `send_message` sends the
-wording the previous tool produced, because the same model rewrote an offer into "Dear Mrs. Lee...
-Best regards" and dropped the route reason the message existed to carry.
+Where: `legal_actions` and `dispatch` in `dispatch_agent/planning/tools.py`.
+</details>
 
-### The negotiated promise window
+<details>
+<summary><strong>4. A bounded loop, with a counter it cannot argue with.</strong></summary>
 
-The thing that makes this behave like a coordinator rather than a scheduler. A customer who says
-"Friday, any time" is describing a **boundary**, not asking to be told a nine-hour arrival window.
-So the route is solved first, and the customer is then asked for something specific:
+`MAX_TOOL_STEPS = 10`. The loop's own step counter stops it and raises a coordinator exception; LangGraph's `recursion_limit` is set to `2 * MAX_TOOL_STEPS + 6` as a backstop. Repeating a once-per-run action is refused. Asking the same clarification three times in one run is the same duplicate-action failure and is refused the same way.
 
-> We can deliver on Friday, 5 September, between 10:00am and 12:00pm. We'll already be delivering
-> in the East that morning, so this is the time we can promise most reliably. Does that work?
+Where: `dispatch_agent/agents/scheduling_agent.py`, `ONCE_PER_RUN` in `dispatch_agent/planning/tools.py`, `tests/test_scheduling_agent.py`.
+</details>
 
-Three windows exist and all three are stored, because they mean different things:
+<details>
+<summary><strong>5. The demo survives the model being unavailable, and says so.</strong></summary>
 
-| | what it is | where it lives |
+`RuleDecisionAgent` is a deterministic policy over the same state the model sees. When the model errors, the run falls back per step, records the error, and stamps each step with who decided it. The log says plainly that it fell back rather than pretending a model made the calls. The whole test suite runs this way: four autouse fixtures pin `LLM_PROVIDER=none`, straight-line routing, a per-test SQLite file, and a blocked network, so results never drift with a provider.
+
+Where: `RuleDecisionAgent` in `dispatch_agent/agents/scheduling_agent.py`, `tests/conftest.py`.
+</details>
+
+<details>
+<summary><strong>6. Locked promises never move.</strong></summary>
+
+Inserting a new customer into a route is only allowed where every stop already promised a window still arrives inside it. The insertion search returns options ranked by added distance; the option list is the agent's evidence, and the explanation a customer gets is read off that evidence, not generated. The dashboard's "Customers moved" counter is the number of confirmed windows changed without asking, and it is meant to read zero.
+
+Where: `dispatch_agent/planning/insertion.py`, `dispatch_agent/planning/plan_service.py`, `tests/test_offer_integrity.py`.
+</details>
+
+<details>
+<summary><strong>7. One day, one region.</strong></summary>
+
+The operator runs one van. Friday covers North, North-East, South and East; Saturday covers Central, City and West. A customer's postal code decides their normal day, and the "normal slot" search only looks there. Only a rejection opens the other day, and only for the fallback search. The coordinator's rule, written down once, enforced at the tool.
+
+Where: `dispatch_agent/planning/clusters.py`, `knowledge/delivery-policy.md`, `tests/test_cluster_routing.py`.
+</details>
+
+<details>
+<summary><strong>8. A turn never ends unsent.</strong></summary>
+
+The worst failure a conversation can have is the agent writing a reply, logging that it wrote it, and stopping. It happened once in a real browser session. Now the controller checks, at the end of every run, that anything written for the customer was sent, and sends it if not, with the trace saying the completion guarantee did it.
+
+Where: `_guarantee_a_reply` in `dispatch_agent/agents/scheduling_agent.py`, `tests/test_browser_regressions.py`.
+</details>
+
+## What is real and what is demo
+
+| | Real | Demo stand-in |
 |---|---|---|
-| **availability** | what the customer said they could do | `AvailabilityOption.window` |
-| **service** | their solved arrival to departure | `CandidateSlotEvaluation.service_window` |
-| **promise** | the narrow window put to them, and locked on acceptance | `OfferedSlot.window` |
+| Customer channel | The conversation logic, message log, intent handling | A web chat styled like WhatsApp. No WhatsApp API is connected. |
+| Language model | Claude Haiku 4.5 on Bedrock, or OpenAI, chooses actions | Without credentials, `RuleDecisionAgent` chooses; every run records which one did |
+| Drive times | Google Distance Matrix, or OneMap, with a filter for routes that stray into Johor | `haversine` straight-line estimates when no provider is configured |
+| Orders and routes | The insertion search, offers, locks, route versions, driver dispatch | Twenty seeded orders and two pre-published routes from `scripts/reset_demo.py`; the calendar is pinned by `DEMO_BASE_DATE` |
+| Delivery policy | A markdown policy the agent searches and cites | Written for the demo operator; edit `knowledge/delivery-policy.md` |
+| Fleet | One van, two delivery days, region-by-day rule | Multi-vehicle is not built |
+| Deployment | Runs locally as two processes | Not deployed to AgentCore or anywhere else |
 
-The promise is derived from the arrival OR-Tools actually chose (`planning/promise_window.py`), not
-from the availability — deriving it from the availability would reproduce the old behaviour with
-extra steps. It is `max(120, duration + 30)` minutes wide. Never the service interval itself:
-`solver._normalised_windows` reduces a lock `[S,E]` for a `D`-minute job to an arrival domain of
-`[S, E-D]`, so at width `D` the arrival is *pinned* and one leg re-estimating by a minute makes the
-day infeasible for everyone on it.
+`dispatch_agent/webapp/static/` and `webapp/chat.py` are an earlier rule-based prototype still served at `/` and `/admin`. The demo does not use them.
 
-**Two optimisations, kept apart.** Sequencing decides the ORDER of a day's stops (OR-Tools, in
-`solver.py`, tested in `tests/test_route_sequencing.py`). Negotiation decides WHICH day and window a
-customer is promised (`planning/candidate_service.py` and `offer_service.py`, tested in
-`tests/test_negotiation.py`). The language model chooses between deterministic results; it never
-produces them, and it never invents geography — the reasons come from `planning/route_facts.py`,
-read off the solved sequence.
+## Judging criteria
 
-**Declining a time is not declining the day.** "Not 10 till 12" leaves the rest of Friday on the
-table: the interval is carved out of the availability option, the day is re-solved around the hole
-(the solver's existing `CumulVar.RemoveInterval` support), and a different window comes back. The
-two-round cap is unchanged, so this cannot become pestering.
+| Criterion | Where to look |
+|---|---|
+| **Effectiveness** | A stated availability becomes a kept promise in one turn. A why-question is answered from the route. A refusal gets exactly three alternatives or a human. `tests/test_chat_api.py` walks each of these over HTTP. |
+| **Originality** | The agent negotiates against a real route instead of scheduling into a calendar, and answers "why that time?" with measured figures. Nobody already promised a time is moved. |
+| **Technical quality** | Decisions 1 to 8 above. LangGraph loop, intent and state gates, deterministic dates, per-step fallback with provenance, offline test suite. |
+| **Benefits** | The coordinator's WhatsApp day becomes a review of exceptions. The driver gets a sequence that was solved, not remembered. |
+| **Presentation** | The About deck at `/about` in the dashboard is the ten slides; `slides.md` is the same content in text. |
 
-**Route impact is never one number.** `total_score` is a ranking index: it mixes real driving
-minutes with artificial penalties — a 60-minute empty-day charge is a planning weight nobody drives.
-It is not rendered on any customer- or coordinator-facing surface. What is shown is the
-decomposition, each with its own unit: driving, distance, stops, completion time, overtime, and
-whether a delivery day is opened (a yes/no). Customer preference sits below a rule, unpriced, and
-acts as a tiebreak rather than a term inside the score.
-
-
-- **Intake agent** (`dispatch_agent/agents/intake_agent.py`) — a LangGraph graph that reads a
-  WhatsApp message, extracts a structured job (name, address, postal code, job type,
-  availability) via a forced Claude tool call, geocodes the postal code, and persists it.
-  Missing fields (no postal code, no name) come back as `errors` instead of a guess.
-- **Planning agent** (`dispatch_agent/agents/planning_agent.py`) — takes a day's jobs, gets a
-  real drive-time matrix, solves a single-vehicle time-windowed sequence with OR-Tools,
-  and drafts a short WhatsApp confirmation per stop.
-- **Reschedule loop** (`dispatch_agent/reschedule.py`) — a customer moves, the day re-solves,
-  and only the customers whose arrival window actually changed come back as "affected".
-- **Web app** (`dispatch_agent/webapp/`) — FastAPI, plain HTML/JS pages, no build step:
-  - **Client front face** (`/`) — a WhatsApp-look chat UI (`static/client.html`, `chat.css`,
-    `chat.js`). A rule-based conversation engine (`dispatch_agent/webapp/chat.py`, no LLM call)
-    greets the customer with two options: book a delivery (bot replies with an inline card-style
-    form for name/address/furniture type/preferred date+time) or reschedule an existing one
-    (bot asks for name/phone, looks the booking up, then negotiates a new slot -- it calls the
-    real solver via `apply_reschedule`, and if the requested slot doesn't fit the rest of that
-    day it asks the customer to suggest a different one, up to a few tries before handing off to
-    the team).
-  - **Back office** (`/admin`) — lists incoming orders and has a "Generate Route Plan" button
-    showing sequence, scheduled arrival, and distance/duration from the previous stop for each
-    client, plus an interactive Google map (`/api/config` hands the browser the Maps JS key +
-    depot) pinning every stop in order with the actual road-following route (Directions API,
-    falling back to a straight line if that API isn't reachable/enabled). Polls for
-    notifications every 15s -- if a chat reschedule touched a date whose plan was already
-    generated, a banner appears with a one-click "Regenerate" per affected date. A "Share Trip
-    Link" button on the generated plan builds a plain `google.com/maps/dir/...` deep link
-    (Google's public URL scheme, no API key or OAuth) through every stop in the solved order --
-    send it to a driver's phone and it opens turn-by-turn navigation in their own Google Maps
-    app, signed into their own account, no "connect an account" step needed.
-- **Solver** (`dispatch_agent/solver.py`) — single-vehicle TSP with time windows via OR-Tools'
-  routing library. A time-limited guided local search -- good routes at the size this runs at
-  (a handful to a few dozen jobs/day), but not a guaranteed optimum, so don't describe it as
-  one. Honours disjoint availability windows and never moves a job with a locked window.
-- **Storage** (`dispatch_agent/db.py`) — SQLite: jobs, the day's proposed sequence, and the
-  coordinator override log.
-
-## What's a placeholder
-
-Three files are meant to be swapped for the real ones the PRD calls "reused from Stow" — this
-repo doesn't have that source, so each ships with a working but coarse fallback and a comment
-saying so:
-
-- `dispatch_agent/geo/postal_codes.py` — Singapore's 28 postal districts, not exact addresses.
-- `dispatch_agent/geo/zones.py` — same district centroids, used for zone lookups.
-- `dispatch_agent/geo/routing_client.py` — Google Maps Distance Matrix API by default, OneMap
-  (SG's free routing API, with the Johor-route filter the PRD flags) as an alternative, falling
-  back to a haversine estimate with no credentials or network for either. This fallback is also
-  what makes the test suite and `run_demo.py` runnable offline.
-
-AgentCore deployment isn't wired up — the PRD lists it as the target runtime, but doing that
-config against a real AWS account is out of scope for what can be verified in this repo. The
-web app and demo script run locally against the same `dispatch_agent` package that would be
-deployed.
-
-## Repo layout
+## Repo map
 
 ```
 dispatch_agent/
-  models.py            Pydantic schemas -- the shape everything else agrees on
-  config.py             env-driven settings
-  db.py                  SQLite: jobs, day sequences, override log
-  llm.py                  Bedrock and OpenAI clients (free text + forced-tool-call structured output),
-                            picked by LLM_PROVIDER via build_llm_client()
-  solver.py               OR-Tools single-vehicle TSP with time windows
-  reschedule.py            re-solve + diff affected customers on a reschedule
   agents/
-    prompts.py             prompt text and the intake tool's JSON schema
-    intake_agent.py         LangGraph: message -> validated, geocoded JobRecord
-    planning_agent.py        LangGraph: jobs -> sequence + drafted messages
-  geo/
-    postal_codes.py          postal code -> coordinates (placeholder, see above)
-    zones.py                   zone centroids (placeholder, see above)
-    routing_client.py           drive time + distance: Google Distance Matrix, OneMap, or haversine
-  webapp/
-    main.py                      FastAPI: /api/jobs, /api/chat, back-office route-plan API
-    jobs_service.py                shared job-creation logic (used by /api/jobs and chat.py)
-    chat.py                         rule-based conversation engine: booking form + reschedule negotiation
-    static/
-      client.html, chat.css, chat.js    WhatsApp-look chat UI (front face)
-      admin.html, admin.js, style.css    back-office dashboard (route plan + map)
+    scheduling_agent.py   the bounded LangGraph loop; LLM decider, rule fallback, reply guarantee
+    understanding.py      reading a message with the model, falling back honestly when unavailable
+    prompts.py            the prompt text the model sees, including the action list
+    progress.py           what the agent is doing right now, for the chat's progress strip
+    intake_agent.py       earlier LangGraph graph: free text -> geocoded job record
+    planning_agent.py     earlier LangGraph graph: a day's jobs -> a sequenced route
   planning/
-    clock.py                    the one place "today" and the bookable horizon are decided
-scripts/
-  seed_db.py                     create the SQLite schema
-  seed_test_clients.py             wipe + seed 20 synthetic furniture-delivery clients across 5 dates
-  run_demo.py                     the PRD's demo beat end to end
-data/
-  sample_messages.json             3 sample WhatsApp messages for the demo (furniture delivery)
-tests/
-  conftest.py                       temp-DB fixture + a FakeLLM (no network in tests)
-  test_models.py, test_solver.py, test_intake_agent.py, test_reschedule.py
+    language.py           deterministic parser: intent, dates, times, from the customer's own words
+    tools.py              the only actions the agent may take; INTENT_TOOLS; the state gate; dispatch()
+    workflows.py          the six workflow actions, one per thing a coordinator does
+    insertion.py          where a new customer fits into a published route without moving anyone
+    insertion_tools.py    the tools that let the agent see the routes without inventing anything
+    negotiation.py        when to counteroffer, and what to offer instead
+    negotiation_tools.py  explain, clarify, and the other conversational tools
+    offer_service.py      offering slots, and turning an acceptance into a locked appointment
+    plan_service.py       publishing route versions and keeping the promises inside them
+    clusters.py           which day a postal code belongs to; which routes a search may look at
+    clock.py              the one place "today" is decided
+    policy_kb.py          searching the written delivery policy so an answer can cite its rule
+    decision_record.py    the decision in the shape the dashboard panel shows
+    conversation.py       one customer message, handled end to end
+  geo/                    postal-code geocoding, drive-time client with Johor filter, matrix cache
+  solver.py               single-vehicle TSP with time windows, OR-Tools, 5s limit
+  models.py               the Pydantic schemas everything shares
+  db.py                   SQLite: jobs, offers, route versions, messages, agent runs
+  config.py               every tunable, from the environment
+  webapp/
+    main.py               FastAPI app and the JSON API
+    chat_api.py           one typed message in, one agent run out
+    jobs_service.py       job creation and editing shared by the API routes
+frontend/                 Next.js dashboard: Orders, Daily Routes, Customer Chat, About deck
+knowledge/delivery-policy.md   the rules the agent cites, with the code site that enforces each
+scripts/reset_demo.py     rebuild the demo database
+tests/                    offline by construction; see below
 ```
 
-## How to run it
+Tunables live in `dispatch_agent/config.py`: the 10 km anchor radius for "near you", the 15-minute saving that justifies a counteroffer, the 120-minute promise window, the 5-second solver limit.
 
-Requires Python 3.11+.
+## Tests
 
-```bash
-pip install -r requirements.txt
-pip install -e .          # makes `dispatch_agent` importable everywhere
-cp .env.example .env
-python scripts/seed_db.py
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q                       # everything
+.\.venv\Scripts\python.exe -m pytest -q tests\test_chat_api.py  # one file; most files run in under a minute
 ```
 
-### Setup checklist -- APIs and credentials required
-
-This project needs credentials for two *independent* things, each with a choice of provider.
-Pick one option per row, put the matching values in `.env`, and leave the other option's fields
-blank.
-
-| Used for | Pick one | Set in `.env` |
-|---|---|---|
-| LLM (intake + planning agents) | AWS Bedrock **or** OpenAI | `LLM_PROVIDER=bedrock` or `openai` |
-| Routing + admin map (drive time/distance, route map) | Google Maps **or** OneMap **or** neither (haversine fallback, no signup) | `ROUTING_PROVIDER=google`, `onemap`, or `haversine` |
-
-Nothing else needs a cloud account: `pytest` and everything in `webapp/` runs
-against SQLite locally, and the haversine fallback keeps routing working with zero credentials.
-
-> **If you're using Google Maps, there are two separate APIs to switch on for the same key --
-> missing either one is the most common reason things silently fall back or the map shows an
-> error.** See "Option A: Google Maps" under section 2 below.
-
-### 1. LLM provider (needed for anything that calls an LLM, i.e. everything except `pytest`)
-
-Set `LLM_PROVIDER` in `.env` to `bedrock` (default) or `openai`. Only the section for the one
-you pick needs real credentials.
-
-#### Option A: AWS Bedrock (`LLM_PROVIDER=bedrock`)
-
-Nothing in this repo has an AWS-console step for you to click through except this one. Set
-both of these before the agents will actually call Bedrock:
-
-1. **Get credentials into `.env`.** Open `.env` and pick one of the two options already
-   documented there:
-   - Already have `aws configure` set up? Set `AWS_PROFILE` to that profile's name.
-   - No AWS CLI? Create an access key in the AWS Console under **IAM → Users → your user →
-     Security credentials → Create access key**, then paste the key id and secret into
-     `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in `.env`. No CLI install needed — boto3
-     reads them straight from the environment.
-2. **Request Bedrock model access.** In the AWS Console, go to **Bedrock → Model access** (in
-   the same region as `AWS_REGION`, default `ap-southeast-1`) and enable Claude Haiku. This is
-   a one-time, per-account approval step — valid credentials alone aren't enough, Bedrock
-   blocks calls to models you haven't been granted access to.
-3. **Confirm the model id.** `BEDROCK_MODEL_ID` in `.env` is a placeholder — check the exact id
-   string in the Bedrock console's model catalog (or `aws bedrock list-foundation-models`) for
-   your region and update it if it doesn't match.
-
-#### Option B: OpenAI (`LLM_PROVIDER=openai`)
-
-Set `OPENAI_API_KEY` in `.env` to a key from platform.openai.com/api-keys, and optionally
-`OPENAI_MODEL` (default `gpt-4o-mini`). No AWS setup needed for this path — `build_llm_client()`
-in `dispatch_agent/llm.py` returns `OpenAIChat` instead of `BedrockClaude`, same
-`.complete()` / `.extract_structured()` interface, so nothing else in the agents changes.
-
-### 2. Routing provider + admin map (Google Maps or OneMap)
-
-Set `ROUTING_PROVIDER` in `.env` to `google` (default), `onemap`, or `haversine`.
-
-#### Option A: Google Maps (`ROUTING_PROVIDER=google`)
-
-Get a plain Maps API key (Google Cloud Console → **APIs & Services → Credentials → Create
-credentials → API key**) and set `GOOGLE_MAPS_API_KEY` in `.env`. This is a normal API key, not
-a GCP service account — Google's separate *Route Optimization API* needs the latter and isn't
-what this project uses.
-
-> **⚠️ Enable all three of these APIs on that key — Google Cloud Console → APIs & Services →
-> Library — or things will silently misbehave instead of erroring clearly:**
->
-> 1. **Distance Matrix API** — used by `dispatch_agent/geo/routing_client.py` for drive
->    time/distance between stops (one batched request per day's stop list, not one per pair).
->    Missing this: routing quietly falls back to a straight-line haversine estimate (no crash,
->    just less accurate times/distances).
-> 2. **Maps JavaScript API** — used by the admin dashboard's interactive route map
->    (`/admin`). Missing this: the map area shows an authentication error instead of rendering
->    (the page itself still loads fine).
-> 3. **Directions API** — used by the same map to draw the actual road-following route between
->    stops. Missing this: the map still renders with numbered stop markers, but the connecting
->    line is a straight-line estimate instead of the real driving path (a note under the map
->    says so when this happens).
->
-> Each is a separate on/off switch even though all three use the same key — enabling one does
-> not enable the others. Search each API by name in the Library and click **Enable**.
->
-> The key is sent to the browser as-is for the map — that's Google's own design for the Maps
-> JavaScript API, not a mistake in this codebase. Restrict the key by **HTTP referrer** in Cloud
-> Console (APIs & Services → Credentials → your key → Application restrictions) rather than
-> relying on it staying secret, especially before deploying this anywhere public.
-
-#### Option B: OneMap (`ROUTING_PROVIDER=onemap`)
-
-Free at onemap.gov.sg, Singapore-only. Set `ONEMAP_TOKEN` (a pre-issued token, takes priority)
-or `ONEMAP_EMAIL`/`ONEMAP_PASSWORD` (exchanged for a token automatically). No admin-dashboard map
-in this mode — that only needs `GOOGLE_MAPS_API_KEY` (Maps JavaScript API enabled), independent
-of which `ROUTING_PROVIDER` you picked for the actual drive-time solving. Set both if you want
-OneMap routing with the Google map.
-
-#### Option C: no credentials (`ROUTING_PROVIDER=haversine`, or just leave the above blank)
-
-Falls back to a straight-line distance estimate automatically. This is also what keeps the test
-suite and `run_demo.py` runnable completely offline.
-
-### 3. Depot
-
-Every route starts and ends at the company office: **8 Somapah Rd, Singapore 487372 (SUTD)**,
-`dispatch_agent/geo/zones.py`'s `COMPANY_DEPOT` (rooftop-precision coordinates, resolved once via
-the Google Geocoding API). Change that constant if the office ever moves. Nothing to configure
-in `.env` for this — it's a code constant, not a credential.
-
-### Test data
-
-`scripts/seed_test_clients.py` inserts 20 synthetic furniture customers across 5 weekdays -- 7
-on the first date, spread across 7 genuinely different Singapore neighbourhoods (Tampines,
-Bedok, Katong, Geylang, Macpherson, Toa Payoh, Hougang) rather than clustered next to the
-depot, and 13 more spread even further (including the far west and north) across the other 4
-dates at 3-4/day. No LLM call, no network, so it always works.
-
-The busy date is capped at 7, not more: 10 same-day sofa deliveries (45 min each) only leave 90
-minutes of total travel budget in a 09:00-18:00 day, and real drive times between distinct
-neighbourhoods (11-30+ min each) blow through that in a handful of legs -- verified against the
-live solver with a 30-second search budget, not just infeasible-by-guess. 7 stops (225 minutes
-of travel budget) comfortably fits this spread.
-
-**⚠️ This wipes every job, sequence, and notification currently in the DB** -- not just
-previously-seeded ones. Anything booked through the live chat or admin dashboard, including
-your own manual testing, is deleted too. Only run this against a database nobody's actively
-using.
-
-```bash
-python scripts/seed_test_clients.py
-```
-
-### Testing
-
-```bash
-# 1. Fully offline -- no cloud credentials, no network, no .env needed. Exercises the models,
-#    the OR-Tools solver, the intake/reschedule logic, and SQLite persistence with a FakeLLM
-#    standing in for the LLM.
-python -m pytest
-
-# 2. End-to-end with real LLM calls -- needs the LLM provider credentials above.
-#    Runs the PRD's demo beat: 3 WhatsApp messages -> intake -> sequence -> approve ->
-#    reschedule -> re-sequence, printing each step to the terminal.
-python scripts/run_demo.py
-
-# 3. Interactive -- the web app. Needs jobs in the DB: run scripts/seed_test_clients.py, run
-#    step 2 above, or book one through the chat.
-# Run Uvicorn through Python so this works even when the `uvicorn` executable is not on PATH.
-python -m uvicorn dispatch_agent.webapp.main:app --reload
-#   -> http://localhost:8000/       WhatsApp-style client chat (legacy, single-slot booking)
-#   -> http://localhost:8000/admin  back-office dashboard (legacy)
-#
-# 4. The Next.js console -- the six demo screens, in a second terminal. It proxies /api to
-#    FastAPI, so both processes must be running.
-cd frontend && npm install && npm run dev
-#   -> http://localhost:3000/        Orders -- every booking as a spreadsheet
-#   -> http://localhost:3000/routes  Daily Routes -- the four days mapped, versions, recovery
-#   -> http://localhost:3000/chat    Customer Chat -- the WhatsApp demo beside the agent's trace
-#
-# Agent activity is a drawer, reachable from the header on any screen.
-
-```
-
-If step 2 fails immediately, it's almost always one of: credentials not picked up (check
-`.env` was actually loaded — `python -c "from dispatch_agent.config import settings; print(settings.llm_provider)"`),
-or (Bedrock specifically) model access not yet granted / a stale `BEDROCK_MODEL_ID`.
-
-**Neither the client chat's booking form nor its reschedule negotiation calls an LLM** -- both
-are plain structured flows (see `dispatch_agent/webapp/chat.py`'s module docstring), so they
-work regardless of `LLM_PROVIDER`. Under the hood, reschedule calls `apply_reschedule(...,
-draft_messages=False)`, which re-solves the day but skips the planning agent's drafted WhatsApp
-messages (the chat sends its own confirmation instead) -- `scripts/run_demo.py` and the
-demo script still drafts real messages via the LLM, since it calls planning with the default
-`draft_messages=True`.
-
-### Notifications: a chat reschedule making an already-generated route plan stale
-
-If a customer reschedules via the chat after the admin already clicked "Generate Route Plan"
-for the affected date(s), that plan is now out of date -- the job composition changed but the
-saved sequence didn't. `dispatch_agent/webapp/chat.py` detects this (by checking whether the
-old and/or new date already had a saved `DaySequence` before the move) and writes a
-`Notification` row. The admin dashboard polls `GET /api/notifications` every 15s and shows a
-banner with the affected date(s) and a one-click "Regenerate `<date>`" button per date, plus a
-"Dismiss" button (`POST /api/notifications/{id}/dismiss`). This is independent of whether the
-LLM drafts a message -- it's driven purely by whether a sequence already existed.
-
-### Troubleshooting: SSL certificate errors calling Google/OneMap
-
-On some networks (a corporate proxy or VPN doing TLS interception, some antivirus/endpoint
-security software) the OS trusts the intercepting certificate but Python's bundled `certifi` CA
-list doesn't, so every `requests` call to Google Maps or OneMap fails with
-`CERTIFICATE_VERIFY_FAILED`. The routing client's broad fallback handling means this doesn't
-crash anything -- it just silently degrades every drive-time/distance call to the haversine
-estimate (and, for the batched Distance Matrix call, still pays for every failed connection
-attempt first, so it's also slow). `dispatch_agent/config.py` calls
-`truststore.inject_into_ssl()` at import time to use the OS's own trust store instead of
-`certifi`'s, which fixes this on Windows/macOS/Linux without needing to install a corporate root
-CA into Python manually. If you still see certificate errors after `pip install -r
-requirements.txt`, confirm `truststore` actually installed (`python -c "import truststore"`).
-
-## How this maps to the PRD's three demo numbers
-
-- *How often the intake agent produces a usable job record first try* — count `errors == []`
-  results from `run_intake` / `scripts/run_demo.py` against a labelled message set.
-- *How often a message goes to an approved slot with no human edit* — count jobs approved
-  as-is vs. rows in `override_log` for that delivery date (`JobsRepository.overrides_for_date`).
-- *Total drive time of the agent's day against the same day sequenced by hand* — compare
-  `DaySequence.total_drive_minutes` against a hand-sequenced run of the same job list.
-
-None of these are wired up as a reporting script yet — the data (`override_log`, saved
-sequences) is there; building the actual slide numbers is left to whoever runs the comparison
-against a real hand-sequenced day, since that's the part the PRD says needs a real person.
+The suite is offline by construction. `tests/conftest.py` pins the LLM provider to none, routing to straight-line, the database to a per-test file, and blocks outbound requests, so a test that needs the internet fails rather than passing on someone's credentials. `tests/test_state_gate.py` and `tests/test_scheduling_agent.py` are the guardrails: what happens when the model asks for something it should not. `tests/test_chat_api.py` walks the conversation over HTTP. `tests/test_browser_regressions.py` holds failures found in real browser sessions, each written so it fails if the fix is removed.
