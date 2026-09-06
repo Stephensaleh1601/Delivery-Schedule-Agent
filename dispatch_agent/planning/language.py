@@ -456,7 +456,13 @@ def interpret(
     #                              order, "why do you need someone at home?" -- a question the
     #                              policy answers in one rule -- was handed to a human because it
     #                              contains "someone".
-    policy_like = bool(raw.count("?") and not windows and _POLICY_QUESTION.search(raw))
+    bare_days = _dates_without_times(raw) if not windows else []
+    asks_for_times_on_day = bool(
+        bare_days and re.search(r"\b(what time|which time|times?|avail(?:able|ability)?)\b", raw, re.I)
+    )
+    policy_like = bool(
+        raw.count("?") and not windows and not asks_for_times_on_day and _POLICY_QUESTION.search(raw)
+    )
     if topic and not windows and not (policy_like and topic == "contact"):
         result.intent = "general_support"
         result.support_topic = topic
@@ -515,7 +521,6 @@ def interpret(
     #
     # Only reached once accept, reject and explain have been ruled out, because those all mention
     # days too: "Saturday works" is an acceptance, not an offer of the whole of Saturday.
-    bare_days = _dates_without_times(raw)
     if bare_days:
         result.intent = "provide_availability"
         result.windows = bare_days

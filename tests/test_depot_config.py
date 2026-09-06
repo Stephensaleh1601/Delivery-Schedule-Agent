@@ -110,3 +110,19 @@ def test_the_env_var_parses_the_words_people_actually_write(monkeypatch):
     for truthy in ("true", "True", "1", "yes"):
         monkeypatch.setenv("RETURN_TO_DEPOT", truthy)
         assert config.Settings().return_to_depot is True, truthy
+
+
+@pytest.mark.parametrize(
+    "field,value,expected",
+    [
+        ("llm_provider", "bedrok", "LLM_PROVIDER"),
+        ("routing_provider", "googl", "ROUTING_PROVIDER"),
+    ],
+)
+def test_unknown_provider_names_fail_at_startup(field, value, expected):
+    """A typo must not silently select a paid model or a coarse routing fallback."""
+    broken = config.Settings()
+    setattr(broken, field, value)
+
+    with pytest.raises(config.ConfigurationError, match=expected):
+        config.validate(broken)

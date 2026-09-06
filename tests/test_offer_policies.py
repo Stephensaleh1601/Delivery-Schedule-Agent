@@ -254,6 +254,30 @@ def test_accepting_an_unmoved_route_confirms_and_republishes(seeded):
     assert len(after.sequence.stops) == len(before.sequence.stops) + 1
     assert outcome.job.id in {s.job_id for s in after.sequence.stops}
 
+    version_count = len(seeded.plan_versions(slot.date))
+    replay = offer_service.accept_offer(seeded, offer.id, slot.id)
+    assert replay.idempotent is True
+    assert len(seeded.plan_versions(slot.date)) == version_count
+
+
+def test_an_accepted_offer_cannot_be_replayed_with_a_different_slot(seeded):
+    _, saturday = PlanningClock.horizon_dates()
+    order, ctx = _searched(seeded, "Mr Rajan", exclude={(saturday, "morning")})
+    tools.dispatch("create_alternative_offer", {"order_id": order.id}, ctx)
+    offer = seeded.offers_for_order(order.id)[0]
+    assert len(offer.options) >= 2
+    accepted, different = offer.options[:2]
+
+    offer_service.accept_offer(seeded, offer.id, accepted.id)
+    version_count = len(seeded.plan_versions(accepted.date))
+
+    with pytest.raises(offer_service.OfferError) as exc:
+        offer_service.accept_offer(seeded, offer.id, different.id)
+
+    assert exc.value.kind == "different_slot_already_accepted"
+    assert seeded.get_offer(offer.id).accepted_slot_id == accepted.id
+    assert len(seeded.plan_versions(accepted.date)) == version_count
+
 
 def test_the_existing_stop_order_is_preserved_by_an_acceptance(seeded):
     """Insertion, not re-optimisation. Everyone already on the route keeps their place relative

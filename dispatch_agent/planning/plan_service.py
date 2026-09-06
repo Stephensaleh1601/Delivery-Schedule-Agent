@@ -21,7 +21,7 @@ from datetime import date as Date
 from pathlib import Path
 
 from dispatch_agent.config import settings
-from dispatch_agent.db import JobsRepository
+from dispatch_agent.db import JobsRepository, current_connection
 from dispatch_agent.geo.routing_client import RoutingClient
 from dispatch_agent.geo.zones import company_depot
 from dispatch_agent.models import (
@@ -196,9 +196,13 @@ def publish_plan_version(
     digest = content_hash(sequence)
     day = sequence.delivery_date.isoformat()
 
-    conn = _tx()
+    conn = current_connection()
+    owns_transaction = conn is None
+    if owns_transaction:
+        conn = _tx()
     try:
-        conn.execute("BEGIN IMMEDIATE")
+        if owns_transaction:
+            conn.execute("BEGIN IMMEDIATE")
         try:
             active = conn.execute(
                 "SELECT id, data FROM route_plan_versions WHERE delivery_date = ? AND status = 'active'",
@@ -208,7 +212,8 @@ def publish_plan_version(
             if active is not None:
                 existing = RoutePlanVersion.model_validate_json(active[1])
                 if existing.content_hash == digest:
-                    conn.execute("COMMIT")
+                    if owns_transaction:
+                        conn.execute("COMMIT")
                     return existing
 
             next_version = (
@@ -248,13 +253,16 @@ def publish_plan_version(
                 "ON CONFLICT(delivery_date) DO UPDATE SET data = excluded.data",
                 (day, sequence.model_dump_json()),
             )
-            conn.execute("COMMIT")
+            if owns_transaction:
+                conn.execute("COMMIT")
             return plan
         except Exception:
-            conn.execute("ROLLBACK")
+            if owns_transaction:
+                conn.execute("ROLLBACK")
             raise
     finally:
-        conn.close()
+        if owns_transaction:
+            conn.close()
 
 
 def replan_day(

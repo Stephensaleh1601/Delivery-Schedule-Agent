@@ -48,7 +48,8 @@ def _time(env_var: str, default: str) -> Time:
 @dataclass
 class Settings:
     # LLM_PROVIDER picks which client build_llm_client() (dispatch_agent/llm.py) returns --
-    # "bedrock" (default) or "openai". Only one needs valid credentials at a time.
+    # "bedrock" (default), "openai", or "none". `none` is a real off switch used by the
+    # offline suite and deterministic demo fallback.
     llm_provider: str = os.getenv("LLM_PROVIDER", "bedrock").lower()
     aws_region: str = os.getenv("AWS_REGION", "ap-southeast-1")
     bedrock_model_id: str = os.getenv(
@@ -63,7 +64,7 @@ class Settings:
     # ROUTING_PROVIDER: "google" (Distance Matrix API), "onemap", or "haversine". Leave
     # credentials blank for whichever provider you're not using -- an unset/failing provider
     # falls back to the haversine estimate automatically.
-    routing_provider: str = os.getenv("ROUTING_PROVIDER", "onemap")
+    routing_provider: str = os.getenv("ROUTING_PROVIDER", "onemap").lower()
     google_maps_api_key: str = os.getenv("GOOGLE_MAPS_API_KEY", "")
     # Either a pre-issued static token (ONEMAP_TOKEN, takes priority) or an email/password pair
     # the routing client exchanges for a token itself. Leave all three blank to use the
@@ -187,6 +188,16 @@ def validate(s: "Settings" = None) -> None:
     construct a deliberately invalid Settings and assert on the message.
     """
     s = s or settings
+
+    if s.llm_provider not in {"bedrock", "openai", "none"}:
+        raise ConfigurationError(
+            f"LLM_PROVIDER={s.llm_provider!r} is not supported. Use bedrock, openai, or none."
+        )
+    if s.routing_provider not in {"google", "onemap", "haversine"}:
+        raise ConfigurationError(
+            f"ROUTING_PROVIDER={s.routing_provider!r} is not supported. "
+            "Use google, onemap, or haversine."
+        )
 
     if not s.return_to_depot:
         raise ConfigurationError(

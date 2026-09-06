@@ -53,10 +53,10 @@ export default function AboutPage() {
       <div className="flex min-w-0 flex-1 flex-col">
         {/* 01 ------------------------------------------------------------- */}
         <Slide n={0} eyebrow="The ask" criterion="Presentation" first>
-          <Headline>Nobody should spend an afternoon asking forty people when they are home</Headline>
+          <Headline>Nobody should spend the day asking customers when they are home</Headline>
           <Lede>
             An AI helper that agrees a delivery time with every customer by text — and only offers
-            times the van can actually make.
+            times the delivery route can actually keep.
           </Lede>
 
           <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -78,41 +78,38 @@ export default function AboutPage() {
         <Slide n={1} eyebrow="The problem" criterion="Presentation">
           <Headline>Two hard jobs, both done by hand</Headline>
           <Lede>
-            Fresh pet food spoils in Singapore&rsquo;s heat, so it can&rsquo;t be left at the door.{" "}
-            <Strong>Somebody has to be home.</Strong> Every order needs a time the customer agreed
-            to.
+            Fresh pet food cannot simply be left outside. Staff must coordinate a recipient window,
+            then turn those replies into a route that can keep every promise.
           </Lede>
 
           <Segment label="Job 1 — asking everybody">
             <Figure>
               <Flow
                 steps={[
-                  { title: "40 orders", note: "for the week" },
-                  { title: "One person", note: "an afternoon on WhatsApp" },
-                  { title: "One “no”", note: "and you start again" },
+                  { title: "30–40 deliveries", note: "in a day, interview-reported" },
+                  { title: "Customer replies", note: "arrive in ordinary language" },
+                  { title: "One “no”", note: "changes the planning input" },
                 ]}
               />
             </Figure>
-            <Quote source="Floof.sg — interview, 5 September 2026">
-              “It&rsquo;s more to negotiate with the customers when is the delivery time slots they
-              prefer. That&rsquo;s the hardest part.”
+            <Quote source="Paraphrased from a Floof.sg interview">
+              The hardest part is negotiating delivery timing with customers.
             </Quote>
           </Segment>
 
-          <Segment label="Job 2 — deciding who to visit first">
-            <Figure caption="Same five customers, same van, same day. Only the order changed.">
+          <Segment label="Job 2 — checking whether the promise fits">
+            <Figure caption="Same five customers, same delivery day. Only the order changed.">
               <DetourComparison />
             </Figure>
             <p className="text-[14px] leading-[1.6] text-ink-soft">
-              Detours turn into late deliveries. A person works this out by hand — and drivers still
-              change it on the road, so the plan and the day drift apart.
+              Route checking is the feasibility layer: it tells the coordinator which proposed
+              windows can become real stops without making anyone else late.
             </p>
           </Segment>
 
           <Statement>
-            A coordinator at Floof.sg needs to agree a time with every customer <em>and</em> put
-            them in a sensible driving order, <Strong>because</Strong> doing both by hand takes an
-            afternoon — and one “sorry, not Friday” undoes it.
+            A delivery coordinator needs to agree a time with each customer <em>and</em> know the
+            route can keep it, <Strong>because</Strong> a calendar slot is not an operational promise.
           </Statement>
         </Slide>
 
@@ -126,7 +123,7 @@ export default function AboutPage() {
                 { title: "“I'm free Saturday morning”", note: "their own words" },
                 { title: "Read it", note: "what do they mean?" },
                 { title: "Check the real route", note: "where would they fit?" },
-                { title: "Offer one time", note: "one the van can keep" },
+                { title: "Offer one time", note: "one the route can keep" },
               ]}
             />
           </Figure>
@@ -147,8 +144,8 @@ export default function AboutPage() {
               />
             </div>
             <p className="text-[13.5px] leading-[1.55] text-ink-muted">
-              Roughly 7 in 10 customers are Mrs Chua. We built it so the other 3 still get an answer
-              instead of an apology.
+              The first path proves speed. The second proves the agent can absorb a new constraint,
+              search again and still reach a safe outcome.
             </p>
           </Segment>
         </Slide>
@@ -176,7 +173,7 @@ export default function AboutPage() {
                     Reads what they wrote — <em>“Sat morning”</em>, <em>“after 1”</em>,{" "}
                     <em>“not Friday”</em>
                   </>,
-                  "Offers only what the van can do, and says why",
+                  "Offers only what the route can do, and says why",
                   "Searches somewhere else at “no”",
                   <>
                     Answers <em>“why that time?”</em> and <em>“can you leave it at my door?”</em>
@@ -275,8 +272,8 @@ export default function AboutPage() {
         <Slide n={6} eyebrow="Fitting people in" criterion="Technical quality">
           <Headline>Slide them into the day. Don&rsquo;t rebuild it.</Headline>
           <Lede>
-            Two delivery days a week, each covering one part of Singapore. An address already tells
-            us the normal day.
+            For the prototype, two published routes each cover one part of Singapore. An address
+            already tells us the normal demo route.
           </Lede>
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -286,7 +283,7 @@ export default function AboutPage() {
 
           <Figure caption="We try them before and after each nearby stop, then check everyone after them still arrives on time.">
             <RouteLine
-              label="Friday's van, already planned"
+              label="Friday's route, already planned"
               stops={["Chen Li Hua", "Marcus Tan", "Priya Nair"]}
               insertAt={1}
             />
@@ -316,8 +313,7 @@ export default function AboutPage() {
                   ok: false,
                   text: (
                     <>
-                      <Strong>Never add a delivery day.</Strong> It only fills days the van already
-                      drives.
+                      <Strong>Never invent a route.</Strong> It only fills routes already published.
                     </>
                   ),
                 },
@@ -334,9 +330,9 @@ export default function AboutPage() {
           </Segment>
 
           <Note title="Wide windows, honestly">
-            Customers get <Strong>morning 10–2</Strong>, <Strong>afternoon 2–5</Strong> or{" "}
-            <Strong>evening 5–9</Strong> — what the business can genuinely promise. A fake
-            15-minute slot breaks on the first traffic jam.
+            The demo uses <Strong>morning 10–2</Strong>, <Strong>afternoon 2–5</Strong> and{" "}
+            <Strong>evening 5–9</Strong> prototype windows. The exact boundaries are configuration;
+            the invariant is that every offered window is route-feasible.
           </Note>
         </Slide>
 
@@ -350,13 +346,13 @@ export default function AboutPage() {
             <ScreenCard href="/chat" name="Customer Chat" text="The conversation, and what the helper did." />
           </div>
 
-          <Segment label="While the customer waits">
-            <Figure caption="Each line is written by the code that did that thing, as it did it. Nothing is faked to look busy.">
+          <Segment label="What a judge can inspect live">
+            <Figure caption="Each line comes from a persisted tool result linked to the reply it produced.">
               <ol className="flex flex-col gap-1.5">
                 {[
-                  ["Read the message", "0.9s"],
-                  ["Checked Friday's route — 17 stops", "2.3s"],
-                  ["Offered 2–5pm, right after Chen Li Hua", "0.4s"],
+                  ["Understood the customer's availability", "Bedrock"],
+                  ["Checked the published route", "OR-Tools"],
+                  ["Offered a feasible window", "LangGraph"],
                 ].map(([text, time]) => (
                   <li
                     key={text}
@@ -373,15 +369,15 @@ export default function AboutPage() {
             </Figure>
           </Segment>
 
-          <Segment label="What production still needs">
+          <Segment label="Sponsor technology doing real work">
             <div className="grid gap-3 sm:grid-cols-2">
-              <Note title="Ready now">
-                The agent, the route maths, the rules, the console, the database. Python, FastAPI,
-                Next.js, OR-Tools, Claude on AWS Bedrock.
+              <Note title="Bedrock + LangGraph">
+                Bedrock interprets free text and selects actions. LangGraph runs the bounded loop
+                and records every result.
               </Note>
-              <Note title="Swap-ins, clearly marked">
-                Real WhatsApp instead of our simulated thread, and Floof.sg&rsquo;s own address
-                lookup. Both sit behind one interface each, with a working stand-in today.
+              <Note title="Deterministic truth">
+                Pydantic guards, OR-Tools and route providers decide what is legal and feasible. The
+                model cannot invent a time, distance or acceptance.
               </Note>
             </div>
           </Segment>
@@ -392,10 +388,10 @@ export default function AboutPage() {
           <Headline>We check it. We don&rsquo;t just claim it.</Headline>
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <Metric figure="429" label="Automatic tests" note="Every rule on the last slide is one of them." />
-            <Metric figure="0" label="Tests that call the internet" note="On purpose — results never drift." />
+            <Metric figure="3" label="Fallback choices" note="Each one route-checked and ranked." />
+            <Metric figure="0" label="Promises moved" note="After a new customer accepts." />
             <Metric figure="10" label="Steps, then it stops" note="A counter it cannot argue with." />
-            <Metric figure="100%" label="Replies traceable to a rule" note="Every answer names the rule behind it." />
+            <Metric figure="2" label="Browser journeys" note="Happy and difficult paths replayed in CI." />
           </div>
 
           <Segment label="Two things we chose not to do">
@@ -405,7 +401,7 @@ export default function AboutPage() {
                 isn&rsquo;t. We show the parts: minutes, kilometres, extra hours.
               </Note>
               <Note title="The AI never describes the route.">
-                It would say “we&rsquo;ll be in the East that morning” when the van isn&rsquo;t.
+                It would say “we&rsquo;ll be in the East that morning” when the route isn&rsquo;t.
                 Those sentences are built from the real planned route.
               </Note>
             </div>
@@ -414,13 +410,13 @@ export default function AboutPage() {
 
         {/* 10 ------------------------------------------------------------- */}
         <Slide n={9} eyebrow="What changes" criterion="Benefits" last>
-          <Headline>An afternoon of texting becomes something that answers itself</Headline>
+          <Headline>Customer replies become one route the driver can trust</Headline>
 
           <BeforeAfter
             rows={[
-              { before: "One person, one afternoon, forty customers", after: "Each customer answered as they reply" },
-              { before: "Drivers sorting out timings between stops", after: "Drivers get a finished route the day before" },
-              { before: "“Not Friday” means starting over", after: "A “no” searches somewhere else by itself" },
+              { before: "Availability buried in chat", after: "Each reply becomes a planning constraint" },
+              { before: "Calendar slots detached from routes", after: "Every offered time is route-checked" },
+              { before: "A rejection needs another manual search", after: "A “no” starts a bounded fallback workflow" },
               { before: "The plan lives in one person's head", after: "Every decision can be looked up afterwards" },
             ]}
           />
@@ -428,12 +424,12 @@ export default function AboutPage() {
           <Segment label="Why it spreads easily">
             <div className="grid gap-3 sm:grid-cols-3">
               <TraitCard
-                word="More days"
-                text="Delivery days are configuration, not code. Add Tuesday and it plans Tuesday."
+                word="More routes"
+                text="Add published operating routes without changing the customer journey."
               />
               <TraitCard
-                word="More vans"
-                text="The route maths already solves a day. A second van is a second day to solve."
+                word="More vehicles"
+                text="Multi-vehicle assignment is the next optimisation layer."
               />
               <TraitCard
                 word="Other trades"
@@ -444,11 +440,11 @@ export default function AboutPage() {
 
           <div className="rounded-[14px] border border-accent-edge bg-accent-wash px-7 py-7">
             <p className="font-display text-[22px] leading-[1.4] text-ink sm:text-[26px]">
-              Every customer gets a time they agreed to.
+              Every offered time is one the route can keep.
               <br />
               Every driver gets a route that makes sense.
               <br />
-              <span className="text-accent">Nobody spends an afternoon on WhatsApp.</span>
+              <span className="text-accent">The negotiation and the route stay in one loop.</span>
             </p>
           </div>
         </Slide>

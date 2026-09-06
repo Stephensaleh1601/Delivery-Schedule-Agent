@@ -12,7 +12,7 @@ import type { Decision, DecisionCandidate, DecisionStep } from "@/lib/api";
  * durations, before/after tables. A judge watching the conversation had to work out for themselves
  * why 9–11 had become 11–1, and it looked like the optimiser had moved the customer at random.
  *
- * So this leads with the sequence — rejected, removed, re-solved, found — then shows at most two
+ * So this leads with the sequence — rejected, removed, re-solved, found — then shows the ranked
  * candidates and one recommendation. The planning rules are still here and still true; they are
  * collapsed, because nobody opens a panel to be told what a working day is.
  *
@@ -51,12 +51,7 @@ export function AgentDecision({ decision }: { decision: Decision }) {
               ? "The option"
               : `Route-friendly options (${decision.candidates.length})`}
           </Eyebrow>
-          <div
-            className={cx(
-              "grid gap-3",
-              decision.candidates.length === 2 ? "grid-cols-2" : "grid-cols-1",
-            )}
-          >
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
             {decision.candidates.map((candidate) => (
               <CandidateCard key={candidate.label} candidate={candidate} />
             ))}

@@ -47,6 +47,17 @@ def _cycle_or_fail(ctx: ToolContext, name: str):
     return cycle, None
 
 
+def _location_or_fail(order, name: str) -> ToolResult | None:
+    if order.address is None or order.address.coordinates is None:
+        return ToolResult(
+            ok=False,
+            tool=name,
+            error="not_geocoded",
+            summary=f"{order.customer_name}'s address has not been located yet.",
+        )
+    return None
+
+
 def _search(
     ctx: ToolContext,
     order,
@@ -135,6 +146,9 @@ def find_normal_slot(args: OrderArgs, ctx: ToolContext) -> ToolResult:
     if order is None:
         return ToolResult(ok=False, tool="find_normal_slot", error="unknown_order",
                           summary=f"No order {args.order_id}.")
+    location_failure = _location_or_fail(order, "find_normal_slot")
+    if location_failure:
+        return location_failure
 
     placement = clusters.placement_of(order)
     if placement.weekday is None:
@@ -174,6 +188,9 @@ def find_requested_day_slot(args: OrderArgs, ctx: ToolContext) -> ToolResult:
     if order is None:
         return ToolResult(ok=False, tool="find_requested_day_slot", error="unknown_order",
                           summary=f"No order {args.order_id}.")
+    location_failure = _location_or_fail(order, "find_requested_day_slot")
+    if location_failure:
+        return location_failure
 
     cycle, failure = _cycle_or_fail(ctx, "find_requested_day_slot")
     if failure:
@@ -222,6 +239,9 @@ def find_fallback_options(args: OrderArgs, ctx: ToolContext) -> ToolResult:
     if order is None:
         return ToolResult(ok=False, tool="find_fallback_options", error="unknown_order",
                           summary=f"No order {args.order_id}.")
+    location_failure = _location_or_fail(order, "find_fallback_options")
+    if location_failure:
+        return location_failure
 
     cycle, failure = _cycle_or_fail(ctx, "find_fallback_options")
     if failure:

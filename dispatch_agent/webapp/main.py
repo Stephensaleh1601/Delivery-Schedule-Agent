@@ -6,6 +6,7 @@ Run with: python -m uvicorn dispatch_agent.webapp.main:app --reload
 """
 from __future__ import annotations
 
+import hashlib
 from datetime import date as Date, time as Time
 from pathlib import Path
 from typing import Any
@@ -590,16 +591,29 @@ def respond_to_offer(offer_id: str, payload: OfferResponse) -> dict:
         # hole, and come back with a different window -- so this returns the next offer, the run
         # that produced it, and the evaluations behind it, all from the one call.
         ctx = tools.ToolContext(repo=repo)
-        run = handle_planning_event(
-            PlanningEvent(
+        event = PlanningEvent(
                 event_type=PlanningEventType.CUSTOMER_REJECTED_OFFER,
                 order_id=declined.order_id,
                 payload={"offer_id": offer_id, "slot_id": payload.slot_id},
-            ),
-            repo=repo,
-            ctx=ctx,
         )
-        next_offer = repo.get_offer(ctx.offer_id) if ctx.offer_id else None
+        if payload.event_id:
+            event.id = chat_api._client_event_id("offer-response", offer_id, payload.event_id)
+            fingerprint = hashlib.sha256(
+                f"reject:{payload.slot_id or ''}".encode()
+            ).hexdigest()
+            existing = repo.get_planning_event(event.id)
+            if (
+                existing is not None
+                and existing.payload.get("_client_response_sha256") != fingerprint
+            ):
+                raise HTTPException(409, "event_id was already used for a different response")
+            event.payload["_client_response_sha256"] = fingerprint
+        run = handle_planning_event(event, repo=repo, ctx=ctx)
+        next_offer = (
+            repo.get_offer(ctx.offer_id)
+            if ctx.offer_id
+            else repo.open_offer_for_order(declined.order_id)
+        )
         return {
             "offer": _offer_to_dict(repo.get_offer(offer_id)),
             "confirmed": False,

@@ -8,7 +8,7 @@ Windows: the virtualenv interpreter is `.venv/Scripts/python.exe`. Use it rather
 `python`, which resolves to a system interpreter without the dependencies installed.
 
 ```bash
-.venv/Scripts/python.exe -m pytest                          # full suite, ~6-7 min, 386 tests
+.venv/Scripts/python.exe -m pytest                          # full suite
 .venv/Scripts/python.exe -m pytest tests/test_negotiation.py -q
 .venv/Scripts/python.exe -m pytest tests/test_negotiation.py::test_name -q
 .venv/Scripts/python.exe -m uvicorn dispatch_agent.webapp.main:app --reload   # FastAPI on :8000

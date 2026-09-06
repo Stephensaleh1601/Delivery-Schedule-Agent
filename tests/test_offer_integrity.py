@@ -261,3 +261,55 @@ def test_a_nested_sequence_is_redacted_not_merely_truncated(temp_db):
 
     assert cleaned["proposed_sequence"] == "[redacted]"
     assert "other-customer" not in str(cleaned)
+
+
+def test_a_tool_exception_is_redacted_before_it_reaches_the_log(temp_db, monkeypatch):
+    from dispatch_agent.planning import tools
+
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    original = tools.TOOL_REGISTRY["find_normal_slot"]
+
+    def crash(args, ctx):
+        raise RuntimeError(f"provider failed with {secret} and token=supersecrettoken")
+
+    monkeypatch.setitem(
+        tools.TOOL_REGISTRY,
+        "find_normal_slot",
+        tools.ToolSpec(original.name, original.args_model, crash),
+    )
+
+    result = tools.dispatch(
+        "find_normal_slot", {"order_id": "order-1"}, tools.ToolContext(repo=temp_db)
+    )
+
+    assert not result.ok
+    assert secret not in result.summary
+    assert "supersecrettoken" not in result.summary
+    assert "[redacted]" in result.summary
+
+
+def test_google_and_bare_aws_secrets_are_redacted_before_logging(temp_db, monkeypatch):
+    from dispatch_agent.planning import tools
+
+    google_key = "AIzaSyDUMMYKEY1234567890abcdefghijkl"
+    aws_secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    original = tools.TOOL_REGISTRY["find_normal_slot"]
+
+    def crash(args, ctx):
+        raise RuntimeError(
+            f"https://maps.googleapis.com/maps/api?key={google_key} secret {aws_secret}"
+        )
+
+    monkeypatch.setitem(
+        tools.TOOL_REGISTRY,
+        "find_normal_slot",
+        tools.ToolSpec(original.name, original.args_model, crash),
+    )
+    result = tools.dispatch(
+        "find_normal_slot", {"order_id": "order-1"}, tools.ToolContext(repo=temp_db)
+    )
+
+    assert not result.ok
+    assert google_key not in result.summary
+    assert aws_secret not in result.summary
+    assert "[redacted]" in result.summary

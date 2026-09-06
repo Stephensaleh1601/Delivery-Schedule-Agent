@@ -10,6 +10,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date as Date
 from pathlib import Path
 
@@ -131,6 +132,16 @@ CREATE TABLE IF NOT EXISTS coordinator_exceptions (
 """
 
 SCHEMA_VERSION = "2"
+
+
+_ACTIVE_CONNECTION: ContextVar[sqlite3.Connection | None] = ContextVar(
+    "dispatch_active_connection", default=None
+)
+
+
+def current_connection() -> sqlite3.Connection | None:
+    """The request-scoped transaction connection, when one is active."""
+    return _ACTIVE_CONNECTION.get()
 
 
 def init_db(db_path: str | Path | None = None) -> None:
@@ -288,6 +299,11 @@ def _backfill_job_blobs(conn) -> None:
 
 @contextmanager
 def _connect():
+    active = current_connection()
+    if active is not None:
+        yield active
+        return
+
     path = Path(settings.db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -300,6 +316,34 @@ def _connect():
 
 class JobsRepository:
     """CRUD for JobRecord, DaySequence and OverrideLogEntry."""
+
+    @contextmanager
+    def transaction(self):
+        """Make every repository write in the block commit or roll back together."""
+        if current_connection() is not None:
+            yield self
+            return
+
+        path = Path(settings.db_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path, isolation_level=None)
+        token = None
+        began = False
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            began = True
+            token = _ACTIVE_CONNECTION.set(conn)
+            yield self
+            conn.execute("COMMIT")
+            began = False
+        except Exception:
+            if began:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            if token is not None:
+                _ACTIVE_CONNECTION.reset(token)
+            conn.close()
 
     def save_job(self, job: JobRecord) -> None:
         with _connect() as conn:
@@ -518,6 +562,18 @@ class JobsRepository:
                 )
             except sqlite3.IntegrityError:
                 return False
+        return True
+
+    def reserve_planning_run(self, event: PlanningEvent, run: AgentRunLog) -> bool:
+        """Atomically claim one event id and create its initial run row.
+
+        A concurrent retry must never observe a claimed event without its run. ``BEGIN IMMEDIATE``
+        serialises the two inserts, so the loser can safely return the winner's persisted run.
+        """
+        with self.transaction():
+            if not self.save_planning_event(event):
+                return False
+            self.save_agent_run(run)
         return True
 
     def get_planning_event(self, event_id: str) -> PlanningEvent | None:

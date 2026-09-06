@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 import boto3
 
-from dispatch_agent.config import settings
+from dispatch_agent.config import ConfigurationError, settings
 
 
 class LLMClient(Protocol):
@@ -21,6 +21,31 @@ class LLMClient(Protocol):
     def extract_structured(
         self, system: str, user: str, tool_name: str, tool_schema: dict[str, Any], max_tokens: int = 1024
     ) -> dict[str, Any]: ...
+
+
+class LLMDisabledError(RuntimeError):
+    """Raised when deterministic fallback code deliberately runs without a model provider."""
+
+
+class DisabledLLM:
+    """Network-free client used by tests and explicit offline demo runs."""
+
+    @staticmethod
+    def _raise() -> None:
+        raise LLMDisabledError("LLM_PROVIDER=none; model calls are disabled")
+
+    def complete(self, system: str, user: str, max_tokens: int = 1024) -> str:
+        self._raise()
+
+    def extract_structured(
+        self,
+        system: str,
+        user: str,
+        tool_name: str,
+        tool_schema: dict[str, Any],
+        max_tokens: int = 1024,
+    ) -> dict[str, Any]:
+        self._raise()
 
 
 class BedrockClaude:
@@ -110,6 +135,13 @@ class OpenAIChat:
 def build_llm_client() -> LLMClient:
     """The agents call this instead of instantiating a provider class directly, so switching
     LLM_PROVIDER in .env is enough -- no code changes needed to try OpenAI instead of Bedrock."""
+    if settings.llm_provider == "none":
+        return DisabledLLM()
     if settings.llm_provider == "openai":
         return OpenAIChat()
-    return BedrockClaude()
+    if settings.llm_provider == "bedrock":
+        return BedrockClaude()
+    raise ConfigurationError(
+        f"LLM_PROVIDER={settings.llm_provider!r} is not supported. "
+        "Use bedrock, openai, or none."
+    )

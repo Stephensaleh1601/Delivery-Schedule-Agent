@@ -184,8 +184,8 @@ export function ThinkingChip({
   const label = failed
     ? "Something went wrong — see what happened"
     : running
-      ? "Thinking…"
-      : `Thought for ${progress.seconds.toFixed(1)}s · ${steps.length} steps`;
+      ? "Working…"
+      : `Completed in ${progress.seconds.toFixed(1)}s · ${steps.length} steps`;
 
   return (
     <button

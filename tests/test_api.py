@@ -170,6 +170,40 @@ def test_declining_a_slot_comes_back_with_a_different_time(client):
     assert order["planning_status"] == PlanningStatus.OFFERED.value
 
 
+def test_replaying_a_rejection_event_does_not_run_the_agent_twice(client):
+    order_id = client.post("/api/orders", json=_order_payload()).json()["id"]
+    offer = client.post(f"/api/orders/{order_id}/plan-options").json()["offer"]
+    payload = {
+        "accepted": False,
+        "slot_id": offer["options"][0]["id"],
+        "event_id": "reject-123",
+    }
+
+    first = client.post(f"/api/offers/{offer['id']}/respond", json=payload).json()
+    second = client.post(f"/api/offers/{offer['id']}/respond", json=payload).json()
+
+    assert second["run"]["id"] == first["run"]["id"]
+    assert second["next_offer"]["id"] == first["next_offer"]["id"]
+
+
+def test_a_rejection_event_id_cannot_be_reused_for_a_different_choice(client):
+    order_id = client.post("/api/orders", json=_order_payload()).json()["id"]
+    offer = client.post(f"/api/orders/{order_id}/plan-options").json()["offer"]
+    event_id = "reject-bound-to-choice"
+
+    first = client.post(
+        f"/api/offers/{offer['id']}/respond",
+        json={"accepted": False, "slot_id": offer["options"][0]["id"], "event_id": event_id},
+    )
+    conflict = client.post(
+        f"/api/offers/{offer['id']}/respond",
+        json={"accepted": False, "slot_id": "a-different-slot", "event_id": event_id},
+    )
+
+    assert first.status_code == 200
+    assert conflict.status_code == 409
+
+
 def test_plan_versions_expose_the_history_for_comparison(client):
     """The v1-vs-v2 panel needs enough per version to be compared without extra requests."""
     first = client.post("/api/orders", json=_order_payload("Alice", "018956")).json()["id"]

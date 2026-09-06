@@ -5,7 +5,9 @@ scrolling back to an older message and opening its trace. Each of them was a rea
 this codebase, so each has a test that fails if the fix is removed rather than only a comment saying
 it was fixed.
 """
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+from threading import Barrier
 
 import pytest
 
@@ -138,6 +140,89 @@ def test_a_second_different_message_is_answered_not_deduplicated(client):
     assert turn["duplicate"] is False
 
 
+def test_reusing_a_client_message_id_for_different_words_is_rejected(client):
+    """A retry may replay one request; it may not silently replace it with different words."""
+    order_id = _new_order(client)
+    url = f"/api/orders/{order_id}/messages"
+
+    first = client.post(
+        url,
+        json={"body": "Friday morning works for me.", "client_message_id": "msg-123"},
+    ).json()
+    second = client.post(
+        url,
+        json={"body": "Friday afternoon works for me.", "client_message_id": "msg-123"},
+    )
+
+    assert first["duplicate"] is False
+    assert second.status_code == 409
+    turn = client.get(f"/api/orders/{order_id}/conversation").json()
+    inbound = [m for m in turn["messages"] if m["direction"] == "inbound"]
+    assert [m["body"] for m in inbound] == ["Friday morning works for me."]
+
+
+def test_concurrent_retries_with_one_client_id_create_one_message_and_one_run(
+    client, monkeypatch
+):
+    """Two workers can pass the first read together; the database reservation must choose one."""
+    from dispatch_agent.agents.understanding import MessageReader
+
+    order_id = _new_order(client)
+    url = f"/api/orders/{order_id}/messages"
+    gate = Barrier(2)
+    original = MessageReader.read
+
+    def together(self, *args, **kwargs):
+        gate.wait(timeout=5)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(MessageReader, "read", together)
+    payload = {"body": "Saturday morning works for me.", "client_message_id": "same"}
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: client.post(url, json=payload), range(2)))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert all(response.json()["messages"] for response in responses)
+    assert all(response.json()["runs"] for response in responses)
+    turn = client.get(f"/api/orders/{order_id}/conversation").json()
+    assert len(_inbound(turn)) == 1
+    assert len(turn["runs"]) == 1
+
+
+def test_a_failed_inbound_write_does_not_poison_the_retry_key(client, monkeypatch):
+    """Reservation and inbound write are one commit: either both exist, or neither does."""
+    from dispatch_agent.planning import conversation
+
+    order_id = _new_order(client)
+    url = f"/api/orders/{order_id}/messages"
+    original = conversation.record_inbound
+    attempts = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("simulated write failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(conversation, "record_inbound", fail_once)
+    payload = {
+        "body": "Saturday morning works for me.",
+        "client_message_id": "retry-after-write-failure",
+    }
+
+    with pytest.raises(RuntimeError, match="simulated write failure"):
+        client.post(url, json=payload)
+
+    retry = client.post(url, json=payload)
+    assert retry.status_code == 200
+    turn = retry.json()
+    assert len(_inbound(turn)) == 1
+    assert len(turn["runs"]) == 1
+    assert next(iter(turn["runs"].values()))["status"] != "running"
+
+
 # -- no forced three options ----------------------------------------------------
 
 
@@ -195,17 +280,18 @@ def test_typing_an_acceptance_confirms_the_appointment(client):
 
 
 def test_an_ambiguous_acceptance_asks_instead_of_booking(client):
-    """Two slots and a bare "okay". Booking the first one is a van at the wrong door."""
-    order_id = _new_order(client)
-    opened = _say(client, order_id, "Saturday morning or Friday morning both work.")
-    offer = opened["offers"].get(opened["open_offer_id"] or "")
-    if not offer or len(offer["options"]) < 2:
-        pytest.skip("this scenario needs two slots on the table")
+    """Three fallback slots and a bare "okay". Booking the first is a van at the wrong door."""
+    order_id = _new_order(client, name="Mr Rajan", postal_code="318993")
+    _say(client, order_id, "I'm free Saturday, any time.")
+    alternatives = _say(client, order_id, "That time doesn't work. Can you do later?")
+    offer = alternatives["offers"].get(alternatives["open_offer_id"] or "")
+    assert offer and len(offer["options"]) == 3
 
     turn = _say(client, order_id, "okay")
 
     assert turn["confirmed"] is False
     assert turn["planning_status"] != "confirmed"
+    assert "did you mean" in _outbound(turn)[-1]["body"].lower()
 
 
 # -- rejecting ------------------------------------------------------------------
@@ -278,7 +364,7 @@ def test_customer_can_propose_a_concrete_time_after_automatic_round_cap(client):
 
     assert turn["intent"] == "provide_availability"
     called = [a["tool"] for a in turn["run"]["actions"]]
-    assert "find_insertion_options" in called, (
+    assert "find_normal_slot" in called, (
         "a concrete time from the customer must still be checked against the routes"
     )
 
@@ -441,13 +527,9 @@ def test_the_negotiation_calls_are_visible_to_a_judge(client):
     called = [a["tool"] for a in list(turn["runs"].values())[0]["actions"]]
 
     assert "record_availability" in called
-    # The insertion path, not the older day-evaluation one. These are the calls the demo is about:
-    # the policy that was read, the routes that were loaded, and the search that measured a real
-    # position on one of them.
-    assert "retrieve_policy" in called
-    assert "get_existing_routes" in called
-    assert "find_insertion_options" in called
-    assert "create_normal_offer" in called
+    # The composite action owns policy, route loading, search and offer creation. Its persisted
+    # evidence is what the judge sees; retired plumbing calls are intentionally not separate steps.
+    assert "find_normal_slot" in called
 
 
 def test_a_rejection_shows_the_exclusion_and_the_resolve(client):
@@ -458,7 +540,7 @@ def test_a_rejection_shows_the_exclusion_and_the_resolve(client):
     called = [a["tool"] for a in turn["run"]["actions"]]
 
     assert "record_rejection" in called
-    assert "find_insertion_options" in called, (
+    assert "find_fallback_options" in called, (
         "the routes have to be searched again around the excluded time"
     )
 

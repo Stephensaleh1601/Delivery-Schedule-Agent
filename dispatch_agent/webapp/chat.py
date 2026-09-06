@@ -20,7 +20,7 @@ from dispatch_agent.models import DaySequence, JobStatus, Notification, Reschedu
 from dispatch_agent.reschedule import apply_reschedule
 from dispatch_agent.webapp.jobs_service import JobSubmission, JobSubmissionError, create_job_from_submission
 
-COMPANY_NAME = "Majestic Fighters Fresh Pet Food"
+COMPANY_NAME = "Floof"
 GREETING = (
     f"Hi! This is {COMPANY_NAME}. I can help you book a fresh pet-food "
     "delivery or reschedule an existing one."
