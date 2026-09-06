@@ -28,7 +28,7 @@ from dispatch_agent.models import (
     PlanningStatus,
     TimeWindow,
 )
-from dispatch_agent.planning import tools
+from dispatch_agent.planning import policy_kb, tools
 from dispatch_agent.planning.clock import PlanningClock
 
 BASE = date(2026, 9, 2)
@@ -181,6 +181,46 @@ def test_new_order_evaluates_then_offers_then_messages(temp_db):
     assert all(a.ok for a in run.actions)
     assert temp_db.get_job(order.id).planning_status is PlanningStatus.OFFERED
     assert temp_db.messages(order.id), "the customer was never actually told"
+
+
+def test_policy_search_keeps_the_customers_exact_question(temp_db):
+    """A model omitting the query must not turn a clear policy question into an escalation."""
+    order = _order(temp_db)
+    question = "So you can only do Saturday?"
+
+    run = handle_planning_event(
+        _event(
+            order,
+            PlanningEventType.MANUAL_RETRY,
+            intent="policy_question",
+            question=question,
+            message=question,
+        ),
+        repo=temp_db,
+        # This incomplete call reproduces what the live model returned. The controller should
+        # bypass it while search_delivery_policy is the only legal action.
+        decider=ScriptedDecisionAgent([
+            {
+                "action": "search_delivery_policy",
+                "reason_summary": "searching",
+                "arguments": {"order_id": order.id},
+            }
+        ]),
+        use_fallback=False,
+    )
+
+    assert run.actions[0].tool == "search_delivery_policy"
+    assert run.actions[0].ok is True
+    assert run.actions[0].arguments["question"] == question
+    assert all(a.tool != "escalate_booking" for a in run.actions)
+    assert temp_db.messages(order.id), "the policy answer was never sent"
+
+
+def test_saturday_only_question_retrieves_the_normal_day_exception():
+    hits = policy_kb.search("So you can only do Saturday?")
+
+    assert hits
+    assert hits[0].id == "CLUSTER-5"
 
 
 def test_acceptance_locks_the_appointment_and_publishes_a_plan(temp_db):

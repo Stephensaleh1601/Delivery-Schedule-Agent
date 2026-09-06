@@ -893,6 +893,25 @@ def test_a_genuine_support_question_is_still_support():
     assert understood.interpretation.intent == "general_support"
 
 
+def test_a_delivery_policy_question_cannot_become_availability():
+    """A question about Saturday must be answered, not treated as a booking request."""
+    from dispatch_agent.agents.understanding import MessageReader
+    from tests.conftest import FakeLLM
+
+    misreading = FakeLLM(
+        structured_response={
+            "intent": "provide_availability",
+            "availability_phrases": ["Saturday"],
+            "is_fixed": True,
+        }
+    )
+
+    understood = MessageReader(llm=misreading).read("so u can only do saturday?")
+
+    assert understood.interpretation.intent == "policy_question"
+    assert not understood.interpretation.windows
+
+
 def test_asking_what_is_available_on_a_date_produces_an_offer(client):
     """End to end: the exact message from the browser session."""
     order_id = _order(client)

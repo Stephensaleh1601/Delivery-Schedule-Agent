@@ -228,6 +228,14 @@ class MessageReader:
         if deterministic.intent == "general_support" and not deterministic.windows:
             intent = "general_support"
 
+        # A clear question about the published delivery rules must stay a question. The live model
+        # read "so u can only do saturday?" as new Saturday availability, which made the booking
+        # workflow search a route and reply that no slot fitted. The deterministic reader already
+        # distinguishes questions from statements, so let that concrete signal win just as we do
+        # for support topics and resolved dates.
+        if deterministic.intent == "policy_question" and not deterministic.windows:
+            intent = "policy_question"
+
         # ...and the same rule in the other direction, which matters more. A message the parser
         # resolved to a real date IS about scheduling, whatever the model called it. "5th Sept what
         # time avail" came back as `general_support`, and the customer -- asking about delivery

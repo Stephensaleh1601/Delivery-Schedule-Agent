@@ -20,6 +20,7 @@ export function Phone({
   status,
   name = "Majestic Fighters Fresh Pet Food",
   initials = "MF",
+  className,
 }: {
   children: ReactNode;
   status: string;
@@ -27,9 +28,15 @@ export function Phone({
    *  common case; the driver dispatch panel passes the driver's own name. */
   name?: string;
   initials?: string;
+  className?: string;
 }) {
   return (
-    <div className="flex flex-col overflow-hidden rounded-[22px] border border-rail bg-[var(--color-wa-header)] shadow-[var(--shadow-lift)]">
+    <div
+      className={cx(
+        "flex flex-col overflow-hidden rounded-[22px] border border-rail bg-[var(--color-wa-header)] shadow-[var(--shadow-lift)]",
+        className,
+      )}
+    >
       <div className="flex items-center justify-between px-4 pt-2.5 pb-1">
         <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-white/70">
           WhatsApp Demo
@@ -61,7 +68,7 @@ export function Wallpaper({ children, innerRef }: { children: ReactNode; innerRe
   return (
     <div
       ref={innerRef}
-      className="flex flex-1 flex-col gap-1.5 overflow-y-auto px-3 py-3.5"
+      className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-3 py-3.5"
       style={{
         backgroundColor: "var(--color-wa-paper)",
         backgroundImage: `url("data:image/svg+xml,${encodeURIComponent(WALLPAPER)}")`,

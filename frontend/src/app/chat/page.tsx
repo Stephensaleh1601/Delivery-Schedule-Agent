@@ -236,7 +236,12 @@ export default function ChatPage() {
       <div className="enter grid grid-cols-[380px_minmax(0,1fr)] items-start gap-6">
         {/* -- the phone -------------------------------------------------- */}
         <div className="sticky top-[74px] flex flex-col gap-3">
-          <Phone status={status}>
+          {/* Keep the phone inside the viewport. Only the message wallpaper scrolls; the header,
+              quick replies and composer stay put like a real messaging app. */}
+          <Phone
+            status={status}
+            className="h-[calc(100dvh-210px)] min-h-[520px] max-h-[720px]"
+          >
             <Wallpaper innerRef={feed}>
               <div className="flex min-h-[380px] flex-col gap-1.5">
                 {boot.initialising ? (

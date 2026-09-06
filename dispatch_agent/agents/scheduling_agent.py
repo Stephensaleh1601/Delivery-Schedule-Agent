@@ -691,6 +691,30 @@ def _decide_node(ctx: tools.ToolContext, decider: DecisionAgent, fallback: Decis
                 },
             }
 
+        if legal == ["search_delivery_policy"]:
+            # The customer already supplied the question. Asking the model to copy it into the
+            # only available tool call adds no judgement and can lose the text entirely. That
+            # happened for "So you can only do Saturday?": the search received only order_id,
+            # found no query, and the customer was wrongly escalated. Preserve their exact words.
+            event = state["event"]
+            return {
+                "pending_decision": ActionDecision(
+                    action="search_delivery_policy",
+                    reason_summary="Looking up the customer's question in the delivery policy.",
+                    arguments={
+                        "order_id": event.order_id,
+                        "question": event.payload.get("question")
+                        or event.payload.get("message")
+                        or "",
+                    },
+                ),
+                "step_provenance": {
+                    "decider": "controller",
+                    "model_id": None,
+                    "fallback_reason": None,
+                },
+            }
+
         if legal == ["send_message"]:
             # Once a tool has prepared the exact customer-facing wording, there is no judgement
             # left to make and no arguments for the model to invent.  A live policy answer added

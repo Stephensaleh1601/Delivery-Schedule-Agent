@@ -26,9 +26,13 @@ Deliveries run on Friday and Saturday only. No other weekday is a delivery day.
 | Saturday | Central, City, West |
 
 Every Singapore postal district belongs to exactly one of the seven regions, so every customer has
-exactly one normal delivery day.
+exactly one **normal** delivery day. This is the first route the agent recommends, not the only
+route the customer may ask for. For example, West normally goes on Saturday, but a West customer
+may ask for Friday. The agent then tests that customer against Friday's published route and offers
+it only if the insertion is feasible. If it does not fit, a human coordinator follows up.
 
-*Enforced by `planning/clusters.py`, over `geo/postal_codes.DISTRICT_TO_REGION`.*
+*Enforced by `planning/clusters.py`, over `geo/postal_codes.DISTRICT_TO_REGION`, and by the
+requested-day search in `planning/workflows.py`.*
 
 ### CLUSTER-3 — Friday and Saturday are coordinated as one weekly pair
 
@@ -49,6 +53,16 @@ creates a delivery day, and never opens an empty route.
 
 *Enforced by `get_existing_routes` and the insertion service, which read active plan versions
 only.*
+
+### CLUSTER-5 — Saturday is normal for West, not the only day they may request
+
+The region map chooses the route to recommend first. It is not a ban on the other delivery day.
+A West customer is normally offered Saturday, but if Saturday does not suit them, the agent may
+test that customer against Friday's existing published route. The reverse also applies to a
+Friday-region customer asking for Saturday. The requested day is offered only when the insertion
+is feasible; otherwise a human coordinator follows up.
+
+*Enforced by the requested-day search in `planning/workflows.py`.*
 
 ---
 
