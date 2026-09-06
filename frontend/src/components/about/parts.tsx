@@ -41,7 +41,7 @@ export function Figure({
         {children}
       </div>
       {caption && (
-        <figcaption className="text-[12.5px] leading-[1.5] text-ink-muted">{caption}</figcaption>
+        <figcaption className="text-[15px] leading-[1.5] text-ink-muted">{caption}</figcaption>
       )}
     </figure>
   );
@@ -67,7 +67,7 @@ export function Versus({
         >
           <span
             className={cx(
-              "font-mono text-[10px] font-semibold uppercase tracking-[0.13em]",
+              "font-mono text-[12px] font-semibold uppercase tracking-[0.13em]",
               side.tone === "accent" ? "text-accent" : "text-ink-faint",
             )}
           >
@@ -78,7 +78,7 @@ export function Versus({
               <li
                 key={i}
                 className={cx(
-                  "text-[13.5px] leading-[1.5]",
+                  "text-[16px] leading-[1.5]",
                   side.tone === "accent" ? "text-ink" : "text-ink-muted",
                 )}
               >
@@ -116,14 +116,14 @@ export function Flow({
           >
             <div
               className={cx(
-                "text-[13.5px] font-medium leading-[1.35]",
+                "text-[16px] font-medium leading-[1.35]",
                 tone === "alert" ? "text-alert" : "text-ink",
               )}
             >
               {step.title}
             </div>
             {step.note && (
-              <div className="mt-0.5 text-[12px] leading-[1.4] text-ink-muted">{step.note}</div>
+              <div className="mt-0.5 text-[14px] leading-[1.4] text-ink-muted">{step.note}</div>
             )}
           </div>
           {i < steps.length - 1 && <Chevron />}
@@ -182,7 +182,7 @@ export function RouteLine({
   return (
     <div className="flex flex-col gap-2">
       {label && (
-        <span className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-ink-faint">
+        <span className="font-mono text-[12px] font-medium uppercase tracking-[0.12em] text-ink-faint">
           {label}
         </span>
       )}
@@ -191,7 +191,7 @@ export function RouteLine({
           <div key={`${node.label}-${i}`} className="flex items-center gap-1.5">
             <div
               className={cx(
-                "rounded-[8px] border px-2.5 py-1.5 text-[12px] leading-[1.3] whitespace-nowrap",
+                "rounded-[8px] border px-2.5 py-1.5 text-[14px] leading-[1.3] whitespace-nowrap",
                 node.kind === "depot" && "border-rail-strong bg-sunk font-medium text-ink-soft",
                 node.kind === "stop" && "border-rail bg-surface text-ink-muted",
                 node.kind === "new" &&
@@ -285,7 +285,7 @@ function RoutePlot({
         />
         <span
           className={cx(
-            "text-[13px] font-semibold",
+            "text-[15.5px] font-semibold",
             tone === "locked" ? "text-locked" : "text-alert",
           )}
         >
@@ -326,7 +326,7 @@ function RoutePlot({
           </g>
         ))}
       </svg>
-      <p className="text-[12px] leading-[1.45] text-ink-muted">{note}</p>
+      <p className="text-[14px] leading-[1.45] text-ink-muted">{note}</p>
     </div>
   );
 }
@@ -425,7 +425,7 @@ export function AgentArchitecture() {
         ref="MAX_TOOL_STEPS = 10"
       />
 
-      <p className="mt-4 border-t border-rail pt-3 text-[12px] leading-[1.5] text-ink-muted">
+      <p className="mt-4 border-t border-rail pt-3 text-[14px] leading-[1.5] text-ink-muted">
         The finished route goes to the driver from the coordinator&rsquo;s screen, the day before.
         That is deliberately <em>not</em> one of the agent&rsquo;s tools — a customer conversation
         can never dispatch a van.
@@ -467,14 +467,14 @@ function Node({
   return (
     <div className={cx("rounded-[11px] border px-4 py-3 text-center", skin)}>
       <div className="flex flex-wrap items-center justify-center gap-2">
-        <span className={cx("text-[14px] font-semibold", titleTone)}>{title}</span>
+        <span className={cx("text-[17px] font-semibold", titleTone)}>{title}</span>
         {tags?.map((tag) => (
           <Who key={tag} who={tag} />
         ))}
       </div>
-      {note && <div className="mt-0.5 text-[12.5px] leading-[1.45] text-ink-muted">{note}</div>}
+      {note && <div className="mt-0.5 text-[15px] leading-[1.45] text-ink-muted">{note}</div>}
       {ref && (
-        <code className="mt-1 block font-mono text-[10.5px] leading-[1.35] break-all text-ink-faint">
+        <code className="mt-1 block font-mono text-[12.5px] leading-[1.35] break-all text-ink-faint">
           {ref}
         </code>
       )}
@@ -488,7 +488,7 @@ function Who({ who }: { who: "ai" | "code" }) {
     <span
       className={cx(
         "shrink-0 rounded-full border px-2 py-[2px]",
-        "font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em]",
+        "font-mono text-[11.5px] font-semibold uppercase tracking-[0.1em]",
         who === "ai"
           ? "border-accent-edge bg-surface text-accent"
           : "border-rail-strong bg-surface text-ink-muted",
@@ -582,26 +582,26 @@ function ToolGroup({
   return (
     <div className="flex flex-col rounded-[11px] border border-rail bg-surface shadow-[var(--shadow-raise)]">
       <div className="border-b border-rail px-3.5 py-2">
-        <div className="text-[13px] font-semibold text-ink">{title}</div>
-        <div className="mt-0.5 text-[11px] leading-[1.35] text-ink-muted">{reads}</div>
+        <div className="text-[15.5px] font-semibold text-ink">{title}</div>
+        <div className="mt-0.5 text-[13px] leading-[1.35] text-ink-muted">{reads}</div>
       </div>
 
       <ul className="flex flex-1 flex-col gap-2 px-3.5 py-2.5">
         {items.map((item) => (
           <li key={item.name} className="flex flex-col">
-            <code className="font-mono text-[11.5px] leading-[1.35] break-all text-accent">
+            <code className="font-mono text-[13.5px] leading-[1.35] break-all text-accent">
               {item.name}
             </code>
-            <span className="text-[12px] leading-[1.4] text-ink-muted">{item.note}</span>
+            <span className="text-[14px] leading-[1.4] text-ink-muted">{item.note}</span>
           </li>
         ))}
       </ul>
 
       <div className="rounded-b-[10px] border-t border-rail bg-sunk/60 px-3.5 py-2">
-        <div className="font-mono text-[9px] font-semibold uppercase tracking-[0.11em] text-ink-faint">
+        <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.11em] text-ink-faint">
           Comes back with
         </div>
-        <div className="mt-0.5 text-[12px] leading-[1.4] text-ink-soft">{returns}</div>
+        <div className="mt-0.5 text-[14px] leading-[1.4] text-ink-soft">{returns}</div>
       </div>
     </div>
   );
@@ -620,7 +620,7 @@ export function CheckList({
       {items.map((item, i) => (
         <li key={i} className="flex items-start gap-2.5">
           <Mark ok={item.ok} />
-          <span className="text-[13.5px] leading-[1.5] text-ink-soft">{item.text}</span>
+          <span className="text-[16px] leading-[1.5] text-ink-soft">{item.text}</span>
         </li>
       ))}
     </ul>
@@ -657,12 +657,21 @@ function Mark({ ok }: { ok: boolean }) {
 }
 
 /** A quotation from the customer interview. The evidence, given room. */
+/** The shared Eyebrow at deck size. Same mark, readable from the back of a room. */
+export function DeckEyebrow({ children }: { children: ReactNode }) {
+  return (
+    <span className="font-mono text-[12px] font-medium uppercase tracking-[0.13em] text-ink-faint">
+      {children}
+    </span>
+  );
+}
+
 export function Quote({ children, source }: { children: ReactNode; source: string }) {
   return (
     <blockquote className="relative rounded-[12px] border border-rail bg-sunk/50 py-5 pl-6 pr-5">
       <span aria-hidden className="absolute inset-y-4 left-0 w-[3px] rounded-full bg-accent" />
-      <p className="font-display text-[19px] leading-[1.4] text-ink">{children}</p>
-      <footer className="mt-2.5 font-mono text-[10.5px] uppercase tracking-[0.11em] text-ink-faint">
+      <p className="font-display text-[23px] leading-[1.4] text-ink">{children}</p>
+      <footer className="mt-2.5 font-mono text-[12.5px] uppercase tracking-[0.11em] text-ink-faint">
         {source}
       </footer>
     </blockquote>
@@ -679,12 +688,12 @@ export function BeforeAfter({
     <div className="overflow-hidden rounded-[12px] border border-rail">
       <div className="grid grid-cols-2 gap-px bg-rail">
         <div className="bg-sunk/70 px-5 py-2.5">
-          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-faint">
+          <span className="font-mono text-[12px] font-semibold uppercase tracking-[0.13em] text-ink-faint">
             By hand today
           </span>
         </div>
         <div className="bg-locked-wash px-5 py-2.5">
-          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.13em] text-locked">
+          <span className="font-mono text-[12px] font-semibold uppercase tracking-[0.13em] text-locked">
             With the agent
           </span>
         </div>
@@ -699,10 +708,10 @@ export function BeforeAfter({
 function ContrastRow({ before, after }: { before: string; after: string }) {
   return (
     <>
-      <div className="bg-surface px-5 py-3.5 text-[13.5px] leading-[1.5] text-ink-muted">
+      <div className="bg-surface px-5 py-3.5 text-[16px] leading-[1.5] text-ink-muted">
         {before}
       </div>
-      <div className="bg-surface px-5 py-3.5 text-[13.5px] leading-[1.5] text-ink">{after}</div>
+      <div className="bg-surface px-5 py-3.5 text-[16px] leading-[1.5] text-ink">{after}</div>
     </>
   );
 }

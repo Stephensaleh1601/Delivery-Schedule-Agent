@@ -17,8 +17,9 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Eyebrow, Pill, cx } from "@/components/ui";
+import { Pill, cx } from "@/components/ui";
 import {
+  DeckEyebrow,
   AgentArchitecture,
   BeforeAfter,
   CheckList,
@@ -65,7 +66,7 @@ export default function AboutPage() {
             <Pill>Team Majestic Fighters</Pill>
           </div>
 
-          <p className="text-[14px] leading-[1.6] text-ink-muted">
+          <p className="text-[17px] leading-[1.6] text-ink-muted">
             The three tabs beside this one are the working product.{" "}
             <Link href="/chat" className="text-accent underline underline-offset-2">
               Customer Chat
@@ -103,7 +104,7 @@ export default function AboutPage() {
             <Figure caption="Same five customers, same van, same day. Only the order changed.">
               <DetourComparison />
             </Figure>
-            <p className="text-[14px] leading-[1.6] text-ink-soft">
+            <p className="text-[17px] leading-[1.6] text-ink-soft">
               Detours turn into late deliveries. A person works this out by hand — and drivers still
               change it on the road, so the plan and the day drift apart.
             </p>
@@ -146,7 +147,7 @@ export default function AboutPage() {
                 agent="Looks wider, offers three, or hands it to a person."
               />
             </div>
-            <p className="text-[13.5px] leading-[1.55] text-ink-muted">
+            <p className="text-[16px] leading-[1.55] text-ink-muted">
               Roughly 7 in 10 customers are Mrs Chua. We built it so the other 3 still get an answer
               instead of an apology.
             </p>
@@ -249,7 +250,7 @@ export default function AboutPage() {
             />
           </Figure>
 
-          <p className="text-[14px] leading-[1.6] text-ink-soft">
+          <p className="text-[17px] leading-[1.6] text-ink-soft">
             AI sounds confident when it is wrong. <em>“Next Tuesday is the 15th”</em> — is it? So it
             never does the sums. <Strong>There is nowhere for a made-up date to get in.</Strong>
           </p>
@@ -265,7 +266,7 @@ export default function AboutPage() {
                 fix="The code now sends the message, not the AI's rewrite."
               />
             </div>
-            <p className="text-[13.5px] leading-[1.55] text-ink-muted">
+            <p className="text-[16px] leading-[1.55] text-ink-muted">
               Asking it nicely did not work. So we made both impossible.
             </p>
           </Segment>
@@ -362,11 +363,11 @@ export default function AboutPage() {
                     key={text}
                     className="flex items-center justify-between gap-4 rounded-[9px] border border-rail bg-sunk/50 px-3.5 py-2.5"
                   >
-                    <span className="flex items-center gap-2.5 text-[13.5px] text-ink">
+                    <span className="flex items-center gap-2.5 text-[16px] text-ink">
                       <TickIcon />
                       {text}
                     </span>
-                    <span className="font-mono text-[11.5px] tnum text-ink-faint">{time}</span>
+                    <span className="font-mono text-[13.5px] tnum text-ink-faint">{time}</span>
                   </li>
                 ))}
               </ol>
@@ -443,7 +444,7 @@ export default function AboutPage() {
           </Segment>
 
           <div className="rounded-[14px] border border-accent-edge bg-accent-wash px-7 py-7">
-            <p className="font-display text-[22px] leading-[1.4] text-ink sm:text-[26px]">
+            <p className="font-display text-[26px] leading-[1.4] text-ink sm:text-[32px]">
               Every customer gets a time they agreed to.
               <br />
               Every driver gets a route that makes sense.
@@ -488,15 +489,15 @@ function Slide({
       style={{ animationDelay: `${Math.min(n, 4) * 55}ms` }}
     >
       <div className="flex items-center gap-3">
-        <span className="font-mono text-[11px] font-medium tabular-nums text-ink-faint">
+        <span className="font-mono text-[13px] font-medium tabular-nums text-ink-faint">
           {String(n + 1).padStart(2, "0")}
         </span>
         <span aria-hidden className="h-px w-6 bg-rail-strong" />
-        <Eyebrow>{eyebrow}</Eyebrow>
+        <DeckEyebrow>{eyebrow}</DeckEyebrow>
         <span aria-hidden className="h-px flex-1 bg-rail" />
         <span
           title="The judging criterion this slide answers"
-          className="font-mono text-[9.5px] uppercase tracking-[0.11em] text-ink-faint"
+          className="font-mono text-[11.5px] uppercase tracking-[0.11em] text-ink-faint"
         >
           {criterion}
         </span>
@@ -508,14 +509,14 @@ function Slide({
 
 function Headline({ children }: { children: ReactNode }) {
   return (
-    <h2 className="max-w-[24ch] font-display text-[32px] leading-[1.1] tracking-[-0.015em] text-ink sm:text-[40px]">
+    <h2 className="max-w-[24ch] font-display text-[40px] leading-[1.1] tracking-[-0.015em] text-ink sm:text-[50px]">
       {children}
     </h2>
   );
 }
 
 function Lede({ children }: { children: ReactNode }) {
-  return <p className="max-w-[64ch] text-[15.5px] leading-[1.6] text-ink-soft">{children}</p>;
+  return <p className="max-w-[64ch] text-[19px] leading-[1.6] text-ink-soft">{children}</p>;
 }
 
 function Strong({ children }: { children: ReactNode }) {
@@ -528,7 +529,7 @@ function Tag({ who }: { who: "ai" | "code" }) {
     <span
       className={cx(
         "inline-block rounded-full border px-2 py-[1px] align-[1px]",
-        "font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em]",
+        "font-mono text-[11.5px] font-semibold uppercase tracking-[0.1em]",
         who === "ai"
           ? "border-accent-edge bg-accent-wash text-accent"
           : "border-rail-strong bg-sunk text-ink-muted",
@@ -544,7 +545,7 @@ function Segment({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-3.5 pt-2">
       <div className="flex items-center gap-3">
-        <Eyebrow>{label}</Eyebrow>
+        <DeckEyebrow>{label}</DeckEyebrow>
         <span aria-hidden className="h-px flex-1 bg-rail" />
       </div>
       {children}
@@ -555,8 +556,8 @@ function Segment({ label, children }: { label: string; children: ReactNode }) {
 function Statement({ children }: { children: ReactNode }) {
   return (
     <div className="mt-2 rounded-[14px] border border-rail bg-surface px-6 py-5 shadow-[var(--shadow-raise)]">
-      <Eyebrow>The problem, in one sentence</Eyebrow>
-      <p className="mt-2 font-display text-[20px] leading-[1.42] text-ink sm:text-[22px]">
+      <DeckEyebrow>The problem, in one sentence</DeckEyebrow>
+      <p className="mt-2 font-display text-[24px] leading-[1.42] text-ink sm:text-[26px]">
         {children}
       </p>
     </div>
@@ -587,7 +588,7 @@ function Rail({ active }: { active: number }) {
               i === active ? "w-5 bg-accent" : "w-2.5 bg-rail-strong group-hover:w-4",
             )}
           />
-          <span className="truncate text-[12px] leading-[1.4]">{label}</span>
+          <span className="truncate text-[14px] leading-[1.4]">{label}</span>
         </a>
       ))}
     </nav>
@@ -651,10 +652,10 @@ function PersonCard({
     <div className="flex flex-col gap-2.5 rounded-[12px] border border-rail bg-surface px-5 py-4 shadow-[var(--shadow-raise)]">
       <div className="flex items-center gap-2">
         <span className={cx("h-1.5 w-1.5 rounded-full", tone === "locked" ? "bg-locked" : "bg-pending")} />
-        <span className="text-[14px] font-semibold text-ink">{name}</span>
+        <span className="text-[17px] font-semibold text-ink">{name}</span>
       </div>
-      <p className="text-[13.5px] leading-[1.5] text-ink-muted">{does}</p>
-      <p className="border-t border-rail pt-2.5 text-[13.5px] leading-[1.5] text-ink-soft">{agent}</p>
+      <p className="text-[16px] leading-[1.5] text-ink-muted">{does}</p>
+      <p className="border-t border-rail pt-2.5 text-[16px] leading-[1.5] text-ink-soft">{agent}</p>
     </div>
   );
 }
@@ -662,8 +663,8 @@ function PersonCard({
 function TraitCard({ word, text }: { word: string; text: string }) {
   return (
     <div className="flex flex-col gap-1.5 rounded-[12px] border border-rail bg-surface px-5 py-4">
-      <span className="font-display text-[20px] leading-none text-accent">{word}</span>
-      <p className="text-[13px] leading-[1.5] text-ink-muted">{text}</p>
+      <span className="font-display text-[24px] leading-none text-accent">{word}</span>
+      <p className="text-[15.5px] leading-[1.5] text-ink-muted">{text}</p>
     </div>
   );
 }
@@ -671,8 +672,8 @@ function TraitCard({ word, text }: { word: string; text: string }) {
 function MisbehaviourCard({ did, fix }: { did: string; fix: string }) {
   return (
     <div className="flex flex-col gap-2.5 rounded-[12px] border border-alert-edge bg-alert-wash/60 px-5 py-4">
-      <p className="text-[13.5px] leading-[1.5] text-alert">{did}</p>
-      <p className="border-t border-alert-edge/70 pt-2.5 text-[13.5px] leading-[1.5] text-ink-soft">
+      <p className="text-[16px] leading-[1.5] text-alert">{did}</p>
+      <p className="border-t border-alert-edge/70 pt-2.5 text-[16px] leading-[1.5] text-ink-soft">
         {fix}
       </p>
     </div>
@@ -682,8 +683,8 @@ function MisbehaviourCard({ did, fix }: { did: string; fix: string }) {
 function DayCard({ day, regions }: { day: string; regions: string }) {
   return (
     <div className="flex flex-col gap-1 rounded-[12px] border border-rail bg-surface px-5 py-4 shadow-[var(--shadow-raise)]">
-      <span className="font-display text-[22px] leading-none text-ink">{day}</span>
-      <span className="text-[13px] leading-[1.5] text-ink-muted">{regions}</span>
+      <span className="font-display text-[26px] leading-none text-ink">{day}</span>
+      <span className="text-[15.5px] leading-[1.5] text-ink-muted">{regions}</span>
     </div>
   );
 }
@@ -697,7 +698,7 @@ function ScreenCard({ href, name, text }: { href: string; name: string; text: st
         "shadow-[var(--shadow-raise)] transition-colors duration-150 hover:border-accent-edge hover:bg-accent-wash/40",
       )}
     >
-      <span className="flex items-center gap-1.5 text-[14px] font-semibold text-ink">
+      <span className="flex items-center gap-1.5 text-[17px] font-semibold text-ink">
         {name}
         <svg
           viewBox="0 0 12 12"
@@ -708,7 +709,7 @@ function ScreenCard({ href, name, text }: { href: string; name: string; text: st
           <path d="M3.5 2.5 7.5 6l-4 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </span>
-      <span className="text-[13px] leading-[1.5] text-ink-muted">{text}</span>
+      <span className="text-[15.5px] leading-[1.5] text-ink-muted">{text}</span>
     </Link>
   );
 }
@@ -716,9 +717,9 @@ function ScreenCard({ href, name, text }: { href: string; name: string; text: st
 function Metric({ figure, label, note }: { figure: string; label: string; note: string }) {
   return (
     <div className="flex flex-col gap-0.5 rounded-[12px] border border-rail bg-surface px-5 py-4 shadow-[var(--shadow-raise)]">
-      <span className="font-display text-[34px] leading-[1.05] tnum text-ink">{figure}</span>
-      <span className="text-[13.5px] font-medium text-ink-soft">{label}</span>
-      <span className="text-[12.5px] leading-[1.45] text-ink-muted">{note}</span>
+      <span className="font-display text-[42px] leading-[1.05] tnum text-ink">{figure}</span>
+      <span className="text-[16px] font-medium text-ink-soft">{label}</span>
+      <span className="text-[15px] leading-[1.45] text-ink-muted">{note}</span>
     </div>
   );
 }
@@ -726,8 +727,8 @@ function Metric({ figure, label, note }: { figure: string; label: string; note: 
 function Note({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5 rounded-[12px] border border-rail bg-sunk/50 px-5 py-4">
-      <span className="text-[13.5px] font-semibold text-ink">{title}</span>
-      <p className="text-[13px] leading-[1.55] text-ink-muted">{children}</p>
+      <span className="text-[16px] font-semibold text-ink">{title}</span>
+      <p className="text-[15.5px] leading-[1.55] text-ink-muted">{children}</p>
     </div>
   );
 }
