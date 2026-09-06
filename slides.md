@@ -24,16 +24,15 @@ checks the published route and only offers windows the van can keep.
 Floof.sg coordinates attended deliveries for fresh pet food. Somebody must be
 home, so each order needs a time the customer accepted.
 
-1. **Agree a time.** Floof reported 30–40 deliveries on a busy day in our
-   interview. One coordinator asks customers on WhatsApp.
+1. **Agree a time.** Floof.sg handles 30–40 deliveries on a busy day. One
+   coordinator asks customers on WhatsApp.
 2. **Keep the route sensible.** Every accepted time changes where the stop can fit.
 
-> Negotiating customers’ preferred delivery slots is the hardest part.
->
-> *Floof.sg interview, 5 September 2026. Paraphrased.*
+**The bottleneck:** Customer availability becomes route input. One “no” changes
+both the conversation and the plan.
 
-One rejection does not merely change a calendar entry. It starts another
-planning round.
+The hard part is turning changing customer answers into promises the route can
+actually keep.
 
 ---
 

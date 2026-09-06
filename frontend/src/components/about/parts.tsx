@@ -99,7 +99,7 @@ export function Flow({
   steps,
   tone = "neutral",
 }: {
-  steps: Array<{ title: string; note?: string }>;
+  steps: Array<{ title: string; note?: string; icon?: ReactNode }>;
   tone?: "neutral" | "alert";
 }) {
   return (
@@ -114,13 +114,16 @@ export function Flow({
                 : "border-rail bg-sunk/60",
             )}
           >
-            <div
-              className={cx(
-                "text-[13.5px] font-medium leading-[1.35]",
-                tone === "alert" ? "text-alert" : "text-ink",
-              )}
-            >
-              {step.title}
+            <div className="flex items-center gap-2">
+              {step.icon}
+              <div
+                className={cx(
+                  "text-[13.5px] font-medium leading-[1.35]",
+                  tone === "alert" ? "text-alert" : "text-ink",
+                )}
+              >
+                {step.title}
+              </div>
             </div>
             {step.note && (
               <div className="mt-0.5 text-[12px] leading-[1.4] text-ink-muted">{step.note}</div>

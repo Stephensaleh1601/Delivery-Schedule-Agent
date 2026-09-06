@@ -62,7 +62,7 @@ the system.
 
 - `dispatch_agent/planning/` — the deterministic core. Solve, score, negotiate, promise, record.
 - `dispatch_agent/agents/scheduling_agent.py` — a bounded LangGraph loop
-  (`observe → decide → act → … → finish`), capped at `MAX_TOOL_STEPS = 8`. Its own `step_count`
+  (`observe → decide → act → … → finish`), capped at `MAX_TOOL_STEPS = 10`. Its own `step_count`
   is the real guard; LangGraph's `recursion_limit` is a backstop that must never be the normal
   path (it aborts the graph and discards the run log).
 - `dispatch_agent/planning/tools.py` (plus `negotiation_tools.py`, imported at its bottom) — the

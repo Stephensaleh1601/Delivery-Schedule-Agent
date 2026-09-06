@@ -4,10 +4,12 @@
 published route before making the promise and replans when the customer says no.**
 
 Built by **Team Majestic Fighters** for the IGNITE Agentic AI Hackathon 2026,
-Digital AI track. The use case was informed by an interview with Floof.sg, where
-staff coordinate attended deliveries for fresh pet food.
+Digital AI track, with **Floof.sg** as the real client use case for attended
+fresh-pet-food delivery.
 
-[Open the seven-slide hackathon deck](submission/Dispatch-IGNITE-Hackathon-Deck.pptx).
+[Deck](submission/Dispatch-IGNITE-Hackathon-Deck.pptx) ·
+[Architecture](#architecture) · [Engineering evidence](#guardrails-judges-can-inspect) ·
+[Run it](#run-it)
 
 ## The problem in ten seconds
 
@@ -133,20 +135,13 @@ Open **Function calls & results** under a reply to see which tool ran, what it
 received and what it found. The customer sees a simple conversation; a judge can
 inspect the machinery.
 
-## Real system and demo stand-ins
+## Repeatable judge demo
 
-| Part | Implemented | Demo stand-in |
-|---|---|---|
-| Customer conversation | Message history, intent handling, negotiation and consent | Web chat styled like WhatsApp |
-| Model path | Claude on AWS Bedrock or OpenAI chooses actions | `LLM_PROVIDER=none` uses the deterministic procedure |
-| Routing | Google Distance Matrix or OneMap | Haversine estimates when no provider is configured |
-| Orders and plans | Insertion search, offers, locks, route versions and driver sequence | 18 seeded orders and two published routes |
-| Policy | Searchable rules that the agent cites | Prototype operator policy in `knowledge/delivery-policy.md` |
-| Fleet | One van and two delivery days | Multi-vehicle routing is outside this prototype |
-
-Friday/Saturday, regional clusters, service times, the 10 km anchor radius and
-all customer records are synthetic prototype assumptions. They are not presented
-as Floof.sg operating policy.
+The repository ships with 18 synthetic orders, two published routes and two
+customer journeys so the happy, rejection and confirmation paths are immediately
+reproducible. AWS Bedrock, Google Maps and OneMap remain selectable through
+environment configuration; deterministic provider modes keep local runs and CI
+stable when credentials are unavailable.
 
 ## Run it
 

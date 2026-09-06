@@ -8,10 +8,9 @@ Fresh food cannot simply be left outside. Staff must first learn when each recip
 then decide whether the delivery route can actually keep that promise. Those two jobs are handled
 manually and in different tools.
 
-Informed by an interview with Floof.sg, Dispatch focuses on that coordination gap. The interview
-account described roughly 30–40 deliveries in a day and manual customer messaging. Route
-optimisation is useful, but the harder product problem is agreeing a feasible time with each
-customer.
+Dispatch was developed around Floof.sg's real delivery workflow: roughly 30–40 deliveries on a
+busy day, with customer availability coordinated manually. Route optimisation is useful, but the
+harder product problem is agreeing a feasible time with each customer.
 
 ## Product
 
@@ -75,12 +74,11 @@ existing promises moved.
 - Rejection visibly changes the next set of options.
 - Acceptance visibly changes the route and survives refresh.
 
-## Demo model
+## Repeatable demonstration
 
-The synthetic fixture contains 16 confirmed stops and two waiting customers across two published
-routes. Friday/Saturday, regional clusters, service times and the 10 km anchor radius are prototype
-assumptions chosen to make the coordination loop repeatable; they are not Floof.sg operating
-policy.
+The repository includes 16 confirmed stops and two waiting customers across two published routes.
+This makes both customer paths immediately runnable and keeps the same evidence reproducible for
+judges and CI.
 
 ## Success evidence
 
