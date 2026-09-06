@@ -177,13 +177,13 @@ def test_asking_why_runs_only_read_only_tools(client):
     turn = _say(client, order_id, "Why this timing?")
 
     assert turn["intent"] == "explain"
-    # suggest_route_aware_windows is on this list because it is genuinely read-only: it solves
-    # days and returns them, and writes nothing. Without it "why Friday?" could only see the
-    # customer's own dates, and answered by explaining Saturday.
-    allowed = {
-        "evaluate_slots", "suggest_route_aware_windows", "explain_choice", "send_message", "finish",
-    }
+    # One tool does the work on this turn: `explain_offer`, which reads the evidence stored on the
+    # offer. The granular tools it wraps (evaluate_slots, suggest_route_aware_windows,
+    # explain_choice) are outside the intent scope and cannot run here at all. The second
+    # assertion is what keeps this test honest: a turn on which nothing ran also touches nothing.
+    allowed = {"explain_offer", "send_message", "finish"}
     assert set(_ok_tools(turn)) <= allowed, _tools(turn)
+    assert "explain_offer" in _ok_tools(turn), _tools(turn)
 
 
 @pytest.mark.parametrize(
