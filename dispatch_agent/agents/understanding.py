@@ -29,7 +29,8 @@ the customer is asking for. Times and dates are resolved by the system from the 
 
 Choose exactly one `intent`:
 - `provide_availability` -- they are telling us when they are free, or changing what they said \
-before.
+before. A direct request to try a specific day -- "Can you do Friday?" or "How about Saturday?" \
+-- is also `provide_availability`, because the booking agent must check that route.
 - `accept` -- they are agreeing to a time we already proposed.
 - `reject` -- they are turning down a time we proposed, with or without suggesting another.
 - `explain` -- they are asking why a time was chosen, or why another is not possible.
@@ -242,7 +243,7 @@ class MessageReader:
         # times, which is the only thing this system does -- was told a colleague would call them
         # back. Twice. A resolved date is a fact the regex established; a model calling it "not
         # about timing" is simply wrong, and the reply is the worst one available.
-        if intent in ("general_support", "unclear") and deterministic.windows:
+        if intent in ("general_support", "unclear", "policy_question") and deterministic.windows:
             intent = deterministic.intent
 
         result = language.Interpretation(

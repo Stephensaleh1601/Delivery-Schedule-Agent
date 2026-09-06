@@ -346,6 +346,16 @@ _POLICY_QUESTION = re.compile(
     re.I,
 )
 
+# A customer asking us to TRY a named day is making a booking request, not asking for a lesson
+# about delivery policy. Keep this narrow so "Do you deliver on Friday?" can still be answered
+# from the policy, while "Can you do Friday?" actually checks Friday's route.
+_DAY_BOOKING_REQUEST = re.compile(
+    r"\b(?:can|could|would)\s+(?:(?:you|u|we)\s+)?(?:do|make|come|deliver)\s+"
+    r"(?:on\s+)?(?:friday|fri|saturday|sat)\b"
+    r"|\b(?:how|what)\s+about\s+(?:friday|fri|saturday|sat)\b",
+    re.I,
+)
+
 # Things customers ask about that are not the timing. Kept separate from `unclear` because they
 # are perfectly clear -- we simply cannot answer them by moving a van. "Can I change my delivery
 # address?" was being answered with "which of those times would you like?", which is the kind of
@@ -440,6 +450,7 @@ def interpret(
     )
 
     windows = _extract_windows(raw, context_date=context_date)
+    bare_days = _dates_without_times(raw) if not windows else []
 
     # Something other than the timing. Tested FIRST, and whether or not an offer is open, because
     # these messages are full of words that look like scheduling: "Can I change my delivery
@@ -499,6 +510,13 @@ def interpret(
         result.accepted_ordinal = _accepted_ordinal(lowered)
         result.accepted_phrase = _accepted_phrase(raw)
         result.note = raw
+        return result
+
+    # "Can you do Friday?" is a request to test Friday for this booking. It must beat the broad
+    # policy-question regex, which also sees the words "can" and "Friday".
+    if bare_days and _DAY_BOOKING_REQUEST.search(raw):
+        result.intent = "provide_availability"
+        result.windows = bare_days
         return result
 
     # A question about how delivery works, with no time in it. Deliberately below accept, reject

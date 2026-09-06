@@ -591,6 +591,17 @@ def test_the_model_decides_intent_but_never_the_date(temp_db):
     assert [w.date for w in understood.interpretation.windows] == [SATURDAY]
 
 
+def test_can_do_friday_checks_the_route_even_if_model_calls_it_policy(temp_db):
+    from dispatch_agent.agents.understanding import MessageReader
+    from tests.conftest import FakeLLM
+
+    misunderstood = FakeLLM(structured_response={"intent": "policy_question"})
+    understood = MessageReader(llm=misunderstood).read("Can you do Friday?")
+
+    assert understood.interpretation.intent == "provide_availability"
+    assert [w.date for w in understood.interpretation.windows] == [FRIDAY]
+
+
 def test_an_unavailable_model_degrades_and_says_so(temp_db):
     """The demo must survive a provider outage -- and must not claim a model made the reading."""
     from dispatch_agent.agents.understanding import MessageReader
