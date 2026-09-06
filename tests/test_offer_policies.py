@@ -6,12 +6,22 @@ normal offer to carry three choices, which is the opposite of what it is for.
 """
 import sys
 from datetime import date as Date
+from datetime import time as Time
 from pathlib import Path
 
 import pytest
 
 from dispatch_agent import config
-from dispatch_agent.models import OfferPurpose, PlanningStatus
+from dispatch_agent.models import (
+    Address,
+    AvailabilityOption,
+    Coordinates,
+    JobRecord,
+    JobType,
+    OfferPurpose,
+    PlanningStatus,
+    TimeWindow,
+)
 from dispatch_agent.planning import insertion, offer_service, plan_service, tools
 from dispatch_agent.planning.clock import PlanningClock
 
@@ -87,6 +97,45 @@ def test_the_normal_offer_did_not_raise_the_shared_slot_cap(seeded):
     assert offer_service.MAX_SLOTS_PER_OFFER == 2
     assert offer_service.SLOTS_BY_PURPOSE[OfferPurpose.BOOKING] == 1
     assert offer_service.SLOTS_BY_PURPOSE[OfferPurpose.ALTERNATIVE] == 3
+
+
+def test_a_normal_offer_never_moves_the_customer_outside_the_time_they_stated(seeded):
+    """A route-friendly evening is not an answer to "Friday morning works for me".
+
+    This Sembawang address is close to the Friday route late in the day.  Before the guard, the
+    live app understood 10am-2pm correctly and still offered 5pm-9pm because route impact was
+    allowed to outrank the customer's stated availability.
+    """
+    friday, _ = PlanningClock.horizon_dates()
+    order = JobRecord(
+        customer_name="Test Sembawang",
+        address=Address(
+            raw_text="30 Sembawang Drive, Sun Plaza",
+            postal_code="757713",
+            coordinates=Coordinates(lat=1.44820, lng=103.81950),
+        ),
+        job_type=JobType.PET_FOOD_BOX,
+        duration_minutes=10,
+        availability_options=[
+            AvailabilityOption(
+                date=friday,
+                window=TimeWindow(start=Time(10, 0), end=Time(14, 0)),
+            )
+        ],
+        planning_status=PlanningStatus.PENDING_PLANNING,
+        raw_message="Friday morning works for me.",
+    )
+    seeded.save_job(order)
+
+    ctx = tools.ToolContext(repo=seeded)
+    # The customer explicitly named Friday, so the live conversation takes the requested-day
+    # tool even though Friday is also this address's normal cluster day.
+    result = tools.dispatch("find_requested_day_slot", {"order_id": order.id}, ctx)
+
+    assert not result.ok
+    assert result.error == "requested_day_unavailable"
+    assert seeded.offers_for_order(order.id) == []
+    assert "customer_message" not in ctx.scratch, "must escalate, not ask to check Friday again"
 
 
 # -- the fallback ---------------------------------------------------------------

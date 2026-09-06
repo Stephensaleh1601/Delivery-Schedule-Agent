@@ -242,7 +242,8 @@ def render_state_digest(state) -> str:
         lines.append("")
         lines.append(
             "POLICY RULES RETRIEVED FOR THIS QUESTION. Write the customer's reply from these and "
-            "nothing else, in your own plain sentences, and pass it as `body` to send_message:"
+            "nothing else, in your own plain sentences, and pass it as `answer` to "
+            "answer_from_policy:"
         )
         for rule in rules:
             lines.append(f"  [{rule.get('id') or '-'}] {rule.get('title')}: {_readable(rule)}")

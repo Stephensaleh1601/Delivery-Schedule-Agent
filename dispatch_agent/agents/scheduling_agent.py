@@ -691,6 +691,24 @@ def _decide_node(ctx: tools.ToolContext, decider: DecisionAgent, fallback: Decis
                 },
             }
 
+        if legal == ["send_message"]:
+            # Once a tool has prepared the exact customer-facing wording, there is no judgement
+            # left to make and no arguments for the model to invent.  A live policy answer added
+            # an ``answer_from_policy`` field to this call, failed validation, then retried.  Send
+            # the prepared reply directly and keep the trace free of a meaningless failed step.
+            return {
+                "pending_decision": ActionDecision(
+                    action="send_message",
+                    reason_summary="Sending the prepared reply.",
+                    arguments={"order_id": ctx.order.id} if ctx.order else {},
+                ),
+                "step_provenance": {
+                    "decider": "controller",
+                    "model_id": None,
+                    "fallback_reason": None,
+                },
+            }
+
         try:
             decision = decider.decide(state, legal)
         except Exception as exc:  # noqa: BLE001
@@ -738,6 +756,15 @@ def _decide_node(ctx: tools.ToolContext, decider: DecisionAgent, fallback: Decis
                 forced = "send_message" if "send_message" in legal else legal[0]
 
             if forced is not None:
+                forced_arguments = {"order_id": ctx.order.id} if ctx.order else {}
+                if forced == "answer_from_policy":
+                    # A one-action gate normally still asks the model for the wording.  If it
+                    # nevertheless returns a different action, fall back to a truthful answer
+                    # built only from the retrieved rules instead of calling the answer tool with
+                    # an empty string and looping again.
+                    forced_arguments["answer"] = " ".join(
+                        _policy_sentences(state.get("policy_hits") or [])
+                    )
                 return {
                     "pending_decision": ActionDecision(
                         action=forced,
@@ -745,7 +772,7 @@ def _decide_node(ctx: tools.ToolContext, decider: DecisionAgent, fallback: Decis
                             f"{forced.replace('_', ' ').capitalize()} is the only step still "
                             f"permitted here."
                         ),
-                        arguments={"order_id": ctx.order.id} if ctx.order else {},
+                        arguments=forced_arguments,
                     ),
                     "step_provenance": {
                         "decider": "controller",

@@ -47,22 +47,32 @@ def _cycle_or_fail(ctx: ToolContext, name: str):
     return cycle, None
 
 
-def _search(ctx: ToolContext, order, dates, name: str, where: str) -> insertion.InsertionSearch:
+def _search(
+    ctx: ToolContext,
+    order,
+    dates,
+    name: str,
+    where: str,
+    *,
+    respect_stated_availability: bool = True,
+) -> insertion.InsertionSearch:
     # Imported here, not at module scope: tools.py loads this module from its own footer, so a
     # top-level import of insertion_tools closes a cycle and breaks whichever of the three
     # happens to be imported first.
     from dispatch_agent.planning.insertion_tools import _declined, _preferred, _reporter
 
+    preferred = _preferred(order)
     found = insertion.search(
         ctx.repo,
         order,
         dates=dates,
         routing_client=ctx.routing_client,
         exclude=_declined(order, ctx),
-        prefer=_preferred(order),
+        prefer=preferred,
         restrict_to=(
-            _preferred(order)
-            if (_preferred(order) and conversation.is_only_option(order))
+            preferred
+            if preferred
+            and (respect_stated_availability or conversation.is_only_option(order))
             else None
         ),
         on_phase=_reporter(order.id, where, clusters.placement_of(order).day_name),
@@ -187,14 +197,19 @@ def find_requested_day_slot(args: OrderArgs, ctx: ToolContext) -> ToolResult:
         # without saying so is the failure the rule names.
         asked = ", ".join(offer_service.format_date(d) for d in dates)
         normal = clusters.placement_of(order).day_name
-        ctx.scratch["customer_message"] = (
-            f"I'm sorry -- we can't fit you in on {asked}; our van isn't passing close enough to "
-            f"you that day. Your area is on the {normal} run, so I can look there instead if that "
-            f"would work for you?"
-        )
+        if off_cluster:
+            ctx.scratch["customer_message"] = (
+                f"I'm sorry -- we can't fit you in on {asked}; our van isn't passing close "
+                f"enough to you that day. Your area is on the {normal} run, so I can look there "
+                f"instead if that would work for you?"
+            )
         return ToolResult(
             ok=False, tool="find_requested_day_slot", error="requested_day_unavailable",
-            summary=f"{asked} cannot take this customer; offered to check {normal} instead.",
+            summary=(
+                f"{asked} cannot take this customer; offered to check {normal} instead."
+                if off_cluster
+                else f"The time requested on {asked} cannot take this customer; escalation needed."
+            ),
             data=found.to_data(),
         )
     return _offer(ctx, order, found, OfferPurpose.BOOKING, "find_requested_day_slot")
@@ -212,7 +227,16 @@ def find_fallback_options(args: OrderArgs, ctx: ToolContext) -> ToolResult:
     if failure:
         return failure
 
-    found = _search(ctx, order, list(cycle.dates), "find_fallback_options", "both")
+    # After a rejection the customer has explicitly asked us to look beyond the first window.
+    # Search both days broadly, while still respecting an explicit "this is my only time".
+    found = _search(
+        ctx,
+        order,
+        list(cycle.dates),
+        "find_fallback_options",
+        "both",
+        respect_stated_availability=False,
+    )
     if len(found.options) < MAX_ALTERNATIVES:
         return ToolResult(
             ok=False, tool="find_fallback_options", error="too_few_alternatives",

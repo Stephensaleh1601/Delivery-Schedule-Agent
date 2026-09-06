@@ -248,6 +248,10 @@ def find_insertion_options(args: InsertionArgs, ctx: ToolContext) -> ToolResult:
         "dates": [d.isoformat() for d in dates],
     }
 
+    hard_filter = bool(
+        preferred
+        and (scope in {"cluster", "requested"} or conversation.is_only_option(order))
+    )
     found = insertion.search(
         ctx.repo,
         order,
@@ -255,10 +259,9 @@ def find_insertion_options(args: InsertionArgs, ctx: ToolContext) -> ToolResult:
         routing_client=ctx.routing_client,
         exclude=_declined(order, ctx),
         prefer=preferred,
-        # "That's the only time I can do" turns the preference into a restriction. Offering a
-        # different day then is not a helpful alternative -- it is not having listened, and the
-        # policy says so (ALT-8).
-        restrict_to=preferred if (preferred and conversation.is_only_option(order)) else None,
+        # A normal/requested search must stay inside the time the customer gave us.  A fallback
+        # after rejection may look wider, unless they explicitly said it was their only time.
+        restrict_to=preferred if hard_filter else None,
         on_phase=_reporter(order.id, scope, placement.day_name),
     )
     ctx.scratch["insertion"] = found
@@ -305,9 +308,9 @@ def find_insertion_options(args: InsertionArgs, ctx: ToolContext) -> ToolResult:
 def _preferred(order) -> set:
     """(date, slot) pairs the customer actually asked for.
 
-    Their stated availability, mapped onto the delivery windows it overlaps. Flagged on the
-    options rather than used to filter: a customer who asks for a day we cannot serve should still
-    be shown what we can do, and filtering here would leave them with nothing and no explanation.
+    Their stated availability, mapped onto the delivery windows it overlaps.  Normal and
+    explicitly requested searches use these pairs as a hard boundary.  A fallback search uses
+    them only as preference evidence because the customer has asked for another option.
     """
     from dispatch_agent.planning.slots import SLOTS
 

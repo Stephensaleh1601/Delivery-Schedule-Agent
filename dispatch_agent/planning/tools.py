@@ -918,6 +918,29 @@ def legal_actions(state: dict, ctx: ToolContext) -> list[str]:
     if ctx.accepted is None:
         legal -= {"lock_appointment", "confirm_offer"}
 
+    # A policy question is a short, ordered hand-off: retrieve facts, turn those facts into a
+    # customer answer, then send it.  Leaving all four actions visible after the search let the
+    # live model jump straight to ``send_message`` before any wording existed.  It then repeated
+    # that empty send until the step limit.  The model still writes the answer; this gate only
+    # prevents it from skipping the required hand-off between tools.
+    if ctx.allowed_tools == INTENT_TOOLS["policy_question"]:
+        attempted = {a.tool for a in state.get("actions", [])}
+        if (
+            "search_delivery_policy" not in attempted
+            and "search_delivery_policy" not in ctx.succeeded
+        ):
+            return ["search_delivery_policy"]
+        if (
+            "search_delivery_policy" in ctx.succeeded
+            and "answer_from_policy" not in ctx.succeeded
+        ):
+            return ["answer_from_policy"]
+        if (
+            "search_delivery_policy" not in ctx.succeeded
+            and "escalate_booking" not in ctx.succeeded
+        ):
+            return ["escalate_booking"]
+
     # A message needs wording a tool prepared. Offering `send_message` with nothing written is how
     # a run ends with an empty bubble in the customer's thread.
     prepared = ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")

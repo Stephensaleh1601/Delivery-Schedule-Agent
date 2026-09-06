@@ -71,6 +71,20 @@ def test_a_message_needs_wording_a_tool_prepared():
     assert "send_message" in tools.legal_actions({}, ctx)
 
 
+def test_a_policy_search_must_be_answered_before_anything_can_be_sent():
+    """Finding the rule is not the same as answering the customer.
+
+    The live app found WINDOW-1/2/3, then repeatedly tried ``send_message`` with no prepared
+    wording until the step limit.  Once a policy search succeeds, preparing the answer is the
+    only legal next action.
+    """
+    ctx = _ctx("policy_question")
+    ctx.succeeded.add("search_delivery_policy")
+    ctx.scratch["policy_hits"] = [{"id": "WINDOW-1", "text": "Morning is 10am-2pm."}]
+
+    assert tools.legal_actions({}, ctx) == ["answer_from_policy"]
+
+
 def test_after_the_customer_has_been_written_to_the_run_is_over():
     """Anything further in the same run is an action they will never see a message about."""
     ctx = _ctx("reject", scratch={"offer_message": "..."})
