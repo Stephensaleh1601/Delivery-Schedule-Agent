@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 
 from dispatch_agent.config import settings
 from dispatch_agent.models import TimeWindow
+from dispatch_agent.planning import slots
 from dispatch_agent.planning.clock import PlanningClock
 
 SINGAPORE = ZoneInfo("Asia/Singapore")
@@ -39,15 +40,18 @@ WEEKDAYS = {
     "sunday": 6, "sun": 6,
 }
 
-# Named parts of the day, as the operation means them. These are the customer's words being
-# translated into the working day -- 09:00-18:00 -- not invented preferences.
+# Named parts of the day, taken from the delivery windows we actually publish rather than from a
+# generic working day. When "morning" meant 09:00-13:00 here and 10:00-14:00 on the route, the
+# decision panel told the customer they had asked for a window nobody offers.
 DAY_PARTS: dict[str, tuple[Time, Time]] = {
-    "morning": (Time(9, 0), Time(13, 0)),
-    "afternoon": (Time(13, 0), Time(18, 0)),
-    "evening": (Time(16, 0), Time(18, 0)),
-    "midday": (Time(11, 0), Time(14, 0)),
-    "lunchtime": (Time(11, 0), Time(14, 0)),
-    "noon": (Time(11, 0), Time(14, 0)),
+    "morning": (slots.MORNING.start, slots.MORNING.end),
+    "afternoon": (slots.AFTERNOON.start, slots.AFTERNOON.end),
+    "evening": (slots.EVENING.start, slots.EVENING.end),
+    # Not a published window -- deliberately spans the morning/afternoon boundary, so it matches
+    # either rather than silently becoming one of them.
+    "midday": (Time(12, 0), Time(15, 0)),
+    "lunchtime": (Time(12, 0), Time(15, 0)),
+    "noon": (Time(12, 0), Time(15, 0)),
 }
 
 
@@ -107,7 +111,7 @@ def clamp_to_working_day(window: TimeWindow) -> TimeWindow | None:
     saying so is better than silently delivering at 5.
     """
     start = max(window.start, settings.work_day_start)
-    end = min(window.end, settings.work_day_end)
+    end = min(window.end, settings.arrival_cutoff)
     if start >= end:
         return None
     return TimeWindow(start=start, end=end)
@@ -236,8 +240,8 @@ def parse_window(text: str) -> TimeWindow | None:
     after = _AFTER.search(lowered)
     if after:
         start = parse_time(after.group("t"), assume_afternoon=True)
-        if start and start < settings.work_day_end:
-            return clamp_to_working_day(TimeWindow(start=start, end=settings.work_day_end))
+        if start and start < settings.arrival_cutoff:
+            return clamp_to_working_day(TimeWindow(start=start, end=settings.arrival_cutoff))
 
     before = _BEFORE.search(lowered)
     if before:
@@ -250,7 +254,7 @@ def parse_window(text: str) -> TimeWindow | None:
             return TimeWindow(start=start, end=end)
 
     if re.search(r"\b(any\s*time|anytime|whole\s*day|all\s*day|any)\b", lowered):
-        return TimeWindow(start=settings.work_day_start, end=settings.work_day_end)
+        return TimeWindow(start=settings.work_day_start, end=settings.arrival_cutoff)
 
     at = _AT.search(lowered)
     if at:
@@ -259,7 +263,7 @@ def parse_window(text: str) -> TimeWindow | None:
             # A point in time is not a window. Read it as the two hours around it, which is the
             # width we would promise anyway, then let the solver narrow it.
             start = max(settings.work_day_start, moment)
-            end = min(settings.work_day_end, Time(min(23, start.hour + 2), start.minute))
+            end = min(settings.arrival_cutoff, Time(min(23, start.hour + 2), start.minute))
             if start < end:
                 return TimeWindow(start=start, end=end)
 
@@ -270,7 +274,7 @@ def parse_window(text: str) -> TimeWindow | None:
         moment = parse_time(bare_time.group("t"), assume_afternoon=True)
         if moment:
             start = max(settings.work_day_start, moment)
-            end = min(settings.work_day_end, Time(min(23, start.hour + 2), start.minute))
+            end = min(settings.arrival_cutoff, Time(min(23, start.hour + 2), start.minute))
             if start < end:
                 return TimeWindow(start=start, end=end)
 
@@ -323,7 +327,23 @@ class Interpretation:
 
 
 INTENTS = frozenset(
-    {"provide_availability", "accept", "reject", "explain", "general_support", "unclear"}
+    {
+        "provide_availability", "accept", "reject", "explain", "policy_question",
+        "general_support", "unclear",
+    }
+)
+
+# Questions about how delivery works, which the written policy can answer. Separate from `explain`
+# (which is about one offer we made) and from `general_support` (which we cannot answer at all):
+# "what timings do you have?" has a published answer, and sending it to a human is as wrong as
+# guessing at it.
+_POLICY_QUESTION = re.compile(
+    r"\b(?:what|which|when|where|how|do|does|can|could|are|is|why)\b[^?]*\b(?:"
+    r"deliver|delivery|deliveries|delivering|timing|timings|slot|slots|window|windows|"
+    r"hours|day|days|friday|saturday|region|area|zone|cluster|west|east|north|south|"
+    r"central|leave|unattended|doorstep|outside|home|person|driver|route|policy|rules?"
+    r")\b",
+    re.I,
 )
 
 # Things customers ask about that are not the timing. Kept separate from `unclear` because they
@@ -426,7 +446,18 @@ def interpret(
     # address?" contains "change" and a question mark, "I don't want the old one" contains a
     # refusal. It was being answered with "which of those times would you like?".
     topic = support_topic(raw)
-    if topic and not windows:
+
+    # A question about how delivery works, which the written policy can answer -- "what timings do
+    # you have?", "can you leave it outside?". Sitting between the two support tiers on purpose:
+    #
+    #   address / cancel / price   a person owns these outright, so they win.
+    #   POLICY QUESTION            we have a published answer, so answer it.
+    #   contact                    "someone", "agent" and "speak" are weak words. Without this
+    #                              order, "why do you need someone at home?" -- a question the
+    #                              policy answers in one rule -- was handed to a human because it
+    #                              contains "someone".
+    policy_like = bool(raw.count("?") and not windows and _POLICY_QUESTION.search(raw))
+    if topic and not windows and not (policy_like and topic == "contact"):
         result.intent = "general_support"
         result.support_topic = topic
         result.note = raw
@@ -461,6 +492,15 @@ def interpret(
         result.intent = "accept"
         result.accepted_ordinal = _accepted_ordinal(lowered)
         result.accepted_phrase = _accepted_phrase(raw)
+        result.note = raw
+        return result
+
+    # A question about how delivery works, with no time in it. Deliberately below accept, reject
+    # and explain: those all mention days too, and with an offer open they are the right reading.
+    # "Can't you come on Saturday?" asks about the slot we proposed; the same words with nothing
+    # on the table ask which days we run.
+    if policy_like:
+        result.intent = "policy_question"
         result.note = raw
         return result
 
@@ -546,7 +586,7 @@ def _extract_windows(text: str, context_date: Date | None = None) -> list[Stated
 def _dates_without_times(text: str) -> list[StatedWindow]:
     """Days the customer named with no time attached, as whole working days."""
     base = today()
-    whole_day = TimeWindow(start=settings.work_day_start, end=settings.work_day_end)
+    whole_day = TimeWindow(start=settings.work_day_start, end=settings.arrival_cutoff)
 
     found: list[StatedWindow] = []
     seen: set[Date] = set()

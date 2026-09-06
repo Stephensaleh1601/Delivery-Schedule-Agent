@@ -30,7 +30,9 @@ def client(temp_db, monkeypatch):
 
 def _order(client, name="Mrs Lee", postal="018956", option_count=2):
     days = PlanningClock.horizon_dates()
-    windows = [("09:00", "13:00"), ("13:00", "18:00"), ("09:00", "18:00")]
+    # Two delivery days in a cycle, so a third option is a second window on the first day.
+    # Non-overlapping within a day: two options covering the same hours are one choice.
+    windows = [("09:00", "13:00"), ("09:00", "13:00"), ("13:00", "18:00")]
     return client.post("/api/orders", json={
         "customer_name": name,
         "phone": "91112222",
@@ -38,7 +40,7 @@ def _order(client, name="Mrs Lee", postal="018956", option_count=2):
         "postal_code": postal,
         "job_type": "sofa",
         "availability": [
-            {"date": days[i].isoformat(), "window_start": windows[i][0],
+            {"date": days[i % len(days)].isoformat(), "window_start": windows[i][0],
              "window_end": windows[i][1], "preference_rank": i + 1}
             for i in range(option_count)
         ],

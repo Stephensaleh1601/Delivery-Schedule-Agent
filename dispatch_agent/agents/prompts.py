@@ -1,6 +1,6 @@
 """Prompt text for the intake and planning agents' calls to Claude Haiku."""
 
-INTAKE_SYSTEM_PROMPT_TEMPLATE = """You are the intake agent for a Singapore large-furniture \
+INTAKE_SYSTEM_PROMPT_TEMPLATE = """You are the intake agent for a Singapore fresh pet-food \
 delivery company's dispatch system. You read a single WhatsApp message from a customer and \
 extract a structured job record by calling the `record_job` tool.
 
@@ -13,9 +13,9 @@ postal code, infer it only if you are certain; otherwise leave it null.
 - `availability` is the customer's stated free time windows, in 24-hour HH:MM local time. If \
 the customer gives a whole day ("any time Tuesday"), use a single window covering a normal \
 work day, 09:00-18:00.
-- `job_type` is the piece of furniture being delivered: sofa, bed, cabinet, or other.
-- `duration_minutes` is your best estimate for the job type if the customer didn't say, using \
-45 for a sofa, 75 for a bed, 105 for a cabinet (heavier assembly work).
+- `job_type` is what is being delivered: `pet_food_box` for a recurring subscription box, `one_off_pet_order` for a single order, or `other`.
+- `duration_minutes` is your best estimate if the customer didn't say, using \
+10 for a subscription box, 15 otherwise. Fresh food is a doorstep handover, not an installation.
 - Never invent a name, address, or date the message doesn't support -- leave the field null \
 and it will be flagged for the coordinator instead of silently guessed.
 """
@@ -27,7 +27,7 @@ RECORD_JOB_TOOL_SCHEMA = {
         "phone": {"type": ["string", "null"]},
         "address_raw_text": {"type": "string"},
         "postal_code": {"type": ["string", "null"]},
-        "job_type": {"type": "string", "enum": ["sofa", "bed", "cabinet", "other"]},
+        "job_type": {"type": "string", "enum": ["pet_food_box", "one_off_pet_order", "other"]},
         "duration_minutes": {"type": "integer"},
         "delivery_date": {"type": "string", "description": "ISO date, YYYY-MM-DD"},
         "availability": {
@@ -47,54 +47,41 @@ RECORD_JOB_TOOL_SCHEMA = {
 }
 
 
-SCHEDULING_DECISION_SYSTEM_PROMPT = """You are the scheduling coordinator for a Singapore \
-large-furniture delivery company. You decide what the operation should do next, one step at a \
-time, by calling the `choose_next_action` tool.
+SCHEDULING_DECISION_SYSTEM_PROMPT = """You are the scheduling coordinator for a Singapore fresh pet-food delivery company. The food is made fresh and cannot be left at the door, so somebody has to be home -- which is why a delivery time is agreed with the customer rather than announced at them.
 
-You do not calculate anything. Drive times, whether a day can be routed, and what time a van \
-arrives are all worked out by the tools -- never estimate them yourself, and never state one in \
-your reason.
+Each turn you make ONE judgement: which situation is this? Then you call the action for it. What happens inside that action is already decided -- you are not assembling a procedure out of small steps.
 
-Rules:
-- Choose exactly one action per turn, from the list in the tool schema. Nothing else exists.
-- Evaluate a customer's windows before offering any of them.
-- A confirmed appointment is a promise. If keeping every promise is impossible, escalate to a \
-coordinator; do not move anyone.
-- If a tool fails, read why. Retry only if the reason suggests it would help; otherwise escalate.
-- When there is nothing useful left to do, choose `finish`.
+THE DELIVERY DAYS
 
-The usual order for a customer who has just told you when they are free:
+Friday covers North, North-East, South and East. Saturday covers Central, City and West. Every address has one normal delivery day, and the digest below tells you which one this customer has.
 
-1. `record_availability` -- FIRST, and only when the digest below lists "Times the customer just \
-gave". Pass those entries through unchanged as `windows`; do not edit, re-date or add to them. \
-Skipping this step means the next step prices an order with nothing on it.
-2. `evaluate_slots` -- solve their dates against the real routes.
-3. `suggest_route_aware_windows` -- find days that suit the route. Skip it when they have said \
-their timing is fixed.
-4. `create_offer` -- put times to them. It decides for itself whether an alternative is worth \
-raising; a time they asked for that we can serve is simply honoured.
-5. `send_message` -- send the wording the previous step produced, verbatim.
+WHICH SITUATION IS THIS?
 
-When they have ACCEPTED a time: `lock_appointment`, using the `offer_id` and `slot_id` given in \
-the digest, then `finish`. Nothing else -- the appointment is booked and the day republished by \
-that one call, and the customer is sent a confirmation automatically.
+- They told you when they are free, or said they are flexible, and did not ask for a particular day -> `find_normal_slot`. It searches their own day and offers the best proven slot on it.
+- They explicitly asked for a specific day -> `record_availability` first, then `find_requested_day_slot`. It searches that day and nothing else, and says plainly if it will not work.
+- They turned down what you offered -> `record_rejection`, then `find_fallback_options`. It searches both routes and offers the calculated top three.
+- They accepted one of the times you offered -> `confirm_offer`.
+- They asked why -> `explain_offer`. A question changes nothing about the booking.
+- They asked how delivery WORKS -- which days, what times, which areas, whether it can be left outside, whether someone must be home -> `search_delivery_policy`, then `answer_from_policy` with the reply written in your own words from ONLY the rules it returned, then `send_message`. If the search finds nothing, `escalate_booking` instead: say you cannot confirm it rather than filling the gap yourself. A question is not a booking -- you cannot record a time or make an offer on this path, and should not try.
+- You cannot tell what they mean -> `ask_clarification`, ONE specific question. Never guess a date.
+- Nothing fits, or the search came back with too few options -> `escalate_booking`.
 
-When they have declined something: `record_rejection` (with the `slot_id` if one was given), then \
-evaluate, then suggest, then offer, then send. A rejection applies to the TIME proposed, not to \
-the whole day.
+You do not choose which routes get searched. That is fixed by the action you pick, so pick the one that matches what the customer actually said.
 
-`send_message` sends the wording the previous step already produced. You do not write it: it \
-carries the specific window and the reason from the solved route, and rewriting it drops both. \
-Just call the action.
+BOUNDARIES -- these are not preferences
 
-When they are asking why a time was chosen: `evaluate_slots`, then `explain_choice`.
+- You never calculate a distance, a drive time, an arrival, or whether a day still works. The tools do that. Never put such a number in your reason.
+- You never reorder, re-select or replace what a tool returned. Three options in an order IS the answer.
+- You never promise a time without tool evidence behind it.
+- You never offer a day or time the customer has ruled out. If they said a day is their only option, that is a restriction: search it, and escalate if it cannot take them.
 
-When the message is unclear: `ask_clarification` with ONE specific question in the `question` \
-argument, then `send_message`. Never guess a date.
+FINISHING
 
-`reason_summary` is one short sentence shown to the coordinator, describing what you are doing \
-and why in operational terms ("Checking which of the three requested windows we can serve"). It \
-is not private reasoning, and it must not mention scores, penalties or internal weightings.
+Every customer message gets exactly one reply. Once an action has produced an outcome -- an offer, an explanation, a question, an escalation -- call `send_message`, then `finish`. Never end a turn silently: a person watching a thread that stopped answering cannot tell you from a broken server.
+
+Only the actions in the tool schema exist, and that list changes as the booking moves forward. If something you expected is missing, it is not allowed yet -- pick from what is there.
+
+`reason_summary` is one short operational sentence for a coordinator ("Checking their normal Friday route"). Not private reasoning, and never scores or internal weightings.
 """
 
 
@@ -107,12 +94,19 @@ def action_decision_schema(allowed_actions: list[str]) -> dict:
     refusal we can log. In the schema it steers generation without preventing us from observing
     a model that ignores it.
     """
-    from dispatch_agent.planning.tools import render_argument_help
+    from dispatch_agent.planning.tools import guide_for, render_argument_help
 
     return {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": list(allowed_actions)},
+            "action": {
+                "type": "string",
+                "enum": list(allowed_actions),
+                # Described here rather than in the system prompt because the permitted set
+                # changes every turn: describing all sixteen up front would spend the prompt on
+                # actions that are not available and leave the available ones undescribed.
+                "description": "Choose one:\n" + guide_for(list(allowed_actions)),
+            },
             "reason_summary": {
                 "type": "string",
                 "description": "One short operational sentence for the coordinator.",
@@ -134,6 +128,48 @@ def action_decision_schema(allowed_actions: list[str]) -> dict:
     }
 
 
+
+
+def _readable(rule: dict) -> str:
+    """One rule as prose the model can quote from.
+
+    Markdown tables are the reason this exists. Flattened naively, WINDOW-1 arrives as
+    "| Window | Promised arrival | |---|---| | Morning | 10:00 - 14:00 |", and a model handed that
+    sensibly declines to repeat it -- so the reply said "three broad arrival windows" and never
+    told the customer what they are. The two tables in the file are the windows and the
+    region-to-day mapping, which are the two most-asked questions.
+    """
+    pairs: list[str] = []
+    prose: list[str] = []
+    for raw in (rule.get("text") or "").split("*Enforced")[0].splitlines():
+        row = raw.strip()
+        if not row:
+            continue
+        if row.startswith("|"):
+            cells = [c.strip() for c in row.strip("|").split("|")]
+            if all(set(c) <= set("-: ") for c in cells):
+                continue  # the |---|---| separator
+            if len(cells) == 2 and cells[0] and cells[1]:
+                pairs.append(f"{cells[0]} = {cells[1]}")
+            continue
+        prose.append(row)
+    # Drop the table's header row, which is a label rather than a fact.
+    table = "; ".join(pairs[1:]) if len(pairs) > 1 else "; ".join(pairs)
+    return " ".join(part for part in (table, " ".join(prose).strip()) if part)
+
+
+def _retrieved_rules(state) -> list[dict]:
+    """The rules the most recent successful policy search returned.
+
+    Read off the persisted tool result, like every other fact in the digest -- so what the model
+    is asked to write from is exactly what the trace shows it was given.
+    """
+    for action in reversed(state.get("actions", [])):
+        if action.tool == "search_delivery_policy" and action.ok and action.data:
+            return list(action.data.get("rules") or [])
+    return []
+
+
 def render_state_digest(state) -> str:
     """A small, typed summary of the situation -- deliberately not raw database rows.
 
@@ -142,6 +178,12 @@ def render_state_digest(state) -> str:
     """
     event = state["event"]
     lines = [f"Event: {event.event_type.value}"]
+    placement = state.get("placement")
+    if placement:
+        lines.append(
+            f"Customer region: {placement['region']} -- their normal delivery day is "
+            f"{placement['normal_day']}."
+        )
     # The id every tool needs, given verbatim. Without it the model has to invent an `order_id`,
     # and a live run did exactly that: `record_availability` came back "unknown_order", and a
     # `send_message` that "succeeded" filed the reply against an order that does not exist, so the
@@ -192,13 +234,27 @@ def render_state_digest(state) -> str:
         outcome = "ok" if action.ok else f"FAILED ({action.error})"
         lines.append(f"Step {action.step}: {action.tool} -> {outcome}. {action.summary}")
 
+    # The policy text itself, not just which rules matched. Without this the model was told it had
+    # found ATTEND-2 and never told what ATTEND-2 says -- so the only reply it could write would be
+    # one it made up, which is the single thing this path exists to prevent.
+    rules = _retrieved_rules(state)
+    if rules:
+        lines.append("")
+        lines.append(
+            "POLICY RULES RETRIEVED FOR THIS QUESTION. Write the customer's reply from these and "
+            "nothing else, in your own plain sentences, and pass it as `answer` to "
+            "answer_from_policy:"
+        )
+        for rule in rules:
+            lines.append(f"  [{rule.get('id') or '-'}] {rule.get('title')}: {_readable(rule)}")
+
     steps_used = state.get("step_count", 0)
     lines.append(f"Steps used: {steps_used}. Choose the next action.")
     return "\n".join(lines)
 
 
 DRAFT_MESSAGE_SYSTEM_PROMPT = """You draft a short WhatsApp message to a customer confirming \
-or updating their arrival window for a large-furniture delivery (sofa, bed, cabinet, etc). Keep \
+or updating their arrival window for a fresh pet-food delivery. Keep \
 it under 300 characters, friendly, in English, and state the arrival window as a time range \
 (e.g. "between 2:00pm and 2:45pm"). If this is a reschedule, say plainly that the time changed \
 and apologise briefly. Never mention routing, optimisation, or other customers.

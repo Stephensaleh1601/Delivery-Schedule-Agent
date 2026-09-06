@@ -211,6 +211,43 @@ export interface PlanOptions {
   error: string | null;
 }
 
+/** What was sent to a driver, and when. `plan_version` is read at send time, so a route sent
+ *  before a late booking cannot silently be the stale one. */
+export interface DriverDispatch {
+  date: string;
+  driver: { id: string; name: string; phone: string };
+  plan_version: number;
+  plan_id: string;
+  stop_count: number;
+  maps_url: string;
+  message: string;
+  sent_at: string;
+}
+
+/** One observable step the agent took, with how long it took.
+ *
+ *  Real backend events, never a timed animation: a stage that did not run does not appear. */
+export interface AgentProgressStage {
+  key: string;
+  label: string;
+  /** One plain sentence for why this step is running. Not deliberation. */
+  reason: string;
+  tool: string | null;
+  state: "running" | "done" | "failed";
+  /** What it found, quoted from the tool's own summary. */
+  detail: string;
+  seconds: number;
+}
+
+export interface AgentProgressState {
+  order_id: string;
+  run_id?: string | null;
+  state: "idle" | "running" | "done" | "failed";
+  summary: string;
+  seconds: number;
+  stages: AgentProgressStage[];
+}
+
 export interface PlanVersion {
   id: string;
   delivery_date: string;
@@ -322,6 +359,12 @@ export interface AgentRun {
   model_id: string | null;
   /** The exception that forced a fallback, kept so a credentials problem is distinguishable. */
   decider_error: string | null;
+  /** Who read the customer's sentence -- a different decision, and often a different provider,
+   *  from the one that chose the actions. Both are shown rather than one standing in for the
+   *  other. */
+  reader: string | null;
+  reader_model_id: string | null;
+  reader_error: string | null;
   started_at: string;
   completed_at: string | null;
   actions: AgentAction[];
@@ -342,8 +385,24 @@ export interface ChatMessage {
  *
  *  Returned by both sending a message and reloading, and identical either way -- which is what
  *  makes a browser refresh show exactly what was on screen before it. */
+/** Where this customer sits, worked out by the backend from their postal code. The region
+ *  mapping and the window times live in `planning/clusters.py` and `planning/slots.py`; nothing
+ *  here re-states them, so the greeting cannot drift from the routes we actually search. */
+export interface Placement {
+  postal_code: string | null;
+  region: string | null;
+  normal_day: string | null;
+  normal_date: string | null;
+  /** The other delivery day. Named in the greeting so the normal day reads as a recommendation
+   *  the customer may decline, which is what it is. */
+  other_day: string | null;
+  other_date: string | null;
+  windows: { name: string; label: string; start: string; end: string }[];
+}
+
 export interface ChatTurn {
   order_id: string;
+  placement: Placement | null;
   intent: string;
   duplicate: boolean;
   planning_status: string | null;
@@ -409,6 +468,10 @@ export interface Decision {
   asked: string;
   what_changed: string;
   steps: DecisionStep[];
+  /** What the search looked at, in counts read straight off the tool result: stops compared,
+   *  anchors found, positions tested, choices thrown away and why. A judge can check every
+   *  one of these against the routes. */
+  evidence: DecisionStep[];
   candidates: DecisionCandidate[];
   decision: string;
   outcome: string[];
@@ -492,12 +555,18 @@ export const dispatch = {
   /** One customer message. THE conversational call: one message, one agent run, one offer round. */
   sendMessage: (orderId: string, body: string) =>
     api.post<ChatTurn>(`/api/orders/${orderId}/messages`, { body }),
+  /** What the agent is doing, or what it did. Live while a turn is in flight; rebuilt from
+   *  the persisted run afterwards, so a refresh keeps the completed trace. */
+  progress: (orderId: string) => api.get<AgentProgressState>(`/api/orders/${orderId}/progress`),
   /** The persisted thread, for a client that has just reloaded. */
   conversation: (orderId: string) => api.get<ChatTurn>(`/api/orders/${orderId}/messages`),
 
   activePlan: (date: string) => api.get<ActivePlan>(`/api/plans/${date}`),
   planVersions: (date: string) => api.get<PlanVersion[]>(`/api/plans/${date}/versions`),
   routePlan: (date: string) => api.post<RoutePlanResponse>("/api/route-plan", { date }),
+  /** Send the finished route to the day's driver. A coordinator's action -- the customer-facing
+   *  agent has no tool for this, by construction rather than by rule. */
+  sendToDriver: (date: string) => api.post<DriverDispatch>(`/api/plans/${date}/dispatch`),
 
   setReadiness: (orderId: string, readiness: ReadinessStatus) =>
     api.post<ReadinessResponse>(`/api/orders/${orderId}/readiness`, { readiness_status: readiness }),

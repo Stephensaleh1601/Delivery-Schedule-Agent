@@ -21,7 +21,7 @@ from dispatch_agent.planning import language
 from dispatch_agent.planning.clock import PlanningClock
 
 UNDERSTANDING_SYSTEM_PROMPT = """You are reading one WhatsApp message from a customer of a \
-Singapore furniture delivery company, and classifying what they want by calling the \
+Singapore fresh pet-food delivery company, and classifying what they want by calling the \
 `read_message` tool.
 
 You do NOT schedule anything, calculate anything, or decide what we can deliver. You only say what \
@@ -33,8 +33,14 @@ before.
 - `accept` -- they are agreeing to a time we already proposed.
 - `reject` -- they are turning down a time we proposed, with or without suggesting another.
 - `explain` -- they are asking why a time was chosen, or why another is not possible.
-- `general_support` -- they are asking about something that is not the timing at all: changing the \
-delivery ADDRESS, cancelling, what it costs, or wanting to speak to a person. These messages often \
+- `policy_question` -- they are asking how the delivery service works, in general rather than \
+about their own booking: which days we deliver, what time windows exist, which areas go on which \
+day, whether the food can be left outside, why someone has to be home, what happens if they miss \
+it. These have published answers. Choose this even when the question mentions their own area or a \
+day, as long as they are ASKING rather than telling us when they are free.
+- `general_support` -- they are asking about something that is not the timing and not how \
+delivery works: changing the delivery ADDRESS, cancelling, what it costs, products we sell, or \
+wanting to speak to a person. These messages often \
 contain scheduling-looking words ("change", "can I", a question mark) and are still not about when \
 we deliver.
 - `unclear` -- anything else, including messages you are not confident about. Choosing this is \
@@ -221,6 +227,14 @@ class MessageReader:
         # you like?" -- the original misreading, arriving by a different route.
         if deterministic.intent == "general_support" and not deterministic.windows:
             intent = "general_support"
+
+        # A clear question about the published delivery rules must stay a question. The live model
+        # read "so u can only do saturday?" as new Saturday availability, which made the booking
+        # workflow search a route and reply that no slot fitted. The deterministic reader already
+        # distinguishes questions from statements, so let that concrete signal win just as we do
+        # for support topics and resolved dates.
+        if deterministic.intent == "policy_question" and not deterministic.windows:
+            intent = "policy_question"
 
         # ...and the same rule in the other direction, which matters more. A message the parser
         # resolved to a real date IS about scheduling, whatever the model called it. "5th Sept what

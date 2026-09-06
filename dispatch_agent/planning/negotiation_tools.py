@@ -60,7 +60,7 @@ class ClarifyArgs(_Args):
 @tool("record_availability", AvailabilityArgs)
 def record_availability(args: AvailabilityArgs, ctx: ToolContext) -> ToolResult:
     """Write down what the customer said they can do."""
-    from dispatch_agent.planning import conversation
+    from dispatch_agent.planning import conversation, offer_service
     from dispatch_agent.planning.language import StatedWindow
 
     order = ctx.repo.get_job(args.order_id)
@@ -197,6 +197,14 @@ def explain_choice(args: ExplainArgs, ctx: ToolContext) -> ToolResult:
         return ToolResult(ok=False, tool="explain_choice", error="unknown_order",
                           summary=f"No order {args.order_id}.")
 
+    # An offer built from the insertion search carries its own evidence, and that is the thing
+    # the customer is actually looking at. Preferred over a fresh evaluation: explaining from a
+    # re-solve can quote figures that differ from the ones in the message they are asking about,
+    # which is a worse answer than no answer.
+    from_offer = _explain_from_offer(order, ctx)
+    if from_offer is not None:
+        return from_offer
+
     feasible = [e for e in ctx.evaluations if e.feasible]
     if not feasible:
         return ToolResult(
@@ -249,4 +257,65 @@ def ask_clarification(args: ClarifyArgs, ctx: ToolContext) -> ToolResult:
         ok=True, tool="ask_clarification",
         summary=f"Asked the customer to clarify: {args.question}",
         data={"order_id": args.order_id},
+    )
+
+
+def _explain_from_offer(order, ctx: ToolContext) -> ToolResult | None:
+    """"Why this time?" answered from the offer on the table, with the evidence stored on it.
+
+    Returns None when there is no such offer, so the caller falls through to the older
+    evaluation-based explanation rather than this becoming the only path.
+    """
+    from dispatch_agent.planning import conversation, offer_service
+
+    offer = conversation.open_offer(ctx.repo, order.id)
+    if offer is None:
+        return None
+    slots = [s for s in offer.options if s.evidence is not None]
+    if not slots:
+        return None
+
+    lines: list[str] = []
+    if len(slots) == 1:
+        e = slots[0].evidence
+        lines.append(
+            f"We are already delivering {e.anchor_distance_km}km from you that day, so fitting "
+            f"you in adds only {e.added_distance_km}km and about {e.added_minutes} minutes of "
+            f"driving."
+        )
+    else:
+        lines.append("Each of those times is on a route we are already running near you:")
+        for index, slot in enumerate(slots, start=1):
+            e = slot.evidence
+            # offer_service's own formatters: %-I is POSIX-only and raises on Windows, which is
+            # the portability trap this codebase already hit once.
+            when = f"{offer_service.format_date(slot.date)} {offer_service.format_window(slot.window)}"
+            lines.append(
+                f"{index}. {when} — nearest stop {e.anchor_distance_km}km away, "
+                f"adds {e.added_distance_km}km."
+            )
+    lines.append(
+        "None of them move anyone we have already promised a time -- we check that before "
+        "offering."
+    )
+
+    explanation = " ".join(lines) if len(slots) == 1 else "\n".join(lines)
+    ctx.scratch["customer_message"] = explanation
+    return ToolResult(
+        ok=True,
+        tool="explain_choice",
+        summary=f"Explained {len(slots)} offered time(s) from the measured insertion.",
+        data={
+            "offer_id": offer.id,
+            "slots": [
+                {
+                    "date": s.date.isoformat(),
+                    "anchor_distance_km": s.evidence.anchor_distance_km,
+                    "added_distance_km": s.evidence.added_distance_km,
+                    "added_minutes": s.evidence.added_minutes,
+                    "promises_moved": 0,
+                }
+                for s in slots
+            ],
+        },
     )

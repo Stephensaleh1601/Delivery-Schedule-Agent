@@ -22,7 +22,7 @@ from dispatch_agent.models import AgentRunLog
 from dispatch_agent.planning.route_facts import minutes_phrase
 
 # Two candidates. A judge comparing five is not comparing anything.
-MAX_CANDIDATES = 2
+MAX_CANDIDATES = 3
 
 # Below this, two windows are the same answer twice and only one is worth showing.
 SAME_IMPACT_MINUTES = 3
@@ -78,6 +78,10 @@ class DecisionRecord:
     asked: str = ""
     what_changed: str = ""
     steps: list[Step] = field(default_factory=list)
+    # What the search actually looked at, in counts. Read straight off the persisted tool result
+    # rather than narrated, so "compared 16 stops" is a fact a judge can check against the routes
+    # and not a sentence the model composed about its own diligence.
+    evidence: list[Step] = field(default_factory=list)
     candidates: list[Candidate] = field(default_factory=list)
     decision: str = ""
     outcome: list[str] = field(default_factory=list)
@@ -91,6 +95,7 @@ class DecisionRecord:
             "asked": self.asked,
             "what_changed": self.what_changed,
             "steps": [vars(s) for s in self.steps],
+            "evidence": [vars(e) for e in self.evidence],
             "candidates": [vars(c) for c in self.candidates],
             "decision": self.decision,
             "outcome": self.outcome,
@@ -126,7 +131,8 @@ def _clock(hhmm: str) -> str:
 
 
 def build(
-    run: AgentRunLog, order=None, evaluations=None, suggestions=None, on_the_table=None
+    run: AgentRunLog, order=None, evaluations=None, suggestions=None, on_the_table=None,
+    offer=None,
 ) -> DecisionRecord:
     """Assemble the decision from what the run actually did.
 
@@ -154,11 +160,20 @@ def build(
     _what_the_customer_asked(record, run, intent)
     # Candidates first: the last step of "what changed" names the window that was found, and
     # reading it off the candidate is exact where scraping it out of a summary string was not.
-    record.candidates = _candidates(run, evaluations, suggestions, on_the_table)
+    record.evidence = _evidence(run)
+    # An offer built from the insertion search carries its own evidence -- the anchor, the
+    # position, the detour -- measured against the published route. Preferred over the
+    # evaluation-derived cards, which describe a whole re-solved day and cannot say where in
+    # the route the customer would go.
+    record.candidates = _candidates_from_offer(offer) or _candidates(
+        run, evaluations, suggestions, on_the_table
+    )
     _what_changed(record, run, intent)
     _decide(record, run, intent)
 
-    record.meaningful = bool(record.candidates or record.outcome or record.what_changed)
+    record.meaningful = bool(
+        record.candidates or record.outcome or record.what_changed or record.evidence
+    )
     return record
 
 
@@ -180,7 +195,7 @@ def _planning_rules(order) -> list[str]:
     duration = getattr(order, "duration_minutes", None)
     rules = [
         "Confirmed promises are never moved to fit a new booking",
-        f"Driver hours {settings.work_day_start:%H:%M}–{settings.work_day_end:%H:%M}, "
+        f"Driver hours {settings.work_day_start:%H:%M}–{settings.arrival_cutoff:%H:%M}, "
         f"overtime counted after {settings.soft_day_end:%H:%M}",
         f"Every route starts and ends at {settings.depot_address}",
     ]
@@ -535,3 +550,156 @@ def _confirmation(record: DecisionRecord, run: AgentRunLog, order=None) -> None:
         "Existing promises moved: 0",
     ]
     record.meaningful = True
+
+
+def _evidence(run: AgentRunLog) -> list[Step]:
+    """The judge-facing rows: what was read, what was compared, what was thrown away and why.
+
+    Every number comes from `AgentActionLog.data` -- the payload the tool persisted -- so this
+    cannot report work that did not happen. Where a count is zero the row is left out rather than
+    printed as "rejected 0", which reads as an absence of rigour rather than an absence of
+    problems.
+    """
+    rows: list[Step] = []
+
+    policy = next((a for a in run.actions if a.tool == "retrieve_policy" and a.ok), None)
+    if policy:
+        ids = ", ".join(policy.data.get("policy_ids", [])[:3])
+        rows.append(Step(f"Read the delivery policy{f' ({ids})' if ids else ''}", "neutral"))
+
+    routes = next((a for a in run.actions if a.tool == "get_existing_routes" and a.ok), None)
+    if routes:
+        count = len(routes.data.get("routes", []))
+        rows.append(Step(f"Loaded {count} published route{'s' if count != 1 else ''}", "neutral"))
+
+    search = next(
+        (
+            a
+            for a in run.actions
+            if a.tool
+            in (
+                "find_insertion_options",
+                "find_normal_slot",
+                "find_requested_day_slot",
+                "find_fallback_options",
+            )
+        ),
+        None,
+    )
+    if search is None:
+        return rows
+
+    data = search.data or {}
+    radius = data.get("anchor_radius_km")
+    if data.get("stops_checked"):
+        rows.append(Step(f"Compared the customer with {data['stops_checked']} stops", "neutral"))
+    if data.get("anchors_within_radius"):
+        rows.append(
+            Step(f"Found {data['anchors_within_radius']} within {radius}km", "found")
+        )
+    if data.get("positions_tested"):
+        rows.append(
+            Step(f"Tested {data['positions_tested']} positions, before and after each", "neutral")
+        )
+    if data.get("rejected_would_delay"):
+        rows.append(
+            Step(
+                f"Rejected {data['rejected_would_delay']} that would have made someone late",
+                "removed",
+            )
+        )
+    if data.get("rejected_outside_windows"):
+        rows.append(
+            Step(
+                f"Rejected {data['rejected_outside_windows']} arriving outside every window",
+                "removed",
+            )
+        )
+    if data.get("excluded_by_customer"):
+        rows.append(
+            Step(f"Dropped {data['excluded_by_customer']} the customer had ruled out", "removed")
+        )
+    if data.get("valid_count"):
+        rows.append(Step(f"Produced {data['valid_count']} valid choices", "solved"))
+
+    offered = next(
+        (
+            a
+            for a in run.actions
+            if a.ok
+            and a.tool
+            in (
+                "create_normal_offer",
+                "create_alternative_offer",
+                "find_normal_slot",
+                "find_requested_day_slot",
+                "find_fallback_options",
+            )
+        ),
+        None,
+    )
+    if offered:
+        count = len(offered.data.get("offered", offered.data.get("slots", [])))
+        rows.append(Step(f"Offered the calculated top {count}", "solved"))
+
+    return rows
+
+
+def _candidates_from_offer(offer) -> list[Candidate]:
+    """One card per offered slot, from the evidence stored on it.
+
+    Read off the offer rather than recomputed, so what the panel shows and what the customer was
+    sent cannot drift apart -- and so the figures survive a page refresh without re-running a
+    search whose inputs may have moved.
+    """
+    if offer is None:
+        return []
+    slots = [s for s in offer.options if s.evidence is not None]
+    if not slots:
+        return []
+
+    cheapest = min(s.evidence.added_distance_km for s in slots)
+    cards: list[Candidate] = []
+    for slot in slots[:MAX_CANDIDATES]:
+        e = slot.evidence
+        later = max(
+            0,
+            (e.finish_after.hour * 60 + e.finish_after.minute)
+            - (e.finish_before.hour * 60 + e.finish_before.minute),
+        )
+        cards.append(
+            Candidate(
+                label=_window_label(
+                    slot.date.isoformat(),
+                    slot.window.start.strftime("%H:%M"),
+                    slot.window.end.strftime("%H:%M"),
+                ),
+                kind="route",
+                badge="Lowest impact" if e.added_distance_km == cheapest else "",
+                explanation=slot.reason or "",
+                added_drive_minutes=e.added_minutes,
+                added_distance_km=e.added_distance_km,
+                finishes_later_minutes=later,
+                # Nobody is moved by an insertion -- the search rejects any position that would
+                # make an existing stop late, so a returned option always has zero here.
+                promises_moved=0,
+                opens_new_day=False,
+                feasible=True,
+                # Positions, not names: this panel sits beside the customer's own thread.
+                insertion=(
+                    f"{e.placement.title()} stop {e.anchor_stop_number}, "
+                    f"{e.anchor_distance_km}km away — new stop {e.insert_position} on the day"
+                ),
+                stops_before=e.insert_position - 1,
+                position=e.insert_position,
+                chosen=e.added_distance_km == cheapest,
+                start=slot.window.start.strftime("%H:%M"),
+                offered=True,
+                date=slot.date.isoformat(),
+                window=(
+                    f"{_clock(slot.window.start.strftime('%H:%M'))}–"
+                    f"{_clock(slot.window.end.strftime('%H:%M'))}"
+                ),
+            )
+        )
+    return cards

@@ -43,9 +43,10 @@ def _order_payload(name="Mrs Tan", postal="018956", options=None):
 def test_horizon_tells_the_browser_what_dates_are_bookable(client):
     body = client.get("/api/horizon").json()
     assert body["today"] == BASE.isoformat()
+    # BASE is a Wednesday, so the cycle is that same week's Friday and Saturday.
     assert body["first"] == (BASE + timedelta(days=2)).isoformat()
-    assert body["last"] == (BASE + timedelta(days=5)).isoformat()
-    assert len(body["dates"]) == 4
+    assert body["last"] == (BASE + timedelta(days=3)).isoformat()
+    assert len(body["dates"]) == 2
 
 
 def test_booking_an_order_leaves_it_undated(client):

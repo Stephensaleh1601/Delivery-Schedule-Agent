@@ -28,7 +28,7 @@ from dispatch_agent.models import (
     PlanningStatus,
     TimeWindow,
 )
-from dispatch_agent.planning import tools
+from dispatch_agent.planning import policy_kb, tools
 from dispatch_agent.planning.clock import PlanningClock
 
 BASE = date(2026, 9, 2)
@@ -45,13 +45,19 @@ def _w(start, end):
 
 def _order(repo, name="Mrs Tan", postal_code="018956", option_count=2):
     days = PlanningClock.horizon_dates()
-    windows = [((9, 0), (13, 0)), ((13, 0), (18, 0)), ((9, 0), (18, 0))]
+    # The cycle is two days, so a third option is a second window on the FIRST day rather than a
+    # third date. The windows are chosen not to overlap within a day: two options covering the
+    # same hours would be one choice wearing two hats, and a test asserting "another offer came
+    # back" would pass on a duplicate.
+    windows = [((9, 0), (13, 0)), ((9, 0), (13, 0)), ((13, 0), (18, 0))]
     job = JobRecord(
         customer_name=name,
         address=Address(raw_text=name, postal_code=postal_code, coordinates=postal_code_to_coords(postal_code)),
         job_type=JobType.SOFA,
         availability_options=[
-            AvailabilityOption(date=days[i], window=_w(*windows[i]), preference_rank=i + 1)
+            AvailabilityOption(
+                date=days[i % len(days)], window=_w(*windows[i]), preference_rank=i + 1
+            )
             for i in range(option_count)
         ],
         raw_message="booked via chat",
@@ -175,6 +181,46 @@ def test_new_order_evaluates_then_offers_then_messages(temp_db):
     assert all(a.ok for a in run.actions)
     assert temp_db.get_job(order.id).planning_status is PlanningStatus.OFFERED
     assert temp_db.messages(order.id), "the customer was never actually told"
+
+
+def test_policy_search_keeps_the_customers_exact_question(temp_db):
+    """A model omitting the query must not turn a clear policy question into an escalation."""
+    order = _order(temp_db)
+    question = "So you can only do Saturday?"
+
+    run = handle_planning_event(
+        _event(
+            order,
+            PlanningEventType.MANUAL_RETRY,
+            intent="policy_question",
+            question=question,
+            message=question,
+        ),
+        repo=temp_db,
+        # This incomplete call reproduces what the live model returned. The controller should
+        # bypass it while search_delivery_policy is the only legal action.
+        decider=ScriptedDecisionAgent([
+            {
+                "action": "search_delivery_policy",
+                "reason_summary": "searching",
+                "arguments": {"order_id": order.id},
+            }
+        ]),
+        use_fallback=False,
+    )
+
+    assert run.actions[0].tool == "search_delivery_policy"
+    assert run.actions[0].ok is True
+    assert run.actions[0].arguments["question"] == question
+    assert all(a.tool != "escalate_booking" for a in run.actions)
+    assert temp_db.messages(order.id), "the policy answer was never sent"
+
+
+def test_saturday_only_question_retrieves_the_normal_day_exception():
+    hits = policy_kb.search("So you can only do Saturday?")
+
+    assert hits
+    assert hits[0].id == "CLUSTER-5"
 
 
 def test_acceptance_locks_the_appointment_and_publishes_a_plan(temp_db):
@@ -320,7 +366,15 @@ def test_the_loop_falls_back_to_standard_procedure_when_the_model_is_unavailable
 
     assert run.status is AgentRunStatus.COMPLETED
     assert [a.tool for a in run.actions] == ["evaluate_slots", "create_offer", "send_message", "finish"]
-    assert all("model unavailable" in a.reason_summary for a in run.actions)
+
+    # Not one step may be attributed to the model. Every step was either taken by the standard
+    # procedure -- which says so in its own words -- or by the controller, which takes the only
+    # legal move when there is exactly one and does not pretend a judgement was exercised.
+    for action in run.actions:
+        assert action.decider in ("RuleDecisionAgent", "controller"), action.decider
+        if action.decider == "RuleDecisionAgent":
+            assert "model unavailable" in action.reason_summary
+    assert any(a.decider == "RuleDecisionAgent" for a in run.actions)
 
 
 def test_reason_summaries_are_truncated_not_trusted(temp_db):

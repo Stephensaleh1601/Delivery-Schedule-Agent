@@ -24,9 +24,9 @@ from dispatch_agent.models import (
 )
 from dispatch_agent.planning.clock import PlanningClock
 
-BASE = date(2026, 9, 3)
+BASE = date(2026, 9, 2)
 SATURDAY = date(2026, 9, 5)
-TUESDAY = date(2026, 9, 8)
+FRIDAY = date(2026, 9, 4)
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +39,18 @@ def client(temp_db, monkeypatch):
     from fastapi.testclient import TestClient
 
     monkeypatch.setattr(config.settings, "demo_base_date", BASE.isoformat())
+
+    # Both cluster days must carry a published route, or there is no coordination cycle and every
+    # conversation escalates. That is the correct behaviour -- a customer may only be inserted
+    # into a route that exists -- so the fixture has to supply the world the flow assumes.
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "scripts"))
+    import seed_test_clients
+
+    seed_test_clients.seed()
+
     from dispatch_agent.webapp.main import app
 
     return TestClient(app)
@@ -95,11 +107,11 @@ def _ok_tools(turn):
 
 
 def test_one_message_produces_one_offer_one_send_and_one_bubble(client):
-    """The duplicate-offer failure. "Tuesday after 1 works for me." sent the identical offer
+    """The duplicate-offer failure. "Friday after 1 works for me." sent the identical offer
     message three times: one create_offer, three send_message, seven steps."""
     order_id = _order(client)
 
-    turn = _say(client, order_id, "Tuesday after 1 works for me.")
+    turn = _say(client, order_id, "Friday after 1 works for me.")
 
     assert _ok_tools(turn).count("send_message") == 1, _tools(turn)
     assert _ok_tools(turn).count("create_offer") == 1, _tools(turn)
@@ -111,7 +123,7 @@ def test_no_tool_runs_twice_in_one_run(client):
     """Nothing that changes state should be reachable twice from one customer message."""
     order_id = _order(client)
 
-    turn = _say(client, order_id, "Tuesday after 1 works for me.")
+    turn = _say(client, order_id, "Friday after 1 works for me.")
 
     succeeded = _ok_tools(turn)
     assert len(succeeded) == len(set(succeeded)), succeeded
@@ -122,7 +134,7 @@ def test_accepting_locks_exactly_once(client):
     broke -- but it should never have been attempted, and a trace that shows an action twice
     invites the question of what else is being retried blindly."""
     order_id = _order(client)
-    _say(client, order_id, "Tuesday after 1 works for me.")
+    _say(client, order_id, "Friday after 1 works for me.")
 
     turn = _say(client, order_id, "Okay, take the first one.")
 
@@ -133,7 +145,7 @@ def test_accepting_locks_exactly_once(client):
 
 def test_acceptance_sends_exactly_one_confirmation(client):
     order_id = _order(client)
-    before = _say(client, order_id, "Tuesday after 1 works for me.")
+    before = _say(client, order_id, "Friday after 1 works for me.")
 
     after = _say(client, order_id, "Okay, take the first one.")
 
@@ -144,7 +156,7 @@ def test_acceptance_sends_exactly_one_confirmation(client):
 
 def test_acceptance_publishes_exactly_one_route_version(client, temp_db):
     order_id = _order(client)
-    _say(client, order_id, "Tuesday after 1 works for me.")
+    _say(client, order_id, "Friday after 1 works for me.")
     turn = _say(client, order_id, "Okay, take the first one.")
 
     versions = client.get(f"/api/plans/{turn['delivery_date']}/versions").json()
@@ -160,13 +172,13 @@ def test_asking_why_runs_only_read_only_tools(client):
     """The worst of the failures. "Why this timing?" ran eight tools: it rejected the offer it was
     explaining, went looking for replacement customers, and raised a coordinator exception."""
     order_id = _order(client)
-    _say(client, order_id, "Tuesday after 1 works for me.")
+    _say(client, order_id, "Friday after 1 works for me.")
 
     turn = _say(client, order_id, "Why this timing?")
 
     assert turn["intent"] == "explain"
     # suggest_route_aware_windows is on this list because it is genuinely read-only: it solves
-    # days and returns them, and writes nothing. Without it "why Tuesday?" could only see the
+    # days and returns them, and writes nothing. Without it "why Friday?" could only see the
     # customer's own dates, and answered by explaining Saturday.
     allowed = {
         "evaluate_slots", "suggest_route_aware_windows", "explain_choice", "send_message", "finish",
@@ -181,7 +193,7 @@ def test_asking_why_runs_only_read_only_tools(client):
 )
 def test_an_explanation_cannot_reach_any_state_changing_tool(client, forbidden):
     order_id = _order(client)
-    _say(client, order_id, "Tuesday after 1 works for me.")
+    _say(client, order_id, "Friday after 1 works for me.")
 
     turn = _say(client, order_id, "Why this timing?")
 
@@ -190,7 +202,7 @@ def test_an_explanation_cannot_reach_any_state_changing_tool(client, forbidden):
 
 def test_an_explanation_leaves_the_offer_exactly_as_it_was(client):
     order_id = _order(client)
-    opened = _say(client, order_id, "Tuesday after 1 works for me.")
+    opened = _say(client, order_id, "Friday after 1 works for me.")
     before = opened["offers"][opened["open_offer_id"]]
 
     turn = _say(client, order_id, "Why this timing?")
@@ -203,7 +215,7 @@ def test_an_explanation_leaves_the_offer_exactly_as_it_was(client):
 
 def test_an_explanation_raises_no_coordinator_exception(client):
     order_id = _order(client)
-    _say(client, order_id, "Tuesday after 1 works for me.")
+    _say(client, order_id, "Friday after 1 works for me.")
 
     _say(client, order_id, "Why this timing?")
 
@@ -212,7 +224,7 @@ def test_an_explanation_raises_no_coordinator_exception(client):
 
 def test_an_explanation_publishes_no_route(client):
     order_id = _order(client)
-    opened = _say(client, order_id, "Tuesday after 1 works for me.")
+    opened = _say(client, order_id, "Friday after 1 works for me.")
     day = opened["offers"][opened["open_offer_id"]]["options"][0]["date"]
 
     _say(client, order_id, "Why this timing?")
@@ -222,7 +234,7 @@ def test_an_explanation_publishes_no_route(client):
 
 def test_an_explanation_is_answered_with_one_message(client):
     order_id = _order(client)
-    before = _say(client, order_id, "Tuesday after 1 works for me.")
+    before = _say(client, order_id, "Friday after 1 works for me.")
 
     turn = _say(client, order_id, "Why this timing?")
 
@@ -236,7 +248,7 @@ def test_the_customer_can_still_confirm_after_asking_why(client):
     """The end of the first browser session: the explanation corrupted the state, the customer
     clicked confirm, nothing came back, and the order sat on "Offer sent"."""
     order_id = _order(client)
-    opened = _say(client, order_id, "Tuesday after 1 works for me.")
+    opened = _say(client, order_id, "Friday after 1 works for me.")
     slot = opened["offers"][opened["open_offer_id"]]["options"][0]
 
     _say(client, order_id, "Why this timing?")
@@ -256,7 +268,7 @@ def test_the_customer_can_still_confirm_after_asking_why(client):
 def test_an_address_question_is_not_read_as_an_answer_to_the_offer(client):
     """It was answered with "Which of those times would you like?"."""
     order_id = _order(client)
-    opened = _say(client, order_id, "Tuesday after 1 works for me.")
+    opened = _say(client, order_id, "Friday after 1 works for me.")
 
     turn = _say(client, order_id, "Can I change my delivery address?")
 
@@ -270,7 +282,7 @@ def test_an_address_question_is_not_read_as_an_answer_to_the_offer(client):
 
 def test_a_support_question_cannot_reach_the_booking_tools(client):
     order_id = _order(client)
-    _say(client, order_id, "Tuesday after 1 works for me.")
+    _say(client, order_id, "Friday after 1 works for me.")
 
     turn = _say(client, order_id, "Can I change my delivery address?")
 
@@ -281,7 +293,7 @@ def test_a_support_question_cannot_reach_the_booking_tools(client):
 
 def test_a_support_question_escalates_once_not_repeatedly(client):
     order_id = _order(client)
-    _say(client, order_id, "Tuesday after 1 works for me.")
+    _say(client, order_id, "Friday after 1 works for me.")
 
     _say(client, order_id, "Can I change my delivery address?")
 
@@ -293,7 +305,7 @@ def test_a_support_question_escalates_once_not_repeatedly(client):
 
 def test_rejecting_one_window_re_solves_the_same_day_once(client):
     order_id = _order(client)
-    opened = _say(client, order_id, "I'm free Tuesday, any time.")
+    opened = _say(client, order_id, "I'm free Friday, any time.")
     first = opened["offers"][opened["open_offer_id"]]["options"][0]
 
     turn = _say(client, order_id, "That doesn't work, anything later that day?")
@@ -309,7 +321,7 @@ def test_rejecting_one_window_re_solves_the_same_day_once(client):
 
 def test_a_rejection_sends_one_message_not_several(client):
     order_id = _order(client)
-    before = _say(client, order_id, "I'm free Tuesday, any time.")
+    before = _say(client, order_id, "I'm free Friday, any time.")
 
     turn = _say(client, order_id, "That doesn't work, anything later that day?")
 
@@ -323,7 +335,7 @@ def test_the_decision_panel_survives_a_refresh_and_keeps_the_confirmation(client
     """The panel reverted to "Waiting for the customer" after a confirmed booking, because it only
     ever showed the run from the current request -- and a page load has no current request."""
     order_id = _order(client)
-    _say(client, order_id, "Tuesday after 1 works for me.")
+    _say(client, order_id, "Friday after 1 works for me.")
     _say(client, order_id, "Okay, take the first one.")
 
     reloaded = client.get(f"/api/orders/{order_id}/messages").json()
@@ -339,7 +351,7 @@ def test_the_decision_panel_survives_a_refresh_and_keeps_the_confirmation(client
 def test_a_clarification_does_not_replace_the_last_real_decision(client):
     """Asking something unrelated must not blank the panel that explains the booking."""
     order_id = _order(client)
-    _say(client, order_id, "Tuesday after 1 works for me.")
+    _say(client, order_id, "Friday after 1 works for me.")
     booked = client.get(f"/api/orders/{order_id}/messages").json()["decision_run_id"]
 
     _say(client, order_id, "lol")
@@ -399,7 +411,7 @@ def test_two_candidates_are_never_the_same_answer_twice(client, temp_db):
 
 
 def test_a_candidate_is_labelled_customer_friendly_or_lowest_route_impact(client, temp_db):
-    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    _confirmed(temp_db, "Anchor", "469123", FRIDAY)
     order_id = _order(client, postal_code="828761")
 
     turn = _say(client, order_id, "Saturday morning works.")
@@ -425,7 +437,7 @@ def test_only_the_actual_lower_driving_option_claims_lower_route_impact():
         overtime_minutes=11,
     )
     tuesday = decision_record.Candidate(
-        label="Tuesday 12pm–2pm",
+        label="Friday 12pm–2pm",
         kind="route",
         added_drive_minutes=17,
         added_distance_km=6.6,
@@ -444,7 +456,7 @@ def test_only_the_actual_lower_driving_option_claims_lower_route_impact():
 
 def test_the_recommendation_matches_the_cheaper_candidate(client, temp_db):
     """The decision sentence must name the option the numbers actually favour."""
-    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    _confirmed(temp_db, "Anchor", "469123", FRIDAY)
     order_id = _order(client, postal_code="828761")
 
     turn = _say(client, order_id, "Saturday morning works.")
@@ -530,7 +542,7 @@ def test_no_run_exceeds_the_server_side_step_limit(client):
     from dispatch_agent.agents.scheduling_agent import MAX_TOOL_STEPS
 
     order_id = _order(client)
-    for message in ["I'm free Tuesday, any time.", "Why this timing?",
+    for message in ["I'm free Friday, any time.", "Why this timing?",
                     "That doesn't work, anything later?", "Okay, take the first one."]:
         turn = _say(client, order_id, message)
         if turn.get("run"):
@@ -541,14 +553,14 @@ def test_no_run_exceeds_the_server_side_step_limit(client):
 
 
 def _early_route(repo):
-    """A Tuesday whose confirmed work is all in the morning, and an unbooked customer nearby.
+    """A Friday whose confirmed work is all in the morning, and an unbooked customer nearby.
 
     Staggered locked windows, because three jobs all locked to the same two hours cannot be routed
     at all -- and an infeasible fixture would skip this test rather than fail it, which is how a
     scenario quietly stops covering the thing it was written for.
     """
-    _confirmed(repo, "Early A", "469123", TUESDAY, window=(9, 0, 10, 30))
-    _confirmed(repo, "Early B", "460115", TUESDAY, window=(10, 30, 12, 0))
+    _confirmed(repo, "Early A", "469123", FRIDAY, window=(9, 0, 10, 30))
+    _confirmed(repo, "Early B", "460115", FRIDAY, window=(10, 30, 12, 0))
     order = JobRecord(
         customer_name="Mrs Lee",
         address=Address(raw_text="x", postal_code="460216",
@@ -564,7 +576,7 @@ def _evaluate(repo, order, start_h, end_h):
     from dispatch_agent.planning.candidate_service import CandidateService
 
     return CandidateService(repo=repo).evaluate(order, AvailabilityOption(
-        date=TUESDAY, window=TimeWindow(start=time(start_h, 0), end=time(end_h, 0))))
+        date=FRIDAY, window=TimeWindow(start=time(start_h, 0), end=time(end_h, 0))))
 
 
 def test_a_late_slot_on_an_early_route_is_recognised_as_costly(temp_db):
@@ -632,7 +644,7 @@ def test_a_fixed_timing_is_honoured_even_when_it_strands_the_crew(temp_db):
 
 
 def test_already_nearby_is_only_claimed_when_it_is_true_at_that_hour(temp_db):
-    """"We'll already be delivering in the East on Tuesday afternoon" was said about a route whose
+    """"We'll already be delivering in the East on Friday afternoon" was said about a route whose
     only eastern stop was at 9am, after which it went west. True about the day, false about the
     hour -- and the customer would have waited three and a half hours to find out."""
     from dispatch_agent.planning.route_facts import NEARBY_MINUTES, RouteFacts
@@ -662,7 +674,7 @@ def test_the_reason_states_the_consequence_rather_than_the_neighbourhood(temp_db
                         minutes_to_nearest_neighbour=30, added_idle_minutes=226,
                         overtime_minutes=34)
 
-    reason = customer_reason(costly, TUESDAY, TimeWindow(start=time(13, 0), end=time(15, 0)))
+    reason = customer_reason(costly, FRIDAY, TimeWindow(start=time(13, 0), end=time(15, 0)))
 
     assert "already" not in reason.lower()
     assert "34 minutes" in reason
@@ -701,17 +713,17 @@ def test_a_support_topic_survives_the_model_calling_it_unclear(temp_db):
 
 
 def test_the_explanation_compares_the_options_with_real_numbers(client, temp_db):
-    """"Explained the timing from the solved route" is not an answer to "why Tuesday?".
+    """"Explained the timing from the solved route" is not an answer to "why Friday?".
 
     The answer is the comparison: this one adds a minute, that one adds sixteen. Both figures come
     from solves this run performed, and the "already nearby" clause is only attached when the
     driving figure supports it.
     """
-    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    _confirmed(temp_db, "Anchor", "469123", FRIDAY)
     order_id = _order(client, postal_code="828761")
     _say(client, order_id, "Saturday morning works.")
 
-    turn = _say(client, order_id, "Why Tuesday?")
+    turn = _say(client, order_id, "Why Friday?")
 
     decision = turn["decision"]["decision"]
     assert "driving" in decision, decision
@@ -722,11 +734,11 @@ def test_the_explanation_compares_the_options_with_real_numbers(client, temp_db)
 def test_no_nearby_claim_without_the_driving_to_support_it(client, temp_db):
     """"Already nearby" is a claim about the route, and it is only made when the added driving
     says so. An expensive option must not borrow the phrase."""
-    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    _confirmed(temp_db, "Anchor", "469123", FRIDAY)
     order_id = _order(client, postal_code="828761")
     _say(client, order_id, "Saturday morning works.")
 
-    turn = _say(client, order_id, "Why Tuesday?")
+    turn = _say(client, order_id, "Why Friday?")
     decision = turn["decision"]
 
     if "already nearby" in decision["decision"]:
@@ -740,7 +752,7 @@ def test_no_nearby_claim_without_the_driving_to_support_it(client, temp_db):
 def test_the_route_strip_has_the_position_it_needs_to_draw(client, temp_db):
     """The strip shows where the stop lands in the sequence. Without a position it cannot, and a
     route claim with no visible evidence is the thing this was added to fix."""
-    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    _confirmed(temp_db, "Anchor", "469123", FRIDAY)
     order_id = _order(client, postal_code="828761")
 
     turn = _say(client, order_id, "Saturday morning works.")
@@ -771,14 +783,14 @@ def test_a_confirmation_names_the_window_not_a_database_row(client, temp_db):
 
 
 def test_the_panel_never_claims_to_offer_something_it_did_not(client, temp_db):
-    """"Offer both. Recommend Tuesday" while only Saturday was sent is a lie the panel tells
+    """"Offer both. Recommend Friday" while only Saturday was sent is a lie the panel tells
     confidently.
 
     A candidate can be worth comparing and still not be offered: when the time the customer asked
     for works and is not materially worse, we honour it rather than negotiate. The panel has to say
     which of those happened.
     """
-    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    _confirmed(temp_db, "Anchor", "469123", FRIDAY)
     order_id = _order(client, postal_code="828761")
 
     turn = _say(client, order_id, "Saturday morning works.")
@@ -799,13 +811,13 @@ def test_the_panel_never_claims_to_offer_something_it_did_not(client, temp_db):
 
 
 def test_an_explanation_can_compare_the_alternative_it_is_asked_about(client, temp_db):
-    """"Why Tuesday?" answered by explaining Saturday, because the explain flow could only see the
+    """"Why Friday?" answered by explaining Saturday, because the explain flow could only see the
     customer's own dates. Searching for the alternative is read-only, so it is allowed."""
-    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    _confirmed(temp_db, "Anchor", "469123", FRIDAY)
     order_id = _order(client, postal_code="828761")
     _say(client, order_id, "Saturday morning works.")
 
-    turn = _say(client, order_id, "Why Tuesday?")
+    turn = _say(client, order_id, "Why Friday?")
 
     assert "suggest_route_aware_windows" in _ok_tools(turn), _tools(turn)
     # ...and it still changed nothing.
@@ -819,7 +831,7 @@ def test_a_compared_only_alternative_is_not_labelled_as_offered(client, temp_db)
 
     The live offer is passed in instead, so the label is a fact rather than an inference.
     """
-    _confirmed(temp_db, "Anchor", "469123", TUESDAY)
+    _confirmed(temp_db, "Anchor", "469123", FRIDAY)
     order_id = _order(client, postal_code="828761")
     opened = _say(client, order_id, "Saturday morning works.")
     on_offer = {
@@ -827,7 +839,7 @@ def test_a_compared_only_alternative_is_not_labelled_as_offered(client, temp_db)
         for o in opened["offers"][opened["open_offer_id"]]["options"]
     }
 
-    turn = _say(client, order_id, "Why Tuesday?")
+    turn = _say(client, order_id, "Why Friday?")
 
     for candidate in turn["decision"]["candidates"]:
         expected = (candidate["date"], candidate["start"]) in on_offer
@@ -879,6 +891,25 @@ def test_a_genuine_support_question_is_still_support():
     ).read("Can I change my delivery address?", has_open_offer=True)
 
     assert understood.interpretation.intent == "general_support"
+
+
+def test_a_delivery_policy_question_cannot_become_availability():
+    """A question about Saturday must be answered, not treated as a booking request."""
+    from dispatch_agent.agents.understanding import MessageReader
+    from tests.conftest import FakeLLM
+
+    misreading = FakeLLM(
+        structured_response={
+            "intent": "provide_availability",
+            "availability_phrases": ["Saturday"],
+            "is_fixed": True,
+        }
+    )
+
+    understood = MessageReader(llm=misreading).read("so u can only do saturday?")
+
+    assert understood.interpretation.intent == "policy_question"
+    assert not understood.interpretation.windows
 
 
 def test_asking_what_is_available_on_a_date_produces_an_offer(client):
@@ -938,7 +969,7 @@ def test_an_ambiguous_acceptance_always_gets_a_reply(client):
     """It used to get silence: the endpoint returned the thread unchanged with no agent message,
     so the customer's screen simply stopped responding."""
     order_id = _order(client)
-    before = _say(client, order_id, "Saturday morning or Tuesday morning both work.")
+    before = _say(client, order_id, "Saturday morning or Friday morning both work.")
 
     turn = _say(client, order_id, "okay")
 

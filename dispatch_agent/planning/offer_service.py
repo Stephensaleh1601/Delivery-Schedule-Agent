@@ -16,6 +16,7 @@ from datetime import timezone, datetime
 from dispatch_agent.db import JobsRepository
 from dispatch_agent.geo.routing_client import RoutingClient
 from dispatch_agent.models import (
+    InsertionEvidence,
     AppointmentOffer,
     AvailabilityOption,
     CandidateSlotEvaluation,
@@ -208,10 +209,11 @@ def offer_message(offer: AppointmentOffer, some_requests_unavailable: bool = Fal
     lines = ["We can deliver on:"]
     for i, slot in enumerate(offer.options, start=1):
         lines.append(f"{i}. {format_date(slot.date)}, {format_window(slot.window)}")
-    # Only the recommended slot carries its reason. Two explanations in one message reads as a
-    # sales pitch rather than a coordinator telling you what is convenient.
+    # Only the recommended slot carries its reason -- two explanations in one message reads as a
+    # sales pitch. Say which option it belongs to: unlabelled under a list of three, it reads as
+    # if it describes all of them when it describes only the first.
     if offer.options[0].reason:
-        lines.append(offer.options[0].reason)
+        lines.append(f"The first is our closest fit: {offer.options[0].reason.lstrip()}")
     lines.append("Please choose whichever suits you best.")
     return "\n".join(lines)
 
@@ -256,6 +258,20 @@ def accept_offer(
     slot = next((s for s in offer.options if s.id == slot_id), None)
     if slot is None:
         raise OfferError("that slot was not part of this offer")
+
+    # An insertion was tested against a specific published route. If that day has been republished
+    # since -- somebody else booked into it, or a delay rebuilt it -- the position we measured no
+    # longer means what it meant, and the arrival we promised was computed from stops that have
+    # moved. Checked BEFORE the response is claimed, so a refusal leaves the offer open for the
+    # customer to choose again rather than burning it.
+    if slot.evidence is not None:
+        current = repo.active_plan(slot.date)
+        if current is None or current.version != slot.evidence.source_plan_version:
+            raise OfferError(
+                "that day's route changed while you were deciding, so we need you to pick again "
+                "from a fresh set of times",
+                kind="route_moved_on",
+            )
 
     if not repo.claim_offer_response(offer_id, OfferStatus.ACCEPTED.value):
         # Someone already responded. Return what happened then, without re-solving.
@@ -409,3 +425,129 @@ def reject_offer(
         job.set_planning_status(PlanningStatus.PENDING_PLANNING)
         repo.save_job(job)
     return offer
+
+
+# -- offers built from the insertion search ------------------------------------
+#
+# Kept apart from create_offer above, which works from solved-day evaluations. The two carry
+# genuinely different policies -- one proven option versus exactly three, escalate below that --
+# and the instruction that mattered here was not to let them blend: an offer that had to satisfy
+# both would satisfy neither.
+
+# Slots per offer, by purpose. Deliberately NOT one global constant: raising the shared cap to
+# three would force the normal offer to carry three choices too, which is the opposite of what it
+# is for.
+SLOTS_BY_PURPOSE: dict[OfferPurpose, int] = {
+    OfferPurpose.BOOKING: 1,      # the normal offer: one option, proven
+    OfferPurpose.ALTERNATIVE: 3,  # the fallback: exactly three, or a human takes over
+    OfferPurpose.RECOVERY: 1,
+}
+
+# The fallback is all-or-nothing. Two safe choices is not "nearly three" -- policy says a customer
+# who cannot be given three is a customer a coordinator should call.
+REQUIRED_ALTERNATIVES = 3
+
+
+def offer_insertions(
+    repo: JobsRepository,
+    order: JobRecord,
+    options,
+    purpose: OfferPurpose = OfferPurpose.BOOKING,
+    run_id: str | None = None,
+) -> AppointmentOffer:
+    """Put insertion options to a customer, in the order the search returned them.
+
+    `options` are `insertion.InsertionOption`s. They arrive ranked and are never re-sorted here:
+    the tool decided the order, and this function's job is to write it down, not to improve on it.
+
+    Raises OfferError rather than trimming or padding. A fallback offer with two choices in it
+    would look like a smaller version of the right answer, and it is not -- it is the case the
+    policy says to escalate.
+    """
+    wanted = SLOTS_BY_PURPOSE[purpose]
+    if not options:
+        raise OfferError(
+            "no safe position was found on either published route", kind="no_safe_position"
+        )
+    if purpose is OfferPurpose.ALTERNATIVE and len(options) < REQUIRED_ALTERNATIVES:
+        raise OfferError(
+            f"only {len(options)} safe route options were found; policy requires "
+            f"{REQUIRED_ALTERNATIVES}",
+            kind="too_few_alternatives",
+        )
+
+    previous = [o for o in repo.offers_for_order(order.id) if o.purpose is purpose]
+    if len(previous) >= _rounds_for(purpose):
+        raise OfferError(
+            "this customer has already had every automatic round for that kind of offer",
+            kind="round_cap_reached",
+        )
+
+    ranked = list(options)
+    if purpose is OfferPurpose.BOOKING:
+        # Preference decides what the NORMAL offer tries first. A customer who says "Saturday
+        # morning" and is handed a Friday has not been listened to, however much cheaper Friday
+        # is -- route efficiency is our problem, not theirs. It is a stable partition, so within
+        # the preferred group the tool's own ranking still decides.
+        ranked.sort(key=lambda o: not getattr(o, "matches_preference", False))
+    chosen = ranked[:wanted]
+    offer = AppointmentOffer(
+        order_id=order.id,
+        run_id=run_id,
+        purpose=purpose,
+        round_number=len(previous) + 1,
+        status=OfferStatus.SENT,
+        options=[_slot_from_insertion(order, option) for option in chosen],
+    )
+    repo.save_offer(offer)
+
+    order.set_planning_status(PlanningStatus.OFFERED)
+    repo.save_job(order)
+    return offer
+
+
+def _rounds_for(purpose: OfferPurpose) -> int:
+    if purpose is OfferPurpose.ALTERNATIVE:
+        return 1
+    if purpose is OfferPurpose.RECOVERY:
+        return MAX_RECOVERY_OFFERS
+    return MAX_OFFER_ROUNDS
+
+
+def _slot_from_insertion(order: JobRecord, option) -> OfferedSlot:
+    """One offered slot, carrying the evidence that produced it.
+
+    The availability option is created here rather than looked up: an insertion is a window WE
+    found, not one the customer stated, so there is nothing existing to point at. It becomes part
+    of their availability only if they accept -- which is the same boundary route-aware
+    suggestions already respect.
+    """
+    availability = AvailabilityOption(date=option.date, window=option.window)
+    order.availability_options = [
+        *[o for o in order.availability_options if o.date != option.date or o.window != option.window],
+        availability,
+    ]
+    return OfferedSlot(
+        availability_option_id=availability.id,
+        date=option.date,
+        window=option.window,
+        reason=(
+            f"We are already delivering near you that {option.slot.label.lower()} -- "
+            f"{option.anchor_distance_km}km away, just {option.placement} stop "
+            f"{option.anchor_stop_number}."
+        ),
+        score=int(round(option.added_distance_km * 10)),
+        evidence=InsertionEvidence(
+            source_plan_id=option.source_plan_id,
+            source_plan_version=option.source_plan_version,
+            anchor_stop_number=option.anchor_stop_number,
+            anchor_distance_km=option.anchor_distance_km,
+            placement=option.placement,
+            insert_position=option.insert_position,
+            added_distance_km=option.added_distance_km,
+            added_minutes=option.added_minutes,
+            expected_arrival=option.expected_arrival,
+            finish_before=option.finish_before,
+            finish_after=option.finish_after,
+        ),
+    )

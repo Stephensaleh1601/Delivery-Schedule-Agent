@@ -86,9 +86,16 @@ class Settings:
     # Pins "today" so a recorded demo and the test suite behave identically every run. Blank
     # means use the real date. ISO format, e.g. 2026-09-02.
     demo_base_date: str = os.getenv("DEMO_BASE_DATE", "")
-    # The bookable window, as days from today. A customer may only choose dates in this range.
+    # Notice the operation needs: a customer may only be offered a date this many days out.
     horizon_lead_days_min: int = int(os.getenv("HORIZON_LEAD_DAYS_MIN", "2"))
-    horizon_lead_days_max: int = int(os.getenv("HORIZON_LEAD_DAYS_MAX", "5"))
+    # A customer may only be inserted next to an existing stop within this many kilometres.
+    # Straight-line, and used only to decide which positions are worth testing -- the ranking
+    # is by added detour, which is a different and larger number.
+    anchor_radius_km: float = float(os.getenv("ANCHOR_RADIUS_KM", "10"))
+    # How many weeks ahead to look for a Friday/Saturday pair that is fully published, before
+    # giving up and escalating. A bound, not a target -- in practice the answer is this week or
+    # next, and this only stops an empty database scanning forever.
+    cycle_search_weeks: int = int(os.getenv("CYCLE_SEARCH_WEEKS", "8"))
     # Scoring weights. A day with no jobs on it costs a fixed penalty to open; a lower-ranked
     # customer preference costs a little, so preference breaks ties without overriding routing.
     day_opening_penalty_minutes: int = int(os.getenv("DAY_OPENING_PENALTY_MINUTES", "60"))
@@ -132,16 +139,30 @@ class Settings:
     # nothing is worse than no flag.
     return_to_depot: bool = field(default_factory=lambda: _flag("RETURN_TO_DEPOT", True))
     work_day_start: Time = _time("WORK_DAY_START", "09:00")
-    # Hard end of the working day: the solver will not schedule past it, so a route that would
-    # run late is infeasible rather than expensive.
-    work_day_end: Time = _time("WORK_DAY_END", "18:00")
-    # Soft end, used only for scoring: minutes worked past this (including the drive home) are
-    # penalised. Because work_day_end is a hard constraint, a purely hard model can never
-    # produce overtime, which would make the scoring term dead -- this is what gives it meaning.
-    soft_day_end: Time = _time("SOFT_DAY_END", "17:00")
-    # Whether a job's SERVICE must finish inside the customer's window, not merely start in it.
-    # With this off, a 60-minute job may start at 11:55 in a 09:00-12:00 window and run to
-    # 12:55 -- i.e. straight through a gap the customer said they were unavailable.
+    # Three different times the day can be said to end, and they are genuinely different. One
+    # setting used to serve all three, which worked only while the last promise was 18:00 and
+    # everybody was home long before the day ended. The evening window breaks that: the arrival
+    # is legal at 20:59, the service runs past 21:00, and the drive home lands later still.
+    #
+    # No customer is promised an arrival after this. Clamps every stated and offered window.
+    arrival_cutoff: Time = _time("ARRIVAL_CUTOFF", "21:00")
+    # Scoring only: work past this -- including the service and the drive home -- is overtime and
+    # is penalised. It must sit past a NORMAL completion, or the scorer learns to avoid the
+    # evening window: DaySequence.completion_minutes is the last arrival plus service plus the
+    # return leg, so a 20:45 arrival routinely completes around 21:25.
+    soft_day_end: Time = _time("SOFT_DAY_END", "22:00")
+    # The depot's own window. A route that cannot get home by this is infeasible, not expensive.
+    # Strictly later than the soft end, or overtime becomes unreachable and the term goes dead.
+    hard_route_end: Time = _time("HARD_ROUTE_END", "22:30")
+    # Whether a job's SERVICE must finish inside the customer's STATED availability, not merely
+    # start in it. On: "I'm home 9 to 9:30" means they are there until 9:30, and a 30-minute job
+    # arriving at 9:22 runs straight through a gap they told us about. This is what stops a
+    # customer with disjoint windows being visited across the gap between them.
+    #
+    # It deliberately does NOT apply to a locked window, because that is a different kind of
+    # object: a promised delivery slot is an ARRIVAL window -- the van turns up between 5 and 9 --
+    # and reserving the service duration inside it would quietly shorten every slot we promise.
+    # See solver._normalised_windows.
     require_service_within_window: bool = os.getenv("REQUIRE_SERVICE_WITHIN_WINDOW", "1") != "0"
     # OR-Tools uses guided local search, which burns its whole time budget regardless of when it
     # converges. Publishing a plan happens once and can afford to look harder; candidate
@@ -175,6 +196,28 @@ def validate(s: "Settings" = None) -> None:
             "completion time all assume the van comes home. An open route needs a different "
             "OR-Tools model -- a dummy end node with zero cost to every stop -- which is a "
             "deliberate change, not a flag. Set RETURN_TO_DEPOT=true, or make that change first."
+        )
+
+    # The three ends of the day, in order. Each must sit strictly past the one before it.
+    if not (s.work_day_start < s.arrival_cutoff):
+        raise ConfigurationError(
+            f"WORK_DAY_START ({s.work_day_start:%H:%M}) must be before the arrival cutoff "
+            f"({s.arrival_cutoff:%H:%M}); there would be no bookable time at all."
+        )
+    if not (s.arrival_cutoff < s.soft_day_end):
+        raise ConfigurationError(
+            f"SOFT_DAY_END ({s.soft_day_end:%H:%M}) must be later than the arrival cutoff "
+            f"({s.arrival_cutoff:%H:%M}). Overtime is measured on completion -- the last arrival "
+            f"plus its service plus the drive home -- so a soft end at the cutoff bills every "
+            f"ordinary evening delivery as overtime, and the scorer learns to avoid the evening "
+            f"window instead of using it."
+        )
+    if not (s.soft_day_end < s.hard_route_end):
+        raise ConfigurationError(
+            f"HARD_ROUTE_END ({s.hard_route_end:%H:%M}) must be later than SOFT_DAY_END "
+            f"({s.soft_day_end:%H:%M}). The hard end makes a late route infeasible rather than "
+            f"expensive, so with the two equal no feasible route can ever finish past the soft "
+            f"end and the overtime term is dead."
         )
 
     # Singapore's actual bounding box, near enough: 1.15-1.48 N, 103.6-104.1 E. Deliberately tight

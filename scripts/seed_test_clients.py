@@ -1,23 +1,34 @@
-"""Deterministic demo data at real Singapore addresses, positioned against the planning clock.
+"""The demo scenario: two published routes, two drivers, two customers.
 
-Two things this file is careful about.
+Deliberately small. This exists to make one five-minute story work, not to look like a busy week.
 
-**Real locations.** Every seeded customer sits at an actual building, resolved once from OneMap and
-committed below with the address it came from. The alternative -- deriving coordinates from the
-postal district -- put four customers on one identical pixel with the one-minute drive-time floor
-between them, which makes a map look broken and hides a newly booked stop entirely. The coordinates
-are primed into the geocode cache before seeding, so this stays offline and byte-identical every run
+**Real locations.** Every address is an actual Singapore building, resolved once from OneMap and
+committed below with the address it came from. Deriving coordinates from the postal district
+instead put several customers on one identical pixel with the one-minute drive-time floor between
+them, which makes a map look broken and hides a newly inserted stop entirely. The coordinates are
+primed into the geocode cache before seeding, so this stays offline and byte-identical every run
 while still being genuinely real.
 
-**Shape.** Positioned against `PlanningClock.today()`, not fixed dates, because the previous seed's
-hardcoded dates fell into the past and left the bookable horizon empty. The scenario is:
+**The difficult customer's geography is load-bearing, not decorative.** The whole demo turns on
+them getting exactly three alternatives, and that number is a property of where the seeded
+stops are, not of the ranking code. They live in Toa Payoh, which is Central, so their cluster
+day is Saturday. After they decline the Saturday morning offer:
 
-- three of the four horizon dates carry work, one is deliberately empty;
-- one day is a tight eastern cluster near the depot, one is scattered across the island;
-- pending orders carry 2-3 windows, including one that cannot be served and one whose only choices
-  would open the empty day;
-- two customers have agreed to an earlier delivery, so a freed slot has somewhere to go;
-- one confirmed order is the intended subject of the readiness delay.
+    Saturday morning    rejected   the offer she declined
+    Saturday afternoon  VALID      Thomson 3.9km, Cuscaden 6.7km
+    Saturday evening    excluded   Jurong East 16.1km, Jurong West 20.8km -- nothing within 10km
+    Friday morning      VALID      Serangoon NEX 3.4km
+    Friday afternoon    VALID      Kovan 5.3km
+    Friday evening      excluded   Loyang 18.2km, Woodlands 15.6km
+
+Three. The two Friday options are the point of the demo: their region says Saturday, but the
+Friday van already passes within a few kilometres of them, so a human dispatcher would fit them
+in and so does this.
+
+**Margins are deliberate.** The test suite measures in haversine and the recording may measure in
+Google road distance, and the two disagree by enough to move a stop across a 10km line. Intended
+anchors sit at 3-7km and intended non-anchors at 15km or more; nothing is seeded near the
+boundary, because a demo that changes shape when the routing provider changes is not a demo.
 """
 from __future__ import annotations
 
@@ -36,104 +47,185 @@ from dispatch_agent.models import (
     PlanningStatus,
     TimeWindow,
 )
+from dispatch_agent.planning import plan_service
 from dispatch_agent.planning.clock import PlanningClock
+from dispatch_agent.planning.slots import AFTERNOON, EVENING, MORNING, DeliverySlot
 
 # Resolved from OneMap's address database (onemap.gov.sg), committed so seeding needs no network.
 # Every one is a distinct real building -- a test asserts no two seeded stops share a coordinate.
 KNOWN_LOCATIONS: dict[str, tuple[float, float, str]] = {
-    # East, close to the SUTD depot -- the tight cluster.
-    "469123": (1.33096, 103.94704, "22 Bedok Walk"),
-    "520101": (1.34085, 103.95143, "101 Simei Street 1"),
-    "529536": (1.35426, 103.94507, "10 Tampines Central 1, Tampines One"),
-    "486123": (1.33368, 103.95050, "2 Changi South Lane"),
-    # Far from the eastern cluster, so freeing this slot returns real drive time.
-    "018956": (1.28240, 103.85841, "10 Bayfront Avenue, Sands Expo"),
-    # Island-wide.
-    "640690": (1.34119, 103.70671, "690 Jurong West Central 1"),
-    "730680": (1.43963, 103.80212, "680 Woodlands Avenue 6, Admiralty Place"),
-    "508988": (1.38356, 103.96978, "25 Loyang Crescent"),
-    "408564": (1.32634, 103.89626, "10 Ubi Crescent, Ubi Techpark"),
-    # West cluster.
-    "648886": (1.33945, 103.70669, "1 Jurong West Central 2, Jurong Point"),
-    "600101": (1.33701, 103.73879, "101 Jurong East Street 13"),
-    "129588": (1.31497, 103.76427, "3155 Commonwealth Avenue West"),
-    # Pending orders, spread out.
-    "249715": (1.30465, 103.82491, "1 Cuscaden Road"),
-    "307591": (1.31719, 103.84361, "101 Thomson Road, United Square"),
-    "760101": (1.43054, 103.82767, "101 Yishun Avenue 5"),
-    "569933": (1.36939, 103.84848, "53 Ang Mo Kio Avenue 3, AMK Hub"),
-    "149544": (1.30443, 103.79679, "1 Commonwealth Lane"),
-    "318993": (1.34318, 103.85031, "998 Toa Payoh North"),
+    # -- Friday cluster: North, North-East, South, East --------------------------------
+    "556083": (1.35077, 103.87230, "23 Serangoon Central, NEX"),
+    "530201": (1.35780, 103.88365, "201 Hougang Street 21, Kovan City"),
+    "538766": (1.37249, 103.89377, "90 Hougang Avenue 10, Hougang Mall"),
     "428769": (1.30336, 103.90469, "50 East Coast Road"),
+    "469123": (1.33096, 103.94704, "22 Bedok Walk"),
+    "460216": (1.32706, 103.93322, "216 Bedok North Street 1"),
+    "529536": (1.35426, 103.94507, "10 Tampines Central 1, Tampines One"),
+    "520101": (1.34085, 103.95143, "101 Simei Street 1"),
+    "486123": (1.33368, 103.95050, "2 Changi South Lane"),
+    "508988": (1.38356, 103.96978, "25 Loyang Crescent"),
+    "730680": (1.43963, 103.80212, "680 Woodlands Avenue 6, Admiralty Place"),
+    "760101": (1.43054, 103.82767, "101 Yishun Avenue 5"),
     "757713": (1.44820, 103.81950, "30 Sembawang Drive, Sun Plaza"),
+    "098585": (1.26429, 103.82230, "1 HarbourFront Walk, VivoCity"),
+    "090108": (1.27336, 103.82535, "108 Bukit Purmei Road"),
+    # -- Saturday cluster: Central, City, West -----------------------------------------
+    "573969": (1.35856, 103.83356, "22 Sin Ming Lane, Midview City"),
+    "569933": (1.36939, 103.84848, "53 Ang Mo Kio Avenue 3, AMK Hub"),
+    "307591": (1.31719, 103.84361, "101 Thomson Road, United Square"),
+    "249715": (1.30465, 103.82491, "1 Cuscaden Road"),
+    "318993": (1.34318, 103.85031, "998 Toa Payoh North"),
+    "149544": (1.30443, 103.79679, "1 Commonwealth Lane"),
+    "129588": (1.31497, 103.76427, "3155 Commonwealth Avenue West"),
+    "018956": (1.28240, 103.85841, "10 Bayfront Avenue, Sands Expo"),
+    "600101": (1.33701, 103.73879, "101 Jurong East Street 13"),
+    "640690": (1.34119, 103.70671, "690 Jurong West Central 1"),
+    "648886": (1.33945, 103.70669, "1 Jurong West Central 2, Jurong Point"),
+    # -- The two customers the demo is about. Neither is a stop on either route. --------
+    "408564": (1.32634, 103.89626, "10 Ubi Crescent, Ubi Techpark"),
+}
+
+# One driver per route. Static on purpose: with a single van per day there is nothing to assign,
+# and a drivers table would be schema for a decision nobody makes.
+DRIVERS: dict[str, dict[str, str]] = {
+    "friday": {"id": "driver-fri", "name": "Ravi Kumaran", "phone": "9123 4567"},
+    "saturday": {"id": "driver-sat", "name": "Siti Nurhaliza", "phone": "9234 5678"},
 }
 
 
-def _window(start, end) -> TimeWindow:
-    return TimeWindow(start=Time(*start), end=Time(*end))
+def driver_for(weekday: int) -> dict[str, str]:
+    """Friday is 4, Saturday is 5 in date.weekday() terms."""
+    return DRIVERS["friday"] if weekday == 4 else DRIVERS["saturday"]
 
 
-def _address(postal: str) -> Address:
-    located = geocode_postal_code(postal)
+# (name, postal code, slot, order type). The slot is what the customer was promised, so it is the
+# locked window the solver must honour -- and it is what decides which window a nearby insertion
+# lands in, which is how the "exactly three" scenario above is built.
+FRIDAY_ROUTE: list[tuple[str, str, DeliverySlot, JobType]] = [
+    ("Tan Wei Ming", "556083", MORNING, JobType.PET_FOOD_BOX),
+    ("Nurul Aisyah", "428769", MORNING, JobType.PET_FOOD_BOX),
+    ("Kumar Raj", "469123", MORNING, JobType.ONE_OFF_PET_ORDER),
+    ("Chen Li Hua", "530201", AFTERNOON, JobType.PET_FOOD_BOX),
+    ("Marcus Tan", "529536", AFTERNOON, JobType.PET_FOOD_BOX),
+    ("Priya Nair", "460216", AFTERNOON, JobType.ONE_OFF_PET_ORDER),
+    ("Farid Rahman", "508988", EVENING, JobType.PET_FOOD_BOX),
+    ("Grace Wong", "730680", EVENING, JobType.PET_FOOD_BOX),
+]
+
+SATURDAY_ROUTE: list[tuple[str, str, DeliverySlot, JobType]] = [
+    ("Lim Hui Ying", "573969", MORNING, JobType.PET_FOOD_BOX),
+    ("Daniel Ng", "569933", MORNING, JobType.PET_FOOD_BOX),
+    ("Anita Menon", "018956", MORNING, JobType.ONE_OFF_PET_ORDER),
+    ("Siti Rahim", "307591", AFTERNOON, JobType.PET_FOOD_BOX),
+    ("Mrs Devi", "249715", AFTERNOON, JobType.PET_FOOD_BOX),
+    ("Mr Goh", "129588", AFTERNOON, JobType.ONE_OFF_PET_ORDER),
+    ("Ms Farah", "600101", EVENING, JobType.PET_FOOD_BOX),
+    ("Mr Iskandar", "640690", EVENING, JobType.PET_FOOD_BOX),
+]
+
+# The two customers the demo is about. Neither has stated a time yet -- they say it in the thread,
+# in their own words, which is the whole point of the conversation.
+BEST_CASE = ("Mrs Chua", "408564", JobType.PET_FOOD_BOX, "Monthly dog-food box")
+DIFFICULT = ("Mr Rajan", "318993", JobType.PET_FOOD_BOX, "Cat-food subscription delivery")
+
+PRODUCT_LABELS: dict[JobType, str] = {
+    JobType.PET_FOOD_BOX: "Monthly dog-food box",
+    JobType.ONE_OFF_PET_ORDER: "One-off cat-food order",
+    JobType.OTHER: "Fresh pet food",
+}
+
+
+def _address(postal_code: str) -> Address:
+    resolved = geocode_postal_code(postal_code)
     return Address(
-        raw_text=located.formatted_address or f"Singapore {postal}",
-        postal_code=postal,
-        coordinates=located.coordinates,
-        geocode_source=located.source,
-        formatted_address=located.formatted_address,
+        raw_text=KNOWN_LOCATIONS[postal_code][2],
+        postal_code=postal_code,
+        coordinates=resolved.coordinates,
+        geocode_source=resolved.source,
+        formatted_address=resolved.formatted_address,
     )
 
 
+def _phone(name: str) -> str:
+    return f"9{abs(hash(name)) % 10_000_000:07d}"
+
+
 def _clear_existing() -> None:
-    """Wipe only the tables this script owns. The geocode and drive-time caches survive, so a
-    reseed costs nothing and stays identical."""
-    with sqlite3.connect(settings.db_path) as conn:
-        for table in (
-            "jobs", "day_sequences", "notifications", "appointment_offers",
-            "route_plan_versions", "planning_events", "agent_runs", "messages",
-            "coordinator_exceptions",
-        ):
+    """Wipe the scenario, keep the caches.
+
+    geocode_cache and drive_time_cache are deliberately untouched: they hold facts about the world
+    (where a postal code is, how long a leg takes) that reseeding does not invalidate, and
+    refetching them would make seeding need the network again.
+    """
+    tables = [
+        "jobs", "day_sequences", "notifications", "appointment_offers", "route_plan_versions",
+        "planning_events", "agent_runs", "messages", "coordinator_exceptions",
+    ]
+    conn = sqlite3.connect(settings.db_path)
+    try:
+        for table in tables:
             try:
                 conn.execute(f"DELETE FROM {table}")
             except sqlite3.Error:
                 pass
+        conn.commit()
+    finally:
+        conn.close()
 
 
-def _confirmed(name, postal, day, window, job_type=JobType.SOFA, early=False) -> JobRecord:
-    """An appointment already promised -- the workload a new order must fit around."""
+def _confirmed(name, postal_code, day, slot: DeliverySlot, job_type: JobType) -> JobRecord:
+    """A customer already on a published route, promised the slot they were given."""
+    window = slot.window
     return JobRecord(
         customer_name=name,
-        phone=f"9{abs(hash(name)) % 10_000_000:07d}",
-        address=_address(postal),
+        phone=_phone(name),
+        address=_address(postal_code),
         job_type=job_type,
-        availability=[_window(*window)],
-        locked_window=_window(*window),
-        availability_options=[AvailabilityOption(date=day, window=_window(*window))],
+        availability=[window],
+        locked_window=window,
+        availability_options=[AvailabilityOption(date=day, window=window)],
         delivery_date=day,
         planning_status=PlanningStatus.CONFIRMED,
         status="approved",
-        can_deliver_early=early,
         duration_minutes=DEFAULT_DURATION_MINUTES_BY_JOB_TYPE[job_type],
         raw_message="[seeded: confirmed booking]",
+        notes=PRODUCT_LABELS[job_type],
     )
 
 
-def _pending(name, postal, options, job_type=JobType.SOFA, early=False) -> JobRecord:
-    """An order awaiting planning: acceptable windows, no agreed date, nothing promised."""
+def _awaiting(name, postal_code, job_type: JobType, product: str) -> JobRecord:
+    """A customer who has not said when yet. No date, no windows, nothing assumed.
+
+    Deliberately empty availability: the demo begins when they type a time in their own words, and
+    seeding one would answer the question the conversation exists to ask.
+    """
     return JobRecord(
         customer_name=name,
-        phone=f"9{abs(hash(name)) % 10_000_000:07d}",
-        address=_address(postal),
+        phone=_phone(name),
+        address=_address(postal_code),
         job_type=job_type,
-        availability_options=[
-            AvailabilityOption(date=day, window=_window(*window), preference_rank=rank)
-            for rank, (day, window) in enumerate(options, start=1)
-        ],
-        planning_status=PlanningStatus.PENDING_PLANNING,
-        can_deliver_early=early,
+        planning_status=PlanningStatus.PENDING_AVAILABILITY,
         duration_minutes=DEFAULT_DURATION_MINUTES_BY_JOB_TYPE[job_type],
-        raw_message="[seeded: awaiting planning]",
+        raw_message="[seeded: awaiting availability]",
+        notes=product,
     )
+
+
+def publish_baseline_routes(repo: JobsRepository) -> list:
+    """Publish v1 for both days, so a booking during the demo produces a visible v2.
+
+    Both days must publish. A cycle needs its Friday and its Saturday to be routable -- if either
+    fails, the coordination cycle does not exist and the agent escalates every customer.
+    """
+    published = []
+    for day in PlanningClock.horizon_dates():
+        if not plan_service.routable_jobs(repo, day):
+            raise RuntimeError(f"{day} has no routable work; the demo needs both routes published")
+        sequence = plan_service.solve_day(repo, day)
+        plan_service.publish_plan_version(sequence, reason="Initial route for the day")
+        published.append(day)
+    return published
 
 
 def seed() -> str:
@@ -141,94 +233,29 @@ def seed() -> str:
     seed_cache(KNOWN_LOCATIONS)  # real coordinates, no network needed
     _clear_existing()
     repo = JobsRepository()
-    d1, d2, d3, d4 = PlanningClock.horizon_dates()
+
+    friday, saturday = PlanningClock.horizon_dates()
     jobs: list[JobRecord] = []
+    for day, route in ((friday, FRIDAY_ROUTE), (saturday, SATURDAY_ROUTE)):
+        for name, postal_code, slot, job_type in route:
+            jobs.append(_confirmed(name, postal_code, day, slot, job_type))
 
-    # d1 -- a tight eastern cluster minutes from the depot. Adding another eastern stop here is
-    # genuinely cheap, and now visibly so: four distinct pins a few kilometres apart.
-    for name, postal in [
-        ("Tan Wei Ming", "469123"), ("Nurul Aisyah", "520101"),
-        ("Kumar Raj", "529536"), ("Chen Li Hua", "486123"),
-    ]:
-        jobs.append(_confirmed(name, postal, d1, ((9, 0), (18, 0))))
-    # The readiness-delay subject: a long cabinet job in Marina Bay, far from the eastern cluster,
-    # so freeing her slot hands back real driving time rather than a rounding error.
-    jobs.append(_confirmed("Priya Nair", "018956", d1, ((10, 0), (12, 30)), JobType.CABINET))
-
-    # d2 -- four corners of the island, so this day is already expensive.
-    for name, postal in [
-        ("Lim Hui Ying", "640690"), ("Marcus Tan", "730680"),
-        ("Farid Rahman", "508988"), ("Grace Wong", "408564"),
-    ]:
-        jobs.append(_confirmed(name, postal, d2, ((9, 0), (18, 0)), JobType.BED))
-
-    # d3 -- deliberately EMPTY. Any order sent here opens a whole delivery day.
-
-    # d4 -- a western cluster; the first two agreed to come forward if a slot frees up.
-    for i, (name, postal) in enumerate([
-        ("Siti Rahim", "648886"), ("Daniel Ng", "600101"), ("Anita Menon", "129588"),
-    ]):
-        jobs.append(_confirmed(name, postal, d4, ((9, 0), (18, 0)), early=(i < 2)))
-
-    jobs += [
-        # East-side: the busy eastern day should beat the empty one despite the preference order.
-        _pending("Mrs Chua", "428769", [(d3, ((9, 0), (18, 0))), (d1, ((9, 0), (13, 0)))]),
-        # Both windows on the empty day -- the only way to serve them is to open it.
-        _pending("Mr Rajan", "757713", [(d3, ((9, 0), (12, 0))), (d3, ((14, 0), (18, 0)))]),
-        # Disjoint windows on one day: must not be scheduled in the middle.
-        _pending("Ms Wong", "307591", [(d1, ((9, 0), (10, 30))), (d1, ((15, 0), (18, 0)))]),
-        # A cabinet (105 min) against a 30-minute window: infeasible, and must be flagged as such.
-        _pending("Mr Iskandar", "249715", [(d2, ((9, 0), (9, 30))), (d4, ((13, 0), (18, 0)))],
-                 JobType.CABINET),
-        _pending("Mrs Devi", "149544", [(d4, ((9, 0), (13, 0))), (d2, ((13, 0), (18, 0)))], JobType.BED),
-        _pending("Mr Goh", "318993", [(d1, ((13, 0), (18, 0))), (d4, ((9, 0), (18, 0)))], early=True),
-        _pending("Ms Farah", "760101", [(d2, ((9, 0), (12, 0))), (d3, ((9, 0), (18, 0)))]),
-    ]
+    for name, postal_code, job_type, product in (BEST_CASE, DIFFICULT):
+        jobs.append(_awaiting(name, postal_code, job_type, product))
 
     for job in jobs:
         repo.save_job(job)
 
     published = publish_baseline_routes(repo)
 
-    confirmed = sum(1 for j in jobs if j.planning_status is PlanningStatus.CONFIRMED)
-    precise = sum(1 for j in jobs if j.address.precisely_located)
     return (
-        f"Seeded {len(jobs)} orders relative to {PlanningClock.today()}:\n"
-        f"  {confirmed} confirmed across {d1}, {d2}, {d4}\n"
-        f"  {d3} deliberately left empty\n"
-        f"  {len(jobs) - confirmed} awaiting planning, each with 2 acceptable windows\n"
-        f"  2 customers have agreed to an earlier delivery\n"
-        f"  {precise}/{len(jobs)} at real building coordinates\n"
-        f"  'Priya Nair' on {d1} is the intended readiness-delay subject\n"
-        f"  v1 routes published for {', '.join(str(d) for d in published) or 'no dates'}"
+        f"Seeded the demo relative to {PlanningClock.today()}:\n"
+        f"  {friday:%a %d %b} -- {len(FRIDAY_ROUTE)} stops, driver {DRIVERS['friday']['name']}\n"
+        f"  {saturday:%a %d %b} -- {len(SATURDAY_ROUTE)} stops, driver {DRIVERS['saturday']['name']}\n"
+        f"  {BEST_CASE[0]} (East, so Friday) is waiting to say when\n"
+        f"  {DIFFICULT[0]} (Central, so Saturday) is the customer who will decline\n"
+        f"  published: {', '.join(str(d) for d in published)}\n"
     )
-
-
-def publish_baseline_routes(repo: JobsRepository) -> list:
-    """Solve and publish a v1 route for every day that has confirmed work on it.
-
-    Without this the demo opens on "Nothing published for this day" beside a list of five
-    deliveries, which reads as a broken page rather than an empty one -- and there is no v1 for the
-    booking to turn into a v2, so the before/after comparison the whole demo turns on has nothing
-    to compare against.
-
-    Genuinely empty days are left alone: an empty day with no plan is the honest state, and
-    publishing a plan with no stops on it would be inventing work.
-    """
-    from dispatch_agent.planning import plan_service
-
-    published = []
-    for date in PlanningClock.horizon_dates():
-        if not plan_service.routable_jobs(repo, date):
-            continue
-        try:
-            sequence = plan_service.solve_day(repo, date)
-        except Exception as exc:  # noqa: BLE001 -- a day we cannot route must not stop the seed
-            print(f"  ! {date} could not be routed, left unpublished: {exc}")
-            continue
-        plan_service.publish_plan_version(sequence, reason="Initial route for the day")
-        published.append(date)
-    return published
 
 
 def main() -> str:

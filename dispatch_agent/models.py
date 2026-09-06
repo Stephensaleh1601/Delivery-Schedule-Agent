@@ -18,19 +18,43 @@ def _utcnow() -> datetime:
 
 
 class JobType(str, Enum):
+    """What is being delivered.
+
+    The pet-food values are the live ones. The three furniture values below them are kept only so
+    that rows written before the business changed still validate when they are read back -- this
+    is a string enum persisted straight into SQLite, so removing a member turns old rows into
+    validation errors rather than migrating them. Nothing customer-facing produces them any more.
+    """
+
+    PET_FOOD_BOX = "pet_food_box"
+    ONE_OFF_PET_ORDER = "one_off_pet_order"
+    OTHER = "other"
+
+    # Legacy. Readable, never offered.
     SOFA = "sofa"
     BED = "bed"
     CABINET = "cabinet"
-    OTHER = "other"
 
 
-# Default job duration by furniture type, used when a customer/coordinator doesn't specify one --
-# heavier assembly work (cabinets) gets more time than a straightforward sofa drop-off.
+# The live job types a customer can be booked for. Excludes the legacy furniture values, so an
+# intake schema or a UI dropdown built from this cannot offer one by accident.
+BOOKABLE_JOB_TYPES: tuple[JobType, ...] = (
+    JobType.PET_FOOD_BOX,
+    JobType.ONE_OFF_PET_ORDER,
+    JobType.OTHER,
+)
+
+
+# Default duration when nobody specifies one. Fresh pet food is a doorstep handover -- the driver
+# is on a motorcycle and the customer is expecting them -- so these are minutes, not the hours a
+# furniture delivery with assembly used to take.
 DEFAULT_DURATION_MINUTES_BY_JOB_TYPE: dict[JobType, int] = {
+    JobType.PET_FOOD_BOX: 10,
+    JobType.ONE_OFF_PET_ORDER: 15,
+    JobType.OTHER: 15,
     JobType.SOFA: 45,
     JobType.BED: 75,
     JobType.CABINET: 105,
-    JobType.OTHER: 60,
 }
 
 
@@ -129,6 +153,10 @@ class OfferPurpose(str, Enum):
     own delivery date."""
 
     BOOKING = "booking"
+    # The three-choice fallback, after a normal offer was declined. Separate from BOOKING because
+    # the two carry different policies -- one proven option versus exactly three, escalate below
+    # that -- and blending them would mean every offer had to satisfy both.
+    ALTERNATIVE = "alternative"
     RECOVERY = "recovery"
 
 
@@ -539,6 +567,32 @@ class CandidateSlotEvaluation(BaseModel):
         return self
 
 
+class InsertionEvidence(BaseModel):
+    """Why this slot was offered, and where it came from.
+
+    Carried on the slot rather than recomputed for display, for two reasons. A judge can check
+    every figure against the route, and -- more importantly -- `source_plan_version` is what makes
+    a stale acceptance detectable: if the day has been republished since we offered this, the
+    tested position no longer means what it meant, and the customer must choose again rather than
+    be inserted at a position that has moved.
+    """
+
+    source_plan_id: str
+    source_plan_version: int
+    # Stop NUMBERS, never names. An offer is served to the customer's own page, and naming the
+    # people either side of them tells one customer who the others are. The position says
+    # everything the panel needs and identifies nobody.
+    anchor_stop_number: int
+    anchor_distance_km: float
+    placement: str
+    insert_position: int
+    added_distance_km: float
+    added_minutes: int
+    expected_arrival: Time
+    finish_before: Time
+    finish_after: Time
+
+
 class OfferedSlot(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     availability_option_id: str
@@ -551,6 +605,9 @@ class OfferedSlot(BaseModel):
     # and so the reason survives a page refresh. Names no other customer, quotes no score.
     reason: Optional[str] = None
     score: int = 0
+    # Present when the slot came from the insertion search. None for the older evaluation-based
+    # path, which offers a whole solved day rather than a position within one.
+    evidence: Optional[InsertionEvidence] = None
 
 
 class AppointmentOffer(BaseModel):
@@ -647,6 +704,13 @@ class AgentRunLog(BaseModel):
     # The exception that caused a fallback, kept so "no AWS credentials" is distinguishable from
     # "the model returned something unusable".
     decider_error: Optional[str] = None
+    # Who READ the customer's message, which is a different decision from who chose the actions.
+    # Kept separate because conflating them was honest only while the steps were rule-driven: with
+    # a model choosing tools, overwriting `decider` with the reader's provider would claim the
+    # steps were picked by whatever happened to parse the sentence.
+    reader: Optional[str] = None
+    reader_model_id: Optional[str] = None
+    reader_error: Optional[str] = None
     token_usage: Optional[dict] = None
     started_at: datetime = Field(default_factory=_utcnow)
     completed_at: Optional[datetime] = None

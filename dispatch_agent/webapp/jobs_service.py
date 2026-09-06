@@ -28,7 +28,7 @@ class JobSubmission(BaseModel):
     phone: str | None = None
     address_raw: str
     postal_code: str
-    job_type: JobType = JobType.SOFA
+    job_type: JobType = JobType.PET_FOOD_BOX
     delivery_date: Date
     window_start: Time
     window_end: Time
@@ -58,7 +58,7 @@ class OrderSubmission(BaseModel):
     phone: str | None = None
     address_raw: str
     postal_code: str
-    job_type: JobType = JobType.SOFA
+    job_type: JobType = JobType.PET_FOOD_BOX
     availability: list[AvailabilityChoice] = Field(default_factory=list)
     duration_minutes: int | None = Field(default=None, gt=0)
     can_deliver_early: bool = False

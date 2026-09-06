@@ -124,7 +124,7 @@ def test_the_promise_never_escapes_the_working_day():
     offered = promise_window(service=W(17, 15, 18, 0), availability=W(6, 0, 23, 0))
 
     assert offered.start >= config.settings.work_day_start
-    assert offered.end <= config.settings.work_day_end
+    assert offered.end <= config.settings.arrival_cutoff
 
 
 def test_applying_the_promise_twice_changes_nothing():

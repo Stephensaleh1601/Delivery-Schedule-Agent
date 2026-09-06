@@ -150,6 +150,9 @@ class ToolContext:
     # Which tools this run may use, from the customer's intent. None means no scoping, for the
     # operational events (a readiness delay, the morning run) that are not a reply to anybody.
     allowed_tools: frozenset[str] | None = None
+    # What `legal_actions` permitted for the step about to run. Narrower than `allowed_tools`,
+    # which is the whole intent scope: this is the same set the model was offered.
+    legal_now: frozenset[str] | None = None
     # Tools that have already succeeded in this run. Used to enforce once-only actions.
     succeeded: set[str] = field(default_factory=set)
     evaluations: list[CandidateSlotEvaluation] = field(default_factory=list)
@@ -203,6 +206,9 @@ class AcceptArgs(_Args):
 
 class OfferIdArgs(_Args):
     offer_id: str
+    # Accepted and ignored. The run is already about one order, and refusing this produced a
+    # failed step in the middle of a customer turn over information nobody was missing.
+    order_id: str | None = None
     # Which slot was declined. Omitted means the customer declined the whole offer ("none of these
     # work"), and every window in it is excluded.
     slot_id: str | None = None
@@ -214,7 +220,9 @@ class ReplanArgs(_Args):
 
 
 class MessageArgs(_Args):
-    order_id: str
+    # Optional: the run is already about one order, and a model that omits it was producing a
+    # validation failure in the middle of a customer turn for no information anybody lacked.
+    order_id: str | None = None
     # Optional, and ignored whenever a tool has already produced the wording. See send_message:
     # the customer-facing text is built deterministically from the solved route, and a model
     # rewriting it drops the reason it was built to carry.
@@ -375,12 +383,21 @@ def send_message(args: MessageArgs, ctx: ToolContext) -> ToolResult:
     prepared = ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")
     body = prepared or (args.body or "")
     if not body.strip():
-        return ToolResult(ok=False, tool="send_message", error="nothing_to_send",
-                          summary="No message has been prepared, so there is nothing to send.")
+        # Say how to succeed, not just that it failed. A bare "nothing to send" was repeated
+        # verbatim in the digest, so the model read it, learned nothing, and called the same tool
+        # the same way until the step budget ran out -- nine identical failures in one turn.
+        if "search_delivery_policy" in ctx.succeeded:
+            summary = (
+                "This reply is yours to write. Call send_message again with `body` set to the "
+                "answer, in your own words, using only the policy rules listed above."
+            )
+        else:
+            summary = "No message has been prepared, so there is nothing to send."
+        return ToolResult(ok=False, tool="send_message", error="nothing_to_send", summary=summary)
     # Linked to the run that produced it and, when this message is presenting an offer, to that
     # offer -- so the inspector under this bubble opens THESE calls after a refresh.
     message = offer_service.record_message(
-        ctx.repo, args.order_id, body,
+        ctx.repo, args.order_id or (ctx.order.id if ctx.order else None), body,
         MessageDirection.OUTBOUND, run_id=ctx.run_id, offer_id=ctx.offer_id,
     )
     return ToolResult(
@@ -607,34 +624,55 @@ def finish(args: NoArgs, ctx: ToolContext) -> ToolResult:
 # was reachable from every intent and only the rule decider ever consulted what had already been
 # done. A question about a booking must not be able to change the booking.
 INTENT_TOOLS: dict[str, frozenset[str]] = {
-    # Read-only with respect to the booking. `evaluate_slots` solves and reports; it writes
-    # nothing, which is what makes it safe to answer a question with.
-    # `suggest_route_aware_windows` is here because it is genuinely read-only -- it solves days and
-    # returns them, and writes nothing. Without it "why Tuesday?" could only see the customer's own
-    # dates, so it answered by explaining Saturday.
-    "explain": frozenset({
-        "evaluate_slots", "suggest_route_aware_windows", "explain_choice", "send_message", "finish",
-    }),
-    # Nothing here may offer, re-solve or reject. The customer said yes to a specific slot.
-    "accept": frozenset({"lock_appointment", "send_message", "finish"}),
+    # SIX actions, one per thing a coordinator actually does -- not sixteen small ones. The model
+    # makes one choice per turn: which situation is this? Everything inside each one is fixed.
+    #
+    # Route scope is a property of the tool rather than an argument. `find_normal_slot` reads the
+    # customer's own day, `find_requested_day_slot` the day they named, `find_fallback_options`
+    # both. There is no scope to pass, so there is no scope to get wrong -- and the tool name in
+    # the trace says which routes were searched.
+    #
+    # The granular tools are still registered and still used by the operational events (a
+    # readiness delay, the morning run), which carry no intent and so are not scoped here.
+
+    "explain": frozenset({"explain_offer", "send_message", "finish"}),
+    "accept": frozenset({"confirm_offer", "send_message", "finish"}),
     "reject": frozenset({
-        "record_rejection", "evaluate_slots", "suggest_route_aware_windows",
-        "create_offer", "send_message", "create_exception", "finish",
+        "record_rejection", "find_fallback_options", "escalate_booking", "send_message", "finish",
     }),
     "provide_availability": frozenset({
-        "record_availability", "evaluate_slots", "suggest_route_aware_windows",
-        "create_offer", "send_message", "create_exception", "finish",
+        "record_availability", "find_normal_slot", "find_requested_day_slot",
+        "escalate_booking", "send_message", "finish",
     }),
-    # A question we cannot answer from the schedule. It may ask, or hand over -- never book.
-    "general_support": frozenset({"ask_clarification", "create_exception", "send_message", "finish"}),
-    "unclear": frozenset({"ask_clarification", "create_exception", "send_message", "finish"}),
+    # A question about how delivery works. Read the policy, answer, stop.
+    #
+    # What is NOT here is the point: no record_availability, no offer, no rejection, no lock, no
+    # route change, no dispatch. Someone asking what the windows are has not booked anything, and
+    # this set is what makes that structurally true rather than something the prompt asks for.
+    "policy_question": frozenset({
+        "search_delivery_policy", "answer_from_policy", "escalate_booking", "send_message",
+        "finish",
+    }),
+    "general_support": frozenset({"ask_clarification", "escalate_booking", "send_message", "finish"}),
+    "unclear": frozenset({"ask_clarification", "escalate_booking", "send_message", "finish"}),
 }
 
 # Actions that must succeed at most once per run. A second `send_message` is a duplicate bubble in
 # the customer's thread; a second `lock_appointment` is a second attempt to book something already
 # booked. The live model did both -- three identical offer messages in one run -- because nothing
 # stopped it, and the idempotent second lock only looked harmless.
-ONCE_PER_RUN = frozenset({"send_message", "lock_appointment", "create_offer", "create_exception"})
+ONCE_PER_RUN = frozenset({
+    "send_message", "lock_appointment", "create_offer", "create_exception",
+    "confirm_offer", "escalate_booking", "explain_offer",
+    "find_normal_slot", "find_requested_day_slot", "find_fallback_options",
+    # Asking the same question three times in one run is the same duplicate-action failure as
+    # sending the same offer three times. It happened: the model called this, saw wording had been
+    # prepared, called it again, and finished without ever sending any of it.
+    "ask_clarification",
+    # Same rule, same reason: a second offer in one run is a second set of choices in the
+    # customer's thread, and whichever arrives last is the one they answer.
+    "create_normal_offer", "create_alternative_offer",
+})
 
 
 def dispatch(action: str, arguments: dict | None, ctx: ToolContext) -> ToolResult:
@@ -648,6 +686,20 @@ def dispatch(action: str, arguments: dict | None, ctx: ToolContext) -> ToolResul
         return ToolResult(
             ok=False, tool=action, error="action_not_allowed",
             summary=f"Refused an action that is not on the approved list: {action!r}.",
+        )
+
+    # The state gate, enforced rather than merely offered. It used to be advisory: the schema the
+    # model saw listed only legal actions, but nothing stopped one outside that list from running,
+    # so a model that ignored the enum reached the tool anyway. It did -- `send_message` before any
+    # wording existed, nine times in one turn, because the failure said what was wrong and never
+    # what was allowed instead.
+    if ctx.legal_now is not None and action not in ctx.legal_now:
+        return ToolResult(
+            ok=False, tool=action, error="not_legal_yet",
+            summary=(
+                f"Refused {action}: not permitted at this point in the run. Right now you may "
+                f"call: {', '.join(sorted(ctx.legal_now))}."
+            ),
         )
 
     if ctx.allowed_tools is not None and action not in ctx.allowed_tools:
@@ -696,8 +748,222 @@ def dispatch(action: str, arguments: dict | None, ctx: ToolContext) -> ToolResul
     return result
 
 
+# What each action is for, in the model's terms: when to reach for it, when not to, and what
+# has to follow. Held here rather than in the system prompt because the permitted set changes
+# every turn -- describing all sixteen up front would spend the prompt on actions that are not
+# available, and leave the available ones undescribed.
+TOOL_GUIDE: dict[str, str] = {
+    "find_normal_slot": (
+        "Searches the customer's OWN delivery day -- the one their address belongs to -- and "
+        "offers the best proven slot on it. Use for a normal booking, including when they simply "
+        "say they are flexible. Do not use after a rejection, or when they asked for a different "
+        "day. Followed by send_message."
+    ),
+    "find_requested_day_slot": (
+        "Searches ONLY the day the customer explicitly asked for, even when it is not theirs. Use "
+        "when they named a day; record_availability first so the day is on file. If it will not "
+        "take them, it says so and offers to check their own day. Followed by send_message."
+    ),
+    "find_fallback_options": (
+        "Searches BOTH published routes and offers the calculated top three. Use only after the "
+        "customer has turned an offer down. Fewer than three means escalate, not offer two. Never "
+        "reorder what it returns. Followed by send_message."
+    ),
+    "confirm_offer": (
+        "Books the slot the customer accepted. Use only on a clear acceptance of a specific "
+        "option they were shown. Never read an acceptance as new availability."
+    ),
+    "explain_offer": (
+        "Says why the offered times were chosen, from evidence already calculated. Read-only: it "
+        "cannot reject, confirm or change anything. Followed by send_message."
+    ),
+    "escalate_booking": (
+        "Hands the customer to a coordinator and tells them so. Use when nothing fits, fewer than "
+        "three alternatives exist, or a person must decide. Followed by send_message."
+    ),
+    "record_availability": (
+        "Use when the customer names a day or time they can receive a delivery. Not for "
+        "questions, rejections or confirmations. Takes only an order id -- the times come from "
+        "the parser. Next: check a route."
+    ),
+    "record_rejection": (
+        "Use when the customer turns down a time they were offered. Excludes that WINDOW, not "
+        "the whole day. Next: search for alternatives."
+    ),
+    "search_delivery_policy": (
+        "Use whenever the customer asks about delivery days, available time windows, regional "
+        "clusters, attendance requirements, unattended delivery, booking rules, route policies "
+        "or driver policies. It searches the company delivery-policy knowledge base and returns "
+        "relevant facts. It never changes an order, offer or route. Pass their question in "
+        "`question`, in their own words. Next: answer_from_policy. If it finds nothing, "
+        "escalate_booking instead."
+    ),
+    "answer_from_policy": (
+        "Use straight after search_delivery_policy found something. Write the customer's reply "
+        "yourself in `answer` -- your own plain sentences, built from ONLY the rules the search "
+        "returned, answering what they actually asked. Then send_message."
+    ),
+    "retrieve_policy": (
+        "Reads the written delivery rules. Use before touching a route so the reply can cite the "
+        "policy rather than paraphrase it. Read-only."
+    ),
+    "get_existing_routes": (
+        "Lists the published Friday and Saturday routes. Read-only. Use to see what exists "
+        "before searching it."
+    ),
+    "find_insertion_options": (
+        "Tests real insertion positions without changing any route. `scope` picks the workflow: "
+        "'cluster' for a normal booking (their own delivery day only -- do not look at the other "
+        "day, they did not ask), 'requested' when they explicitly named a day that is not "
+        "theirs, 'both' only after they have rejected an offer and will consider anything. "
+        "'requested' needs the day recorded first, and refuses rather than quietly searching "
+        "their own day instead. 'cluster' needs nothing stated at all -- their day comes "
+        "from their address, so a customer who just says 'any time' is a normal booking. "
+        "Results come back already ranked; never reorder or re-select them."
+    ),
+    "create_normal_offer": (
+        "Use after the search proves ONE option on their own -- or explicitly requested -- day. "
+        "Creates a single offer. Must be followed by send_message."
+    ),
+    "create_alternative_offer": (
+        "Use only after a rejection. Requires exactly three calculated options. Never invent, "
+        "drop or reorder them; if there are fewer than three, escalate instead. Must be followed "
+        "by send_message."
+    ),
+    "explain_choice": (
+        "Answers 'why this time?' from evidence already calculated. Read-only: it must not "
+        "reject, confirm or alter an offer. Must be followed by send_message."
+    ),
+    "ask_clarification": (
+        "Use when the message is unclear. ONE specific question, never a guessed date. Once per "
+        "run. Must be followed by send_message."
+    ),
+    "create_exception": (
+        "Use when no route fits, fewer than three fallback options exist, or a person must "
+        "decide. Must be followed by send_message."
+    ),
+    "send_message": (
+        "Sends the reply the previous step prepared -- you do not write it. Exactly once, after "
+        "an offer, explanation, clarification or escalation. Never end a customer turn without "
+        "calling this."
+    ),
+    "lock_appointment": (
+        "Use only when the customer clearly accepts one option they were offered. Needs the "
+        "exact offer_id and slot_id from the digest. Never read an acceptance as new "
+        "availability."
+    ),
+    "finish": "Ends the turn. Only after the customer has been sent a reply.",
+}
+
+
+def guide_for(actions: list[str]) -> str:
+    """The descriptions for just the actions permitted right now."""
+    lines = [f"- `{a}`: {TOOL_GUIDE[a]}" for a in actions if a in TOOL_GUIDE]
+    return "\n".join(lines)
+
+
 def allowed_actions() -> list[str]:
     return sorted(TOOL_REGISTRY)
+
+
+# Actions whose whole point is to depend on a verified search having happened first. Offering
+# before searching would be offering something nobody checked.
+NEEDS_SEARCH = frozenset({"create_normal_offer", "create_alternative_offer"})
+
+
+def legal_actions(state: dict, ctx: ToolContext) -> list[str]:
+    """What the agent may do RIGHT NOW, given the booking state -- not the whole registry.
+
+    This is the state gate. `dispatch()` has always refused an action that is out of scope, but
+    the model was still shown every tool in the registry and left to work out which ones made
+    sense; being offered `lock_appointment` before anybody accepted anything is an invitation to
+    call it. The same set is now what the model sees and what dispatch enforces, so an illegal
+    action is not a temptation the prompt has to talk it out of.
+
+    Narrowing, never widening: the intent scope from INTENT_TOOLS still applies on top, and
+    dispatch re-checks everything independently. A bug here can make the agent do less than it
+    should; it cannot make it do something unsafe.
+    """
+    done = {a.tool for a in state.get("actions", []) if getattr(a, "ok", False)}
+    scope = set(ctx.allowed_tools) if ctx.allowed_tools is not None else set(TOOL_REGISTRY)
+
+    # Finishing is always available. An agent with no legal move must still be able to stop.
+    legal = {"finish"} | (scope - ONCE_PER_RUN - done)
+
+    # Once-per-run actions stay legal until they have actually succeeded.
+    legal |= {action for action in scope & ONCE_PER_RUN if action not in ctx.succeeded}
+
+    searched = bool(getattr(ctx.scratch.get("insertion"), "options", None))
+    if not searched:
+        legal -= NEEDS_SEARCH
+
+    # -- prerequisites, enforced here rather than asked for in the prompt ---------------
+    #
+    # Each of these is an ordering the work genuinely has: you cannot search around a time the
+    # customer gave until it is written down, and you cannot search around a rejection until the
+    # rejection exists. A prompt can only ask; this decides.
+
+    # What the customer just said must be on file before any search reads it. Otherwise the
+    # search prices an order that still holds whatever it held before this message.
+    if ctx.scratch.get("stated_windows") and "record_availability" not in ctx.succeeded:
+        legal -= {"find_normal_slot", "find_requested_day_slot", "find_fallback_options"}
+
+    # The fallback searches "everything except what they turned down" -- which is only true once
+    # the rejection has been recorded and the declined window excluded.
+    if "record_rejection" not in ctx.succeeded:
+        legal.discard("find_fallback_options")
+
+    # Nothing is booked that the customer did not accept. The tool refuses this too; hiding it
+    # means the model is never shown a booking it could make by mistake.
+    if ctx.accepted is None:
+        legal -= {"lock_appointment", "confirm_offer"}
+
+    # A policy question is a short, ordered hand-off: retrieve facts, turn those facts into a
+    # customer answer, then send it.  Leaving all four actions visible after the search let the
+    # live model jump straight to ``send_message`` before any wording existed.  It then repeated
+    # that empty send until the step limit.  The model still writes the answer; this gate only
+    # prevents it from skipping the required hand-off between tools.
+    if ctx.allowed_tools == INTENT_TOOLS["policy_question"]:
+        attempted = {a.tool for a in state.get("actions", [])}
+        if (
+            "search_delivery_policy" not in attempted
+            and "search_delivery_policy" not in ctx.succeeded
+        ):
+            return ["search_delivery_policy"]
+        if (
+            "search_delivery_policy" in ctx.succeeded
+            and "answer_from_policy" not in ctx.succeeded
+        ):
+            return ["answer_from_policy"]
+        if (
+            "search_delivery_policy" not in ctx.succeeded
+            and "escalate_booking" not in ctx.succeeded
+        ):
+            return ["escalate_booking"]
+
+    # A message needs wording a tool prepared. Offering `send_message` with nothing written is how
+    # a run ends with an empty bubble in the customer's thread.
+    prepared = ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")
+    if not prepared:
+        legal.discard("send_message")
+
+    # An answer must come from a rule. Before the search there is nothing to write from.
+    if "search_delivery_policy" not in ctx.succeeded:
+        legal.discard("answer_from_policy")
+
+    # -- once there is an outcome, there is one move left ------------------------------
+    #
+    # A workflow has produced something to say. Leaving `escalate_booking` or a second search
+    # available invites the model to keep working past the answer it already has -- and the
+    # customer waits through every extra step for a reply that was ready.
+    if prepared and "send_message" not in ctx.succeeded and "send_message" in scope:
+        legal = {"send_message"}
+
+    # And once they have been written to, the turn is over.
+    if "send_message" in ctx.succeeded:
+        legal = {"finish"}
+
+    return sorted(legal)
 
 
 def describe_arguments() -> dict[str, dict]:
@@ -741,4 +1007,8 @@ def render_argument_help() -> str:
 # deliberately: that module imports `tool`, `ToolResult` and `_Args` from here, so it can only be
 # loaded once this module is fully defined. Importing either module now yields the whole allow-list,
 # which matters because `allowed_actions()` is what the model is shown.
-from dispatch_agent.planning import negotiation_tools as _negotiation_tools  # noqa: E402,F401
+from dispatch_agent.planning import (  # noqa: E402,F401
+    insertion_tools,
+    negotiation_tools as _negotiation_tools,
+    workflows as _workflows,
+)

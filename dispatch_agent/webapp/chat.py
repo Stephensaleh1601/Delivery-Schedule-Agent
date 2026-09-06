@@ -20,10 +20,10 @@ from dispatch_agent.models import DaySequence, JobStatus, Notification, Reschedu
 from dispatch_agent.reschedule import apply_reschedule
 from dispatch_agent.webapp.jobs_service import JobSubmission, JobSubmissionError, create_job_from_submission
 
-COMPANY_NAME = "Majestic Fighters Furniture Delivery"
+COMPANY_NAME = "Majestic Fighters Fresh Pet Food"
 GREETING = (
-    f"Hi! This is {COMPANY_NAME}. I can help you book a large-furniture "
-    "delivery (sofa, bed, cabinet...) or reschedule an existing one."
+    f"Hi! This is {COMPANY_NAME}. I can help you book a fresh pet-food "
+    "delivery or reschedule an existing one."
 )
 MAIN_MENU = [
     {"label": "Book a delivery", "value": "book"},

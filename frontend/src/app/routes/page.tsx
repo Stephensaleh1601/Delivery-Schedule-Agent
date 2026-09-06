@@ -23,11 +23,13 @@ import {
   dispatch,
   type ActivePlan,
   type Bootstrap,
+  type DriverDispatch,
   type Order,
   type PlanVersion,
   type ReadinessResponse,
 } from "@/lib/api";
 import { dayParts, formatDate, formatDelta, formatDuration, formatTime, formatWindow } from "@/lib/format";
+import { DriverPanel } from "@/components/DriverPanel";
 import { useResource } from "@/lib/useResource";
 
 /**
@@ -57,6 +59,7 @@ export default function RoutesPage() {
   const [error, setError] = useState<unknown>(null);
   const [recovery, setRecovery] = useState<ReadinessResponse | null>(null);
   const [offered, setOffered] = useState<{ name: string; message: string } | null>(null);
+  const [sentToDriver, setSentToDriver] = useState<DriverDispatch | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
 
   // A stop confirmed on another screen should be visible here without hunting for it.
@@ -108,6 +111,7 @@ export default function RoutesPage() {
       lede="Each day's route is published as a version. When something changes — a booking lands, an order is delayed — a new version is created and the old one stays readable, so what was promised and when it changed is always answerable."
       wide
       actions={
+        <div className="flex gap-2">
         <Button
           variant="secondary"
           busy={busy === "publish"}
@@ -119,8 +123,24 @@ export default function RoutesPage() {
         >
           Republish this day
         </Button>
+        {/* A coordinator's action. The customer-facing agent has no tool for this -- it is
+            absent from the registry entirely, not merely left out of an intent list. */}
+        <Button
+          busy={busy === "driver"}
+          disabled={!active || !plan.data?.stops?.length}
+          onClick={() => run("driver", async () => {
+            setSentToDriver(await dispatch.sendToDriver(active!));
+          })}
+        >
+          {sentToDriver?.date === active ? "Sent to driver ✓" : "Send to driver"}
+        </Button>
+        </div>
       }
     >
+      {sentToDriver && (
+        <DriverPanel sent={sentToDriver} onClose={() => setSentToDriver(null)} />
+      )}
+
       {/* -- days ---------------------------------------------------------- */}
       <div className="enter flex gap-2">
         {boot.initialising

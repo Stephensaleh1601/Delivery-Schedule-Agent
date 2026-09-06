@@ -5,7 +5,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Dispatch Console",
   description:
-    "Route-aware delivery scheduling for Majestic Fighters Furniture Delivery: make a feasible promise, protect it, and recover the day when reality changes.",
+    "Route-aware delivery scheduling for Majestic Fighters Fresh Pet Food: make a feasible promise, protect it, and recover the day when reality changes.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

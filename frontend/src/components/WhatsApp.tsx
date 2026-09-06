@@ -15,9 +15,28 @@ import { cx } from "@/components/ui";
  * Everything here is scoped to this component; the rest of the console keeps its own identity.
  */
 
-export function Phone({ children, status }: { children: ReactNode; status: string }) {
+export function Phone({
+  children,
+  status,
+  name = "Majestic Fighters Fresh Pet Food",
+  initials = "MF",
+  className,
+}: {
+  children: ReactNode;
+  status: string;
+  /** Who the thread is with. Defaults to the company, because the customer's view is the
+   *  common case; the driver dispatch panel passes the driver's own name. */
+  name?: string;
+  initials?: string;
+  className?: string;
+}) {
   return (
-    <div className="flex flex-col overflow-hidden rounded-[22px] border border-rail bg-[var(--color-wa-header)] shadow-[var(--shadow-lift)]">
+    <div
+      className={cx(
+        "flex flex-col overflow-hidden rounded-[22px] border border-rail bg-[var(--color-wa-header)] shadow-[var(--shadow-lift)]",
+        className,
+      )}
+    >
       <div className="flex items-center justify-between px-4 pt-2.5 pb-1">
         <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-white/70">
           WhatsApp Demo
@@ -29,11 +48,11 @@ export function Phone({ children, status }: { children: ReactNode; status: strin
 
       <header className="flex items-center gap-3 bg-[var(--color-wa-header)] px-3.5 pb-2.5">
         <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--color-wa-header-deep)] text-[14px] font-semibold text-white/90">
-          MF
+          {initials}
         </div>
         <div className="flex min-w-0 flex-col">
           <span className="truncate text-[14.5px] font-medium leading-tight text-white">
-            Majestic Fighters Delivery
+            {name}
           </span>
           <span className="text-[11.5px] leading-tight text-white/70">{status}</span>
         </div>
@@ -49,7 +68,7 @@ export function Wallpaper({ children, innerRef }: { children: ReactNode; innerRe
   return (
     <div
       ref={innerRef}
-      className="flex flex-1 flex-col gap-1.5 overflow-y-auto px-3 py-3.5"
+      className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-3 py-3.5"
       style={{
         backgroundColor: "var(--color-wa-paper)",
         backgroundImage: `url("data:image/svg+xml,${encodeURIComponent(WALLPAPER)}")`,

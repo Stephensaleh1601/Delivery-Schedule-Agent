@@ -34,17 +34,19 @@ from dispatch_agent.models import (
     AgentActionLog,
     AgentRunLog,
     AgentRunStatus,
+    MessageDirection,
     PlanningEvent,
     PlanningEventType,
 )
-from dispatch_agent.planning import plan_service, tools
+from dispatch_agent.agents import progress
+from dispatch_agent.planning import clusters, plan_service, tools
 from dispatch_agent.planning.clock import PlanningClock
 
 # The bound on one run. Raised from 6 when the conversation became natural-language: a single
 # customer message can now legitimately need record_availability -> evaluate_slots ->
 # suggest_route_aware_windows -> create_offer -> send_message -> finish, which is already six. The
 # guard exists to stop a loop, not to make the longest honest path fail one step from the end.
-MAX_TOOL_STEPS = 8
+MAX_TOOL_STEPS = 10
 
 
 class ActionDecision(BaseModel):
@@ -132,6 +134,90 @@ def _last_error(state, tool_name: str) -> str | None:
     return attempts[-1].error if attempts else None
 
 
+
+# The conversational path, step by step. Both customer intents walk it; only the first action and
+# the offer at the end differ. It lives here rather than being inlined twice so that the standard
+# procedure and the model cannot drift into following different policies -- a fallback that
+# quietly does something else is worse than no fallback, because the log still says "completed".
+def _insertion_sequence(event, done, state, topic: str, offer_action: str, scope: str = "cluster"):
+    """The conversational path as one composite action, then the reply.
+
+    Both customer intents walk it; only which search runs differs. Written once so the standard
+    procedure and the model follow the same policy -- a fallback that quietly does something else
+    is worse than no fallback, because the log still says "completed".
+    """
+    search = {
+        "cluster": "find_normal_slot",
+        "requested": "find_requested_day_slot",
+        "both": "find_fallback_options",
+    }[scope]
+
+    if search not in done:
+        return ActionDecision(
+            action=search,
+            reason_summary={
+                "cluster": "Checking their normal delivery day.",
+                "requested": "Checking the day they asked for.",
+                "both": "Searching both published routes.",
+            }[scope],
+            arguments={"order_id": event.order_id},
+        )
+
+    if _last_failed(state, search) and "escalate_booking" not in done:
+        return ActionDecision(
+            action="escalate_booking",
+            reason_summary="Nothing safe to offer; asking a coordinator to call.",
+            arguments={"order_id": event.order_id, "reason": _last_error(state, search) or ""},
+        )
+
+    if "send_message" not in done:
+        return ActionDecision(
+            action="send_message",
+            reason_summary="Sending the reply.",
+            arguments={"order_id": event.order_id},
+        )
+    return ActionDecision(action="finish", reason_summary="Replied; waiting for the customer.")
+
+
+
+def _policy_sentences(hits: list[dict]) -> list[str]:
+    """A readable answer built from retrieved rules, for when the model is unavailable.
+
+    Plainer than the model's wording, and that is the trade a fallback makes. What it must not do
+    is say anything the rules do not: every sentence here is lifted from the rule text, and a
+    Markdown table becomes the same pairs in prose rather than being dropped -- the windows and the
+    region-to-day mapping are both tables, and they are the two most likely questions.
+    """
+    lines: list[str] = []
+    for hit in hits[:2]:
+        text = (hit.get("text") or "").split("*Enforced")[0]
+        prose: list[str] = []
+        pairs: list[str] = []
+        for raw in text.splitlines():
+            row = raw.strip()
+            if not row:
+                continue
+            if row.startswith("|"):
+                cells = [c.strip() for c in row.strip("|").split("|")]
+                # Skip the header rule (`|---|---|`) and the header row itself.
+                if all(set(c) <= set("-: ") for c in cells):
+                    continue
+                if len(cells) == 2 and cells[0] and cells[1]:
+                    pairs.append(f"{cells[0]} {cells[1]}")
+                continue
+            prose.append(row)
+        if pairs:
+            # The first pair is the table's own header ("Window / Promised arrival"), which reads
+            # as a label rather than a fact.
+            lines.append("; ".join(pairs[1:] if len(pairs) > 1 else pairs) + ".")
+        joined = " ".join(prose).strip()
+        if joined:
+            first = joined.split(". ")[0].strip().rstrip(".")
+            if first:
+                lines.append(first + ".")
+    return lines or ["I could not find a written rule covering that."]
+
+
 class RuleDecisionAgent:
     """A deterministic policy over the same state the model sees.
 
@@ -142,6 +228,51 @@ class RuleDecisionAgent:
     def decide(self, state, allowed) -> ActionDecision:
         event = state["event"]
         done = {a.tool for a in state.get("actions", [])}
+
+        conversational = bool(event.payload.get("intent"))
+
+        # A question about how delivery works. Handled before anything else because it is not a
+        # booking at all: search the policy, then say what it found. The wording here is plainer
+        # than the model's would be -- that is what a fallback is -- but it is built from the same
+        # retrieved rules, so it can never claim something the policy does not say.
+        if event.payload.get("intent") == "policy_question":
+            if "search_delivery_policy" not in done:
+                return ActionDecision(
+                    action="search_delivery_policy",
+                    reason_summary="Looking the question up in the delivery policy.",
+                    arguments={
+                        "order_id": event.order_id,
+                        "question": event.payload.get("question")
+                        or event.payload.get("note")
+                        or "",
+                    },
+                )
+            hits = state.get("policy_hits") or []
+            if hits and "answer_from_policy" not in done:
+                return ActionDecision(
+                    action="answer_from_policy",
+                    reason_summary="Answering from the retrieved policy rules.",
+                    arguments={
+                        "order_id": event.order_id,
+                        "answer": " ".join(_policy_sentences(hits)),
+                    },
+                )
+            if "send_message" not in done:
+                if hits:
+                    return ActionDecision(
+                        action="send_message",
+                        reason_summary="Sending the answer.",
+                        arguments={"order_id": event.order_id},
+                    )
+                return ActionDecision(
+                    action="escalate_booking",
+                    reason_summary="The policy does not cover this question.",
+                    arguments={
+                        "order_id": event.order_id,
+                        "reason": "Question not answered by the delivery policy.",
+                    },
+                )
+            return ActionDecision(action="finish", reason_summary="The question has been answered.")
 
         if event.event_type is PlanningEventType.NEW_ORDER:
             # A conversational turn carries the windows the customer just stated. Writing them down
@@ -169,6 +300,15 @@ class RuleDecisionAgent:
                     )
                 return ActionDecision(action="finish",
                                       reason_summary="Waiting for a date we can actually book.")
+            if conversational:
+                # The standard procedure always takes the customer's own day. Distinguishing
+                # an off-cluster request is the model's job on the live path; a fallback that has
+                # to make that call as well is a fallback with its own failure modes.
+                return _insertion_sequence(
+                    event, done, state, topic="cluster_days",
+                    offer_action="find_normal_slot", scope="cluster",
+                )
+
             if "evaluate_slots" not in done:
                 return ActionDecision(action="evaluate_slots",
                                       reason_summary="Checking which of the requested windows we can serve.",
@@ -252,6 +392,12 @@ class RuleDecisionAgent:
                     arguments={"offer_id": event.payload.get("offer_id"),
                                "slot_id": event.payload.get("slot_id")},
                 )
+            if conversational:
+                return _insertion_sequence(
+                    event, done, state, topic="alternatives",
+                    offer_action="find_fallback_options", scope="both",
+                )
+
             if "evaluate_slots" not in done:
                 return ActionDecision(
                     action="evaluate_slots",
@@ -441,6 +587,9 @@ class SchedulingState(TypedDict, total=False):
     pending_decision: Optional[object]
     last_tool_result: Optional[dict]
     customer_message: Optional[str]
+    # The policy rules the last search returned. Carried on the state, like customer_message, so
+    # the standard-procedure decider can answer from them when the model is unavailable.
+    policy_hits: Optional[list]
     step_count: int
     completed: bool
     error: Optional[str]
@@ -472,6 +621,13 @@ def _observe_node(ctx: tools.ToolContext):
                 update["error"] = f"unknown order {event.order_id}"
             else:
                 ctx.order = order
+                # Which delivery day is theirs, so choosing a search scope is a reading task for
+                # the model rather than a geography one.
+                placement = clusters.placement_of(order)
+                update["placement"] = {
+                    "region": placement.region or "unknown",
+                    "normal_day": placement.day_name,
+                }
                 update["order_summary"] = {
                     "customer_name": order.customer_name,
                     "job_type": order.job_type.value,
@@ -492,12 +648,93 @@ def _observe_node(ctx: tools.ToolContext):
     return node
 
 
-def _decide_node(decider: DecisionAgent, fallback: DecisionAgent | None):
+def _decide_node(ctx: tools.ToolContext, decider: DecisionAgent, fallback: DecisionAgent | None):
     def node(state: SchedulingState) -> SchedulingState:
         primary = type(decider).__name__
         model_id = _active_model_id() if isinstance(decider, LLMDecisionAgent) else None
+
+        # What is permissible right now, not the whole registry. The model is shown exactly
+        # what dispatch will accept, so an illegal action is not something the prompt has to
+        # argue it out of.
+        legal = tools.legal_actions(state, ctx)
+        # Carried to the act node, which is where dispatch reads it. Set the moment the set exists
+        # and before any early return, so the set the model is offered and the set enforced
+        # against its answer are always the same one.
+        ctx.legal_now = frozenset(legal)
+
+        # The model's turn is where most of the wall clock goes -- several round trips at a second
+        # or so each. Leaving it unlabelled made the panel show tool steps of 0.03s adding up to
+        # eleven seconds, which reads as the screen lying rather than the model thinking.
+        if ctx.order is not None and legal != ["finish"]:
+            progress.stage(
+                ctx.order.id,
+                f"decide-{state.get('step_count', 0)}",
+                "Deciding what to do next",
+                f"Choosing from {len(legal)} permitted actions",
+                tool="(model)",
+            )
+
+        if legal == ["finish"]:
+            # There was no choice to make. Asking a model to pick from a list of one and then
+            # recording it as a decision would put a step in the activity log that claims a
+            # judgement nobody exercised.
+            return {
+                "pending_decision": ActionDecision(
+                    action="finish",
+                    reason_summary="Nothing further is permitted in this run.",
+                    arguments={},
+                ),
+                "step_provenance": {
+                    "decider": "controller",
+                    "model_id": None,
+                    "fallback_reason": None,
+                },
+            }
+
+        if legal == ["search_delivery_policy"]:
+            # The customer already supplied the question. Asking the model to copy it into the
+            # only available tool call adds no judgement and can lose the text entirely. That
+            # happened for "So you can only do Saturday?": the search received only order_id,
+            # found no query, and the customer was wrongly escalated. Preserve their exact words.
+            event = state["event"]
+            return {
+                "pending_decision": ActionDecision(
+                    action="search_delivery_policy",
+                    reason_summary="Looking up the customer's question in the delivery policy.",
+                    arguments={
+                        "order_id": event.order_id,
+                        "question": event.payload.get("question")
+                        or event.payload.get("message")
+                        or "",
+                    },
+                ),
+                "step_provenance": {
+                    "decider": "controller",
+                    "model_id": None,
+                    "fallback_reason": None,
+                },
+            }
+
+        if legal == ["send_message"]:
+            # Once a tool has prepared the exact customer-facing wording, there is no judgement
+            # left to make and no arguments for the model to invent.  A live policy answer added
+            # an ``answer_from_policy`` field to this call, failed validation, then retried.  Send
+            # the prepared reply directly and keep the trace free of a meaningless failed step.
+            return {
+                "pending_decision": ActionDecision(
+                    action="send_message",
+                    reason_summary="Sending the prepared reply.",
+                    arguments={"order_id": ctx.order.id} if ctx.order else {},
+                ),
+                "step_provenance": {
+                    "decider": "controller",
+                    "model_id": None,
+                    "fallback_reason": None,
+                },
+            }
+
         try:
-            decision = decider.decide(state, tools.allowed_actions())
+            decision = decider.decide(state, legal)
         except Exception as exc:  # noqa: BLE001
             if fallback is None:
                 return {
@@ -508,7 +745,7 @@ def _decide_node(decider: DecisionAgent, fallback: DecisionAgent | None):
             # Recorded, not hidden: the log should say the model was unavailable rather than
             # implying it made these calls. Redacted because a provider exception quotes the
             # request it failed on, and this string is persisted and then rendered.
-            decision = fallback.decide(state, tools.allowed_actions())
+            decision = fallback.decide(state, legal)
             decision.reason_summary = f"[model unavailable, using standard procedure] {decision.reason_summary}"
             reason = tools.redact_secrets(f"{type(exc).__name__}: {exc}")
             return {
@@ -522,6 +759,52 @@ def _decide_node(decider: DecisionAgent, fallback: DecisionAgent | None):
                     "fallback_reason": reason,
                 },
             }
+        # The gate has to bind the decision, not merely inform it. `dispatch()` enforces the
+        # INTENT scope, which is wider, and `finish` never reaches dispatch at all -- it
+        # short-circuits the graph. So a model that answered "finish" could end a turn the gate
+        # had already ruled out, which is how a run asked the customer a question, logged that it
+        # asked, and stopped without sending it.
+        if decision.action not in legal:
+            forced = None
+            if len(legal) == 1:
+                forced = legal[0]
+            elif "send_message" in legal and (
+                ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")
+            ):
+                # The outcome already exists. Whatever it reached for, the useful move now is to
+                # tell the customer -- and letting the illegal call through just adds a refused
+                # step they sit and wait through.
+                forced = "send_message"
+            elif decision.action == "finish":
+                # Ending is the one illegal choice with no other guard behind it.
+                forced = "send_message" if "send_message" in legal else legal[0]
+
+            if forced is not None:
+                forced_arguments = {"order_id": ctx.order.id} if ctx.order else {}
+                if forced == "answer_from_policy":
+                    # A one-action gate normally still asks the model for the wording.  If it
+                    # nevertheless returns a different action, fall back to a truthful answer
+                    # built only from the retrieved rules instead of calling the answer tool with
+                    # an empty string and looping again.
+                    forced_arguments["answer"] = " ".join(
+                        _policy_sentences(state.get("policy_hits") or [])
+                    )
+                return {
+                    "pending_decision": ActionDecision(
+                        action=forced,
+                        reason_summary=(
+                            f"{forced.replace('_', ' ').capitalize()} is the only step still "
+                            f"permitted here."
+                        ),
+                        arguments=forced_arguments,
+                    ),
+                    "step_provenance": {
+                        "decider": "controller",
+                        "model_id": None,
+                        "fallback_reason": None,
+                    },
+                }
+
         return {
             "pending_decision": decision,
             "step_provenance": {"decider": primary, "model_id": model_id, "fallback_reason": None},
@@ -533,9 +816,20 @@ def _decide_node(decider: DecisionAgent, fallback: DecisionAgent | None):
 def _act_node(ctx: tools.ToolContext):
     def node(state: SchedulingState) -> SchedulingState:
         decision: ActionDecision = state["pending_decision"]
+        # Reported before the call, so the screen names the tool that is running rather than
+        # the one that just finished.
+        label, why = progress.TOOL_STAGES.get(decision.action, (decision.action, ""))
+        if ctx.order is not None and decision.action != "finish":
+            progress.stage(ctx.order.id, decision.action, label, why, tool=decision.action)
         step = state.get("step_count", 0) + 1
 
         result = tools.dispatch(decision.action, decision.arguments, ctx)
+        if ctx.order is not None and decision.action != "finish":
+            # The tool's own summary is the detail -- it is already written for a coordinator and
+            # already carries the real figures, so the panel quotes it rather than paraphrasing.
+            progress.finish_stage(
+                ctx.order.id, decision.action, detail=result.summary, ok=result.ok
+            )
         entry = AgentActionLog(
             step=step,
             tool=decision.action,
@@ -561,6 +855,8 @@ def _act_node(ctx: tools.ToolContext):
         reply = ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")
         if reply:
             update["customer_message"] = reply
+        if ctx.scratch.get("policy_hits"):
+            update["policy_hits"] = ctx.scratch["policy_hits"]
         if decision.action == "finish":
             update["completed"] = True
         return update
@@ -586,7 +882,7 @@ def _after_act(state: SchedulingState) -> str:
 def build_graph(ctx: tools.ToolContext, decider: DecisionAgent, fallback: DecisionAgent | None):
     graph = StateGraph(SchedulingState)
     graph.add_node("observe", _observe_node(ctx))
-    graph.add_node("decide", _decide_node(decider, fallback))
+    graph.add_node("decide", _decide_node(ctx, decider, fallback))
     graph.add_node("act", _act_node(ctx))
     graph.set_entry_point("observe")
     graph.add_edge("observe", "decide")
@@ -655,6 +951,11 @@ def handle_planning_event(
     intent = event.payload.get("intent")
     if intent in tools.INTENT_TOOLS:
         ctx.allowed_tools = tools.INTENT_TOOLS[intent]
+    if intent:
+        # The tools need it too: which routes a search may look at is decided by the intent, not
+        # by judgement, and a model that picks the scope differently on two runs of the same
+        # conversation makes the demo unrepeatable.
+        ctx.scratch["intent"] = intent
 
     if decider is None:
         try:
@@ -675,6 +976,9 @@ def handle_planning_event(
     except Exception as exc:  # noqa: BLE001
         run.status = AgentRunStatus.FAILED
         run.final_summary = f"The scheduling agent could not complete: {exc}"
+        # Before the save, on EVERY exit. A crash is the case where the customer is most likely
+        # to be left with silence, and silence is indistinguishable from a broken server.
+        _guarantee_a_reply(repo, event, ctx, run)
         run.completed_at = datetime.now(timezone.utc)
         repo.save_agent_run(run)
         return run
@@ -705,5 +1009,64 @@ def handle_planning_event(
             a.summary for a in run.actions if a.ok and a.tool != "finish"
         ) or "No action was needed."
 
+    # Every path through this function passes here or through the except above, so there is no
+    # way to leave without the customer having been answered.
+    _guarantee_a_reply(repo, event, ctx, run)
+
     repo.save_agent_run(run)
     return run
+
+
+def _guarantee_a_reply(repo, event, ctx: tools.ToolContext, run: AgentRunLog) -> None:
+    """Send something if the run did not, so no customer turn ends in silence.
+
+    Deliberately last and deliberately dumb: it does not decide anything, it only notices that a
+    message was owed and never sent. Anything smarter here would be a second decision-maker
+    competing with the loop.
+    """
+    if ctx.order is None:
+        return
+    # Ask whether the customer was actually answered, not which tool ran. `send_message` is not
+    # the only thing that speaks: accepting a slot writes its own confirmation, and keying off the
+    # tool name meant a successful booking was followed by "sorry, a coordinator will call you".
+    if any(
+        message.run_id == run.id and message.direction == MessageDirection.OUTBOUND
+        for message in repo.messages(ctx.order.id)
+    ):
+        return
+    if event.event_type not in (
+        PlanningEventType.NEW_ORDER,
+        PlanningEventType.CUSTOMER_REJECTED_OFFER,
+        PlanningEventType.CUSTOMER_ACCEPTED_OFFER,
+        PlanningEventType.MANUAL_RETRY,
+    ):
+        return  # operational events have no customer waiting on them
+
+    prepared = ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")
+    body = prepared or (
+        "Sorry -- I could not sort that out automatically just now. One of our coordinators "
+        "will call you shortly to arrange your delivery."
+    )
+
+    from dispatch_agent.planning import offer_service
+
+    offer_service.record_message(repo, ctx.order.id, body, run_id=run.id)
+    run.actions.append(
+        AgentActionLog(
+            step=len(run.actions) + 1,
+            tool="send_message",
+            ok=True,
+            arguments={"order_id": ctx.order.id},
+            summary=f"Reply sent by the completion guarantee ({len(body)} chars).",
+            reason_summary="The run ended without answering the customer.",
+            decider="controller",
+        )
+    )
+    if not prepared:
+        plan_service.raise_coordinator_exception(
+            repo,
+            "A customer message ended without the agent producing a reply; they were told a "
+            "coordinator would call.",
+            kind="unanswered_message",
+            order_id=ctx.order.id,
+        )

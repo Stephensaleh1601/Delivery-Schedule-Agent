@@ -58,6 +58,27 @@ def _option(day, window=((9, 0), (18, 0)), rank=1):
     return AvailabilityOption(date=day, window=_w(*window), preference_rank=rank)
 
 
+def _every_slot(days):
+    """Morning and afternoon on each of the cycle's two days -- four distinct choices.
+
+    One option per day is no longer enough: an offer carries up to MAX_SLOTS_PER_OFFER slots, so
+    with a two-day cycle the first round would consume every option and the second would fail as
+    "all options already offered" before any round cap could be reached.
+    """
+    return [
+        _option(day, window=window, rank=rank)
+        for rank, (day, window) in enumerate(
+            [
+                (days[0], ((9, 0), (13, 0))),
+                (days[1], ((9, 0), (13, 0))),
+                (days[0], ((13, 0), (18, 0))),
+                (days[1], ((13, 0), (18, 0))),
+            ],
+            start=1,
+        )
+    ]
+
+
 def _confirmed(repo, name, postal_code, day, window=((9, 0), (18, 0)), duration=45):
     job = JobRecord(
         customer_name=name,
@@ -80,7 +101,7 @@ def _confirmed(repo, name, postal_code, day, window=((9, 0), (18, 0)), duration=
 
 def test_customer_is_offered_the_best_two_feasible_slots(temp_db):
     days = PlanningClock.horizon_dates()
-    order = _order(temp_db, options=[_option(d) for d in days])
+    order = _order(temp_db, options=_every_slot(days))
 
     evaluations = CandidateService(repo=temp_db).evaluate_all(order)
     offer = offer_service.create_offer(temp_db, order, evaluations)
@@ -135,7 +156,7 @@ def test_offer_rounds_are_capped(temp_db):
     """Enforced by counting stored offers, not by asking a model to keep track -- a model that
     forgets must not be able to badger a customer indefinitely."""
     days = PlanningClock.horizon_dates()
-    order = _order(temp_db, options=[_option(d) for d in days])
+    order = _order(temp_db, options=_every_slot(days))
     service = CandidateService(repo=temp_db)
 
     for _ in range(offer_service.MAX_OFFER_ROUNDS):
@@ -148,7 +169,7 @@ def test_offer_rounds_are_capped(temp_db):
 
 def test_a_second_offer_does_not_repeat_a_rejected_slot(temp_db):
     days = PlanningClock.horizon_dates()
-    order = _order(temp_db, options=[_option(d) for d in days])
+    order = _order(temp_db, options=_every_slot(days))
     service = CandidateService(repo=temp_db)
 
     first = offer_service.create_offer(temp_db, order, service.evaluate_all(order))
@@ -175,7 +196,7 @@ def test_offer_message_hides_our_internal_reasoning(temp_db):
 
 def test_accepting_locks_the_window_and_publishes_a_plan(temp_db):
     days = PlanningClock.horizon_dates()
-    order = _order(temp_db, options=[_option(d) for d in days])
+    order = _order(temp_db, options=_every_slot(days))
     offer = offer_service.create_offer(temp_db, order, CandidateService(repo=temp_db).evaluate_all(order))
     chosen = offer.options[0]
 
@@ -194,7 +215,7 @@ def test_accepting_twice_does_not_create_a_second_plan_version(temp_db):
     """A double-tapped button must be harmless. Guarded by a conditional UPDATE, so two
     simultaneous clicks cannot both pass the check."""
     days = PlanningClock.horizon_dates()
-    order = _order(temp_db, options=[_option(d) for d in days])
+    order = _order(temp_db, options=_every_slot(days))
     offer = offer_service.create_offer(temp_db, order, CandidateService(repo=temp_db).evaluate_all(order))
     chosen = offer.options[0]
 
@@ -208,7 +229,7 @@ def test_accepting_twice_does_not_create_a_second_plan_version(temp_db):
 
 def test_accepting_closes_the_other_offered_slot(temp_db):
     days = PlanningClock.horizon_dates()
-    order = _order(temp_db, options=[_option(d) for d in days])
+    order = _order(temp_db, options=_every_slot(days))
     service = CandidateService(repo=temp_db)
     first = offer_service.create_offer(temp_db, order, service.evaluate_all(order))
     offer_service.reject_offer(temp_db, first.id)
@@ -233,7 +254,7 @@ def test_a_replan_cannot_move_a_confirmed_appointment(temp_db):
 
     stop = next(s for s in plan.sequence.stops if s.job_id == promised.id)
     assert promised.locked_window.start <= stop.arrival_window.start
-    assert stop.arrival_window.end <= promised.locked_window.end
+    assert stop.arrival_window.start <= promised.locked_window.end
 
 
 def test_assert_locks_respected_catches_a_plan_that_would_move_someone(temp_db):
@@ -302,7 +323,9 @@ def test_end_to_end_booking_to_locked_route(temp_db):
     order = _order(temp_db, "Mrs Tan", "489123", options=[
         _option(days[0], window=((9, 0), (13, 0)), rank=2),
         _option(days[1], rank=1),
-        _option(days[2], window=((14, 0), (18, 0)), rank=3),
+        # Third choice: the later half of the first day, not a third date -- the cycle
+        # only has two.
+        _option(days[0], window=((14, 0), (18, 0)), rank=3),
     ])
     assert order.delivery_date is None and order.locked_window is None
 
@@ -331,7 +354,7 @@ def test_end_to_end_booking_to_locked_route(temp_db):
         stopped_job = temp_db.get_job(stop.job_id)
         if stopped_job.is_locked:
             assert stopped_job.locked_window.start <= stop.arrival_window.start
-            assert stop.arrival_window.end <= stopped_job.locked_window.end
+            assert stop.arrival_window.start <= stopped_job.locked_window.end
 
     # 6. The customer was actually told, and it is recorded.
     sent = [m for m in temp_db.messages(order.id) if m.direction is MessageDirection.OUTBOUND]

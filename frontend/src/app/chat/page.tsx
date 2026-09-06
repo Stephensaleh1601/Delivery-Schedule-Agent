@@ -21,12 +21,14 @@ import {
   type ActivePlan,
   type AgentRun,
   type Bootstrap,
+  type Placement,
   type ChatMessage,
   type ChatTurn,
   type Offer,
   type PlanVersion,
 } from "@/lib/api";
-import { formatDate } from "@/lib/format";
+import { formatDate, parseDate } from "@/lib/format";
+import { ThinkingChip, ThinkingOverlay, useAgentProgress } from "@/components/AgentProgress";
 import { useResource } from "@/lib/useResource";
 
 /**
@@ -60,6 +62,7 @@ export default function ChatPage() {
 
   const [orderId, setOrderId] = useState<string | null>(null);
   const [turn, setTurn] = useState<ChatTurn | null>(null);
+  const [traceOpen, setTraceOpen] = useState(false);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [input, setInput] = useState("");
   const [before, setBefore] = useState<PlanVersion | null>(null);
@@ -96,6 +99,9 @@ export default function ChatPage() {
   }, [turn, drafts]);
 
   const messages = turn?.messages ?? [];
+  // Polls while a turn is in flight; one more read after it lands swaps the live trace for
+  // the one rebuilt from the persisted run, which is what survives a refresh.
+  const agentProgress = useAgentProgress(orderId, busy);
   const openOffer = turn?.open_offer_id ? turn.offers[turn.open_offer_id] : null;
   const confirmed = turn?.confirmed ?? false;
   const lastRun = turn?.run ?? null;
@@ -136,6 +142,38 @@ export default function ChatPage() {
       if (orderId) await load(orderId);
     } finally {
       setDrafts([]);
+      setBusy(false);
+    }
+  }
+
+  /** Accept one specific slot of one specific offer.
+   *
+   *  Deliberately not a chat message. A confirm button already knows exactly which slot it means,
+   *  and turning that certainty back into a sentence for the reader to re-derive is how a click
+   *  ended up understood as new availability -- opening a second offer rather than booking the
+   *  one on screen.
+   */
+  async function accept(offerId: string, slotId: string) {
+    if (!orderId || busy) return;
+    setBusy(true);
+    setError(null);
+
+    const discussing = openOffer?.options.find((o) => o.id === slotId)?.date;
+    if (discussing) {
+      const versions = await dispatch.planVersions(discussing).catch(() => []);
+      setBefore(versions.find((v) => v.status === "active") ?? null);
+    }
+
+    try {
+      await dispatch.respond(offerId, true, slotId);
+      // Reload the thread rather than patching it: the acceptance writes a confirmation message
+      // and republishes the day, and the server's version of both is the one to show.
+      await load(orderId);
+      if (discussing) setAfter(await dispatch.activePlan(discussing).catch(() => null));
+    } catch (err) {
+      setError(err);
+      await load(orderId);
+    } finally {
       setBusy(false);
     }
   }
@@ -182,10 +220,28 @@ export default function ChatPage() {
     >
       {boot.error ? <ErrorPanel error={boot.error} onRetry={boot.reload} /> : null}
 
+      {/* Mounted at page level, not inside the phone column: the trace needs room to be read,
+          and squeezing it into 380px is what made its rows collide in the first place. */}
+      {traceOpen && agentProgress && (
+        <ThinkingOverlay
+          progress={agentProgress}
+          onClose={() => setTraceOpen(false)}
+          onRetry={() => {
+            const last = [...messages].reverse().find((m) => m.direction === "inbound");
+            if (last) void send(last.body);
+          }}
+        />
+      )}
+
       <div className="enter grid grid-cols-[380px_minmax(0,1fr)] items-start gap-6">
         {/* -- the phone -------------------------------------------------- */}
         <div className="sticky top-[74px] flex flex-col gap-3">
-          <Phone status={status}>
+          {/* Keep the phone inside the viewport. Only the message wallpaper scrolls; the header,
+              quick replies and composer stay put like a real messaging app. */}
+          <Phone
+            status={status}
+            className="h-[calc(100dvh-210px)] min-h-[520px] max-h-[720px]"
+          >
             <Wallpaper innerRef={feed}>
               <div className="flex min-h-[380px] flex-col gap-1.5">
                 {boot.initialising ? (
@@ -195,7 +251,7 @@ export default function ChatPage() {
                   </>
                 ) : (
                   <>
-                    <Greeting boot={boot.data} />
+                    <Greeting boot={boot.data} placement={turn?.placement ?? null} />
                     {messages.map((m) => (
                       <ThreadMessage
                         key={m.id}
@@ -216,13 +272,31 @@ export default function ChatPage() {
                     )}
                   </>
                 )}
+
+                {/* Inside the wallpaper, under the last message -- where a status line belongs in
+                    a chat. Outside it, the phone's own dark-green header shows through and the
+                    chip sits on a green strip. */}
+                {orderId && agentProgress && agentProgress.stages.length > 0 && (
+                  <div className="flex pt-1">
+                    <ThinkingChip progress={agentProgress} onOpen={() => setTraceOpen(true)} />
+                  </div>
+                )}
               </div>
             </Wallpaper>
 
             {orderId && !confirmed && (
               <QuickReplies
                 replies={suggestReplies(openOffer, confirmed, messages.length)}
-                onPick={(text) => void send(text)}
+                onPick={(id) => {
+                  const reply = suggestReplies(openOffer, confirmed, messages.length).find(
+                    (r) => r.id === id,
+                  );
+                  // A confirm button is an answer to a specific slot, not a sentence to be read.
+                  // Routing it through the language reader let a click be understood as new
+                  // availability, which opened a second offer instead of booking the first.
+                  if (reply?.slotId && openOffer) void accept(openOffer.id, reply.slotId);
+                  else void send(id);
+                }}
                 disabled={busy}
               />
             )}
@@ -257,7 +331,7 @@ export default function ChatPage() {
         {/* -- the agent -------------------------------------------------- */}
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1">
-            <Eyebrow>Agent decision</Eyebrow>
+            <Eyebrow>Agent decisions and tool results</Eyebrow>
             {/* The heading is the question this run answers. "Why these times?" and "Why the offer
                 changed" are different questions, and one panel titled for both answers neither. */}
             <h2 className="text-[17px] font-semibold text-ink">
@@ -277,6 +351,38 @@ export default function ChatPage() {
               any message for the tool calls that produced it.
             </p>
           </div>
+
+          {/* Which route this customer belongs to, and why. Shown from the moment the order
+              exists rather than only after a decision: it is the first thing the system worked
+              out, before any message was read, and a judge should be able to check the greeting
+              against it. */}
+          {turn?.placement?.region && (
+            <Card className="px-4 py-3">
+              <Eyebrow>Routed by postal code</Eyebrow>
+              <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
+                <span className="font-mono text-ink-soft">
+                  Postal code {turn.placement.postal_code ?? "\u2014"}
+                </span>
+                <span className="text-ink-faint">&rarr;</span>
+                <span className="font-medium text-ink">{turn.placement.region} region</span>
+                <span className="text-ink-faint">&rarr;</span>
+                <span className="font-medium text-ink">
+                  {/* formatDate already opens with the weekday, so naming the day as well
+                      rendered "Saturday Saturday, 12 September". */}
+                  Normal route:{" "}
+                  {turn.placement.normal_date
+                    ? formatDate(turn.placement.normal_date)
+                    : turn.placement.normal_day}
+                </span>
+              </div>
+              {turn.placement.other_day && (
+                <p className="mt-1.5 text-[11.5px] leading-[1.45] text-ink-muted">
+                  A recommendation, not a restriction — if they ask for{" "}
+                  {turn.placement.other_day}, that route is the one we test.
+                </p>
+              )}
+            </Card>
+          )}
 
           {/* The tool calls live under the message that produced them, in "Function calls &
               results". Repeating them here told a judge nothing the modal does not, and crowded
@@ -361,16 +467,55 @@ export default function ChatPage() {
 
 // -- thread -------------------------------------------------------------------
 
-function Greeting({ boot }: { boot: Bootstrap | null }) {
+/** The second bubble, written from the customer's own postal region.
+ *
+ *  Every fact in it -- the region, the day that region is delivered on, and the three window
+ *  times -- comes from `turn.placement`, which the backend derives from the same rules the search
+ *  scopes itself with. None of it is re-stated here, so there is no second copy to drift.
+ *
+ *  It offers rather than restricts. Naming the other day in the same breath is what makes the
+ *  normal day a recommendation: a West customer who wants Friday can simply say so, and their
+ *  insertion is tested against Friday's route. */
+function opening(placement: Placement | null, boot: Bootstrap): string {
+  const windows = placement?.windows?.length
+    ? placement.windows.map((w) => `${w.label.toLowerCase()} (${clock(w.start)}–${clock(w.end)})`)
+    : [];
+
+  if (!placement?.region || !placement.normal_day || !placement.normal_date || !windows.length) {
+    // No region for this address -- say what we can rather than inventing a day for them.
+    return `Just tell me when you're free — anything between ${formatDate(boot.horizon.first)} and ${formatDate(boot.horizon.last)}. One time is plenty.`;
+  }
+
+  const choice = `${windows.slice(0, -1).join(', ')} or ${windows[windows.length - 1]}`;
+  const other = placement.other_day
+    ? ` If ${placement.normal_day} does not work, tell me and I can check ${placement.other_day}'s route.`
+    : '';
+
+  return (
+    `Your address is in the ${placement.region}, which we normally deliver to on ` +
+    `${formatDate(placement.normal_date)}. Are you available in the ${choice}?${other}`
+  );
+}
+
+/** "17:00" -> "5pm", "10:00" -> "10am". The times themselves come from the server; this only
+ *  says them the way a person would. */
+function clock(hhmm: string): string {
+  const [h, m] = hhmm.split(':').map(Number);
+  const suffix = h < 12 ? 'am' : 'pm';
+  const hour = h % 12 || 12;
+  return m ? `${hour}:${String(m).padStart(2, '0')}${suffix}` : `${hour}${suffix}`;
+}
+
+function Greeting({ boot, placement }: { boot: Bootstrap | null; placement: Placement | null }) {
   if (!boot) return null;
   return (
     <>
       <Bubble from="them" time="9:02 am">
-        Hi! This is Majestic Fighters Furniture Delivery. I can book your sofa, bed or cabinet
-        delivery.
+        Hi! This is Majestic Fighters Fresh Pet Food. Your food is made fresh and can&apos;t be
+        left at the door, so I just need a time you&apos;ll be home.
       </Bubble>
       <Bubble from="them" time="9:02 am">
-        {`Just tell me when you're free — anything between ${formatDate(boot.horizon.first)} and ${formatDate(boot.horizon.last)}. One time is plenty.`}
+        {opening(placement, boot)}
       </Bubble>
     </>
   );
@@ -405,14 +550,19 @@ function suggestReplies(
   offer: Offer | null,
   confirmed: boolean,
   messageCount: number,
-): Array<{ id: string; label: string }> {
+): Array<{ id: string; label: string; slotId?: string }> {
   if (confirmed) return [];
 
   if (offer && offer.options.length > 0) {
-    const replies = offer.options.map((slot) => ({
-      id: `Confirm ${prettyTime(slot.window.start)} on ${slot.date}`,
-      label: `Confirm ${prettyTime(slot.window.start)}–${prettyTime(slot.window.end)}`,
-    }));
+    // The day is part of the label because the alternatives span two of them. "Confirm 2-5pm"
+    // beside another "Confirm 2-5pm" is a coin flip for whoever is clicking.
+    const replies: Array<{ id: string; label: string; slotId?: string }> = offer.options.map(
+      (slot) => ({
+        id: slot.id,
+        slotId: slot.id,
+        label: `Confirm ${weekdayShort(slot.date)} ${prettyTime(slot.window.start)}–${prettyTime(slot.window.end)}`,
+      }),
+    );
     replies.push({ id: "Why this timing?", label: "Why this timing?" });
     // Only while another round remains -- offering a "no" that can only fail is worse than not
     // offering one. The cap itself is enforced server-side, from persisted rows.
@@ -425,11 +575,17 @@ function suggestReplies(
 
   if (messageCount === 0) {
     return [
-      { id: "I'm free Saturday morning.", label: "Saturday morning" },
-      { id: "Any time after 1 on Tuesday.", label: "Tuesday after 1" },
+      { id: "Friday morning works for me.", label: "Friday morning" },
+      { id: "I'm free Saturday afternoon.", label: "Saturday afternoon" },
     ];
   }
   return [];
+}
+
+/** "Fri" / "Sat". The alternatives span both cluster days, so a confirm button that names
+ *  only a time is ambiguous by construction. */
+function weekdayShort(iso: string): string {
+  return parseDate(iso).toLocaleDateString("en-GB", { weekday: "short" });
 }
 
 function prettyTime(hhmm: string): string {
@@ -484,7 +640,7 @@ function IntroForm({
   // old default shared a district with a seeded stop, so the map drew a 0 km leg between them and
   // the whole route looked fabricated.
   const [postal, setPostal] = useState("828761");
-  const [jobType, setJobType] = useState("sofa");
+  const [jobType, setJobType] = useState("pet_food_box");
   const [early, setEarly] = useState(false);
 
   return (
@@ -520,11 +676,10 @@ function IntroForm({
             className={cx(input, "font-mono")}
           />
         </Field>
-        <Field label="Item">
+        <Field label="Order">
           <select value={jobType} onChange={(e) => setJobType(e.target.value)} className={input}>
-            <option value="sofa">Sofa</option>
-            <option value="bed">Bed</option>
-            <option value="cabinet">Cabinet</option>
+            <option value="pet_food_box">Subscription box</option>
+            <option value="one_off_pet_order">One-off order</option>
             <option value="other">Other</option>
           </select>
         </Field>

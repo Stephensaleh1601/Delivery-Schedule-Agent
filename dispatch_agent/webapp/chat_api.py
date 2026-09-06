@@ -19,7 +19,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from dispatch_agent.agents.scheduling_agent import RuleDecisionAgent, handle_planning_event
+from dispatch_agent.agents import progress
+from dispatch_agent.agents.scheduling_agent import LLMDecisionAgent, handle_planning_event
 from dispatch_agent.agents.understanding import MessageReader
 from dispatch_agent.db import JobsRepository
 from dispatch_agent.models import (
@@ -28,7 +29,8 @@ from dispatch_agent.models import (
     PlanningEvent,
     PlanningEventType,
 )
-from dispatch_agent.planning import conversation, offer_service, tools
+from dispatch_agent.planning import clusters, conversation, offer_service, tools
+from dispatch_agent.planning.clock import PlanningClock
 
 router = APIRouter()
 
@@ -79,6 +81,17 @@ def receive_message(order_id: str, payload: InboundMessage) -> dict:
 
     inbound = conversation.record_inbound(repo, order_id, body)
 
+    # The trace starts here, so a client polling immediately sees the reading rather than an
+    # empty panel. Stale comment below about one model call per message: no longer true, the loop
+    # decides with the model now -- kept honest by the provenance fields at the end.
+    progress.begin(order_id)
+    progress.stage(
+        order_id,
+        "understanding",
+        "Understanding your request",
+        "Reading what you asked for, in your own words",
+    )
+
     live_offer = conversation.open_offer(repo, order_id)
     reader = MessageReader()
     understanding = reader.read(
@@ -89,11 +102,15 @@ def receive_message(order_id: str, payload: InboundMessage) -> dict:
         already_stated=_stated_labels(order),
     )
     said = understanding.interpretation
+    progress.finish_stage(
+        order_id, "understanding", detail=f"Understood as: {said.intent.replace('_', ' ')}"
+    )
 
     event = _event_for(order_id, said, live_offer, order)
     if event is None:
         # An acceptance we could not pin to a slot. Asking is the only safe answer -- booking the
         # nearest guess puts a van at the wrong door, and the customer cannot see it coming.
+        progress.complete(order_id, "Asked which of the offered times you meant.")
         return _turn(repo, order_id, extra_run=None)
 
     ctx = tools.ToolContext(repo=repo)
@@ -107,18 +124,29 @@ def receive_message(order_id: str, payload: InboundMessage) -> dict:
     #
     # The model still makes the decision that matters -- what the customer wants. What follows from
     # that is a procedure, and procedures do not need a language model.
+    # The model chooses the actions, from the set the state gate says are legal right now.
+    # `use_fallback=True` so a provider outage degrades to the standard procedure mid-run
+    # instead of ending the conversation -- and says so, per step, in the activity log.
     run = handle_planning_event(
-        event, repo=repo, ctx=ctx, decider=RuleDecisionAgent(), use_fallback=False
+        event, repo=repo, ctx=ctx, decider=LLMDecisionAgent(), use_fallback=True
     )
 
-    # Provenance of the READING, which is the decision that was actually made by a model. Recorded
-    # so the inspector says who understood the message rather than implying the steps were chosen
-    # by one.
-    run.decider = understanding.decider
-    run.model_id = understanding.model_id
-    run.decider_error = run.decider_error or understanding.fallback_reason
+    # Two providers, two fields. `decider`/`model_id` are set by the loop and say who chose the
+    # actions; these say who read the sentence. They used to be the same field, which was
+    # honest while the steps were rule-driven and would now claim the tools were picked by
+    # whatever parsed the message.
+    run.reader = understanding.decider
+    run.reader_model_id = understanding.model_id
+    run.reader_error = understanding.fallback_reason
     run.final_summary = run.final_summary or f"Read as: {said.intent}."
     repo.save_agent_run(run)
+
+    progress.complete(
+        order_id,
+        _progress_summary(run),
+        run_id=run.id,
+        ok=run.status is not AgentRunStatus.FAILED,
+    )
 
     return _turn(
         repo, order_id, extra_run=run, intent=said.intent,
@@ -184,15 +212,19 @@ def _event_for(order_id: str, said, live_offer, order):
             payload=payload,
         )
 
-    if said.intent == "provide_availability" and said.windows:
+    if said.intent == "provide_availability":
+        # Deliberately NOT `and said.windows`. "Any time works for me" is availability with no
+        # window in it, and treating that as unclear made the agent ask which day they wanted --
+        # a question we can already answer, because their delivery day comes from their address.
+        # The booking path handles an empty window list: the cluster search needs nothing stated.
+        payload = {
+            "intent": "provide_availability",
+            "is_fixed": said.is_fixed or conversation.is_only_option(order),
+        }
+        if said.windows:
+            payload["stated_windows"] = _windows_payload(said)
         return PlanningEvent(
-            event_type=PlanningEventType.NEW_ORDER,
-            order_id=order_id,
-            payload={
-                "intent": "provide_availability",
-                "stated_windows": _windows_payload(said),
-                "is_fixed": said.is_fixed or conversation.is_only_option(order),
-            },
+            event_type=PlanningEventType.NEW_ORDER, order_id=order_id, payload=payload
         )
 
     if said.intent == "explain":
@@ -200,6 +232,20 @@ def _event_for(order_id: str, said, live_offer, order):
             event_type=PlanningEventType.MANUAL_RETRY,
             order_id=order_id,
             payload={"intent": "explain", "message": said.note},
+        )
+
+    if said.intent == "policy_question":
+        # MANUAL_RETRY, like the other non-booking turns: it is a message that needs an answer and
+        # changes nothing. `question` carries the customer's own words, because that is what the
+        # knowledge base is searched with -- a paraphrase would be us deciding what they asked.
+        return PlanningEvent(
+            event_type=PlanningEventType.MANUAL_RETRY,
+            order_id=order_id,
+            payload={
+                "intent": "policy_question",
+                "message": said.note,
+                "question": said.note or "",
+            },
         )
 
     if said.intent == "general_support":
@@ -331,6 +377,10 @@ def _decision_for(repo: JobsRepository, order_id: str, extra_run, evaluations, s
             evaluations=evaluations if run is extra_run else None,
             suggestions=suggestions if run is extra_run else None,
             on_the_table=on_the_table,
+            # The live offer, so the cards can be built from the evidence stored on its slots
+            # rather than recomputed -- what the panel shows and what the customer was sent
+            # then cannot drift apart.
+            offer=live,
         )
         if record.meaningful:
             return {"decision": record.to_dict(), "decision_run_id": run.id}
@@ -363,8 +413,18 @@ def _turn(
     offers = {o.id: o for o in repo.offers_for_order(order_id)}
     live = conversation.open_offer(repo, order_id)
 
+    # Where this customer sits, computed here rather than in the browser. The greeting names their
+    # region, their delivery day and the three windows; all three come from the same module the
+    # search scopes itself with, so what they are told and what we actually look at agree by
+    # construction rather than by two copies staying in step.
+    placement = None
+    if order is not None:
+        cycle = PlanningClock.coordination_cycle(repo=repo)
+        placement = clusters.describe(order, list(cycle.dates) if cycle else [])
+
     return {
         "order_id": order_id,
+        "placement": placement,
         "intent": intent,
         "duplicate": duplicate,
         "planning_status": order.planning_status.value if order else None,
@@ -405,3 +465,77 @@ def list_messages(order_id: str) -> dict:
     if JobsRepository().get_job(order_id) is None:
         raise HTTPException(404, "Order not found")
     return _turn(JobsRepository(), order_id)
+
+
+def _progress_summary(run) -> str:
+    """One line for the finished panel, from the search's own counts.
+
+    Read off the persisted tool result rather than composed, for the same reason every other
+    figure on that screen is: a summary the model wrote about its own work is not evidence.
+    """
+    search = next((a for a in run.actions if a.tool == "find_insertion_options"), None)
+    if search is None or not search.data:
+        return run.final_summary or "Done."
+    d = search.data
+    valid = d.get("valid_count", 0)
+    return (
+        f"{valid} valid choice{'s' if valid != 1 else ''} found from "
+        f"{d.get('positions_tested', 0)} positions tested across "
+        f"{d.get('routes_checked', 0)} routes."
+    )
+
+
+@router.get("/api/orders/{order_id}/progress")
+def read_progress(order_id: str) -> dict:
+    """What the agent is doing, or what it did.
+
+    Live while a turn is in flight, and after it lands this rebuilds the same shape from the
+    persisted run -- so a judge who refreshes mid-demo sees the finished trace rather than an
+    empty panel, and the durations survive with it.
+    """
+    live = progress.read(order_id)
+    if live is not None:
+        return live
+
+    repo = JobsRepository()
+    runs = [
+        run
+        for run in repo.agent_runs_by_id(
+            [m.run_id for m in repo.messages(order_id) if m.run_id]
+        ).values()
+    ]
+    if not runs:
+        return {"order_id": order_id, "state": "idle", "stages": [], "summary": "", "seconds": 0}
+
+    run = max(runs, key=lambda r: r.started_at)
+    stages = []
+    previous = run.started_at
+    for action in run.actions:
+        if action.tool == "finish":
+            continue
+        label, why = progress.TOOL_STAGES.get(action.tool, (action.tool, ""))
+        stages.append(
+            {
+                "key": action.tool,
+                "label": label,
+                "reason": action.reason_summary or why,
+                "tool": action.tool,
+                "state": "done" if action.ok else "failed",
+                "detail": action.summary,
+                # Between one step's timestamp and the next: the closest honest reconstruction
+                # once the live timings are gone.
+                "seconds": round(max(0.0, (action.timestamp - previous).total_seconds()), 2),
+            }
+        )
+        previous = action.timestamp
+
+    return {
+        "order_id": order_id,
+        "run_id": run.id,
+        "state": "failed" if run.status is AgentRunStatus.FAILED else "done",
+        "summary": _progress_summary(run),
+        "seconds": round(
+            ((run.completed_at or run.started_at) - run.started_at).total_seconds(), 2
+        ),
+        "stages": stages,
+    }

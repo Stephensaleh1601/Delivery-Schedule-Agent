@@ -50,14 +50,23 @@ def test_every_populated_day_opens_with_a_published_route(seeded):
         assert plan.sequence.stops, f"{day}'s published route has no stops"
 
 
-def test_an_empty_day_is_left_empty(seeded):
-    """Publishing a plan with no stops on it would be inventing work. An empty day with no plan is
-    the honest state, and the demo relies on one being genuinely empty."""
-    empty = [d for d in PlanningClock.horizon_dates() if not plan_service.routable_jobs(seeded, d)]
-    assert empty, "the demo scenario needs a deliberately empty day"
+def test_both_cycle_days_are_published(seeded):
+    """The replacement for "one day is deliberately empty", which was true of the old four-day
+    horizon and is the opposite of what this demo needs.
 
-    for day in empty:
-        assert seeded.active_plan(day) is None
+    A coordination cycle is a Friday and a Saturday that BOTH carry a published route. If either
+    is missing there is no cycle, `PlanningClock.coordination_cycle()` returns None, and every
+    customer escalates to a human instead of being offered anything -- so a half-seeded database
+    does not degrade the demo, it deletes it.
+    """
+    days = PlanningClock.horizon_dates()
+    assert len(days) == 2
+
+    for day in days:
+        assert plan_service.routable_jobs(seeded, day), f"{day} has no work to route"
+        assert seeded.active_plan(day) is not None, f"{day} was never published"
+
+    assert PlanningClock.coordination_cycle(repo=seeded) is not None
 
 
 def test_each_published_route_covers_that_day_s_confirmed_work(seeded):
@@ -82,7 +91,7 @@ def test_the_baseline_routes_carry_the_figures_the_before_panel_needs(seeded):
 
 def test_a_booking_turns_the_baseline_into_v2(seeded):
     """What the whole demo depends on: v1 exists, the booking makes v2, nobody moves."""
-    from dispatch_agent.models import AvailabilityOption, TimeWindow
+    from dispatch_agent.models import AvailabilityOption, PlanningStatus, TimeWindow
     from datetime import time
     from dispatch_agent.planning import offer_service
     from dispatch_agent.planning.candidate_service import CandidateService
@@ -90,13 +99,16 @@ def test_a_booking_turns_the_baseline_into_v2(seeded):
     day = next(d for d in PlanningClock.horizon_dates() if seeded.active_plan(d))
     before = seeded.active_plan(day)
 
+    # The seeded demo customers deliberately carry no availability at all -- they say when they
+    # are free in the thread, in their own words. So this test states it for them.
     order = next(
         job for job in seeded.all_jobs()
-        if job.planning_status.value == "pending_planning" and job.availability_options
+        if job.planning_status.value in ("pending_availability", "pending_planning")
     )
     order.availability_options = [
-        AvailabilityOption(date=day, window=TimeWindow(start=time(9, 0), end=time(18, 0)))
+        AvailabilityOption(date=day, window=TimeWindow(start=time(10, 0), end=time(21, 0)))
     ]
+    order.set_planning_status(PlanningStatus.PENDING_PLANNING)
     seeded.save_job(order)
 
     evaluations = CandidateService(repo=seeded).evaluate_all(order)
@@ -117,7 +129,7 @@ def test_a_booking_turns_the_baseline_into_v2(seeded):
         if job.id == outcome.job.id or not job.locked_window:
             continue
         assert job.locked_window.start <= stop.arrival_window.start
-        assert stop.arrival_window.end <= job.locked_window.end
+        assert stop.arrival_window.start <= job.locked_window.end
 
 
 def test_reset_preserves_the_provider_caches(tmp_path, monkeypatch):

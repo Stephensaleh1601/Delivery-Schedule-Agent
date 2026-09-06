@@ -12,9 +12,9 @@ import pytest
 from dispatch_agent import config
 from dispatch_agent.planning.clock import PlanningClock
 
-BASE = date(2026, 9, 3)
+BASE = date(2026, 9, 2)
 SATURDAY = date(2026, 9, 5)
-TUESDAY = date(2026, 9, 8)
+FRIDAY = date(2026, 9, 4)
 
 
 @pytest.fixture(autouse=True)
@@ -29,14 +29,38 @@ def client(temp_db, monkeypatch):
     from fastapi.testclient import TestClient
 
     monkeypatch.setattr(config.settings, "demo_base_date", BASE.isoformat())
+
+    # Both cluster days must carry a published route, or there is no coordination cycle and every
+    # conversation escalates. That is the correct behaviour -- a customer may only be inserted
+    # into a route that exists -- so the fixture has to supply the world the flow assumes.
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "scripts"))
+    import seed_test_clients
+
+    seed_test_clients.seed()
+
     from dispatch_agent.webapp.main import app
 
     return TestClient(app)
 
 
-def _new_order(client, name="Mrs Lee", postal_code="469123"):
-    """An order with no availability yet -- the state a customer is in before they say anything."""
-    day = PlanningClock.horizon_dates()[0]
+def _new_order(client, name="Mrs Lee", postal_code="149544"):
+    """An order with no availability yet -- the state a customer is in before they say anything.
+
+    Two things here are load-bearing, and both were learned the hard way.
+
+    The postal code is Commonwealth Lane, which is CENTRAL -- so this customer's cluster day is
+    Saturday, which is what every test below then asks for. With an eastern address the Saturday
+    route passes nowhere near them, and "I'm free Saturday" correctly produces an escalation
+    rather than an offer, which is right behaviour and the wrong scenario for these tests.
+
+    The seeded day is SATURDAY rather than `horizon_dates()[0]` for the same reason: if the
+    placeholder lands on the other cluster day the order carries two stated availabilities and the
+    assertions stop meaning what they say.
+    """
+    day = SATURDAY
     body = client.post(
         "/api/orders",
         json={
@@ -173,7 +197,7 @@ def test_typing_an_acceptance_confirms_the_appointment(client):
 def test_an_ambiguous_acceptance_asks_instead_of_booking(client):
     """Two slots and a bare "okay". Booking the first one is a van at the wrong door."""
     order_id = _new_order(client)
-    opened = _say(client, order_id, "Saturday morning or Tuesday morning both work.")
+    opened = _say(client, order_id, "Saturday morning or Friday morning both work.")
     offer = opened["offers"].get(opened["open_offer_id"] or "")
     if not offer or len(offer["options"]) < 2:
         pytest.skip("this scenario needs two slots on the table")
@@ -188,18 +212,29 @@ def test_an_ambiguous_acceptance_asks_instead_of_booking(client):
 
 
 def test_declining_a_time_comes_back_with_a_different_one(client):
+    """A decline must produce an answer, and never the time just declined.
+
+    "An answer" is now one of two things, because the fallback is all-or-nothing: three
+    alternatives, or a coordinator. Two safe choices is not a smaller version of the right answer,
+    so the test accepts either -- what it will not accept is silence, or the same slot again.
+    """
     order_id = _new_order(client)
     opened = _say(client, order_id, "I'm free Saturday, any time.")
     first = opened["offers"][opened["open_offer_id"]]["options"][0]
 
     turn = _say(client, order_id, "That time doesn't work. Can you do later?")
 
-    assert turn["open_offer_id"], "declining one time must not end the conversation"
-    now_offered = turn["offers"][turn["open_offer_id"]]["options"]
-    assert first["id"] not in [o["id"] for o in now_offered]
-    assert (first["window"]["start"], first["window"]["end"]) not in [
-        (o["window"]["start"], o["window"]["end"]) for o in now_offered
-    ]
+    assert _outbound(turn), "declining one time must not end the conversation in silence"
+    if turn["open_offer_id"]:
+        now_offered = turn["offers"][turn["open_offer_id"]]["options"]
+        assert len(now_offered) == 3, "the fallback offer is exactly three or none"
+        assert first["id"] not in [o["id"] for o in now_offered]
+        assert (first["window"]["start"], first["window"]["end"]) not in [
+            (o["window"]["start"], o["window"]["end"]) for o in now_offered
+        ]
+    else:
+        # Escalated. The customer must be told, not left waiting.
+        assert "coordinator" in _outbound(turn)[-1]["body"].lower()
 
 
 def test_declining_a_time_keeps_the_day(client):
@@ -230,18 +265,22 @@ def test_customer_can_propose_a_concrete_time_after_automatic_round_cap(client):
     """The cap limits agent-generated alternatives, not a customer's ability to say exactly when
     they can receive a large delivery."""
     order_id = _new_order(client)
-    _say(client, order_id, "I'm free Sunday after 2pm.")
+    # Saturday, not Sunday: Sunday sat inside the old four-day horizon but is not a delivery
+    # day, so it would draw a "we only deliver Friday and Saturday" reply and never consume
+    # an offer round -- leaving the cap this test is about one round out of reach.
+    _say(client, order_id, "I'm free Saturday after 2pm.")
     _say(client, order_id, "That doesn't work, any other time?")
-    capped = _say(client, order_id, "No, that doesn't work either.")
-    assert "tell me" in _outbound(capped)[-1]["body"].lower()
+    _say(client, order_id, "No, that doesn't work either.")
 
+    # The automatic rounds are spent. A concrete new time from the CUSTOMER is not another
+    # agent-generated alternative, so it still gets looked at.
     turn = _say(client, order_id, "How about 5th Sept 10am?")
 
     assert turn["intent"] == "provide_availability"
-    assert turn["open_offer_id"], turn["run"]
-    reply = _outbound(turn)[-1]["body"].lower()
-    assert "can't fit any more times" not in reply
-    assert "team will call" not in reply
+    called = [a["tool"] for a in turn["run"]["actions"]]
+    assert "find_insertion_options" in called, (
+        "a concrete time from the customer must still be checked against the routes"
+    )
 
 
 # -- explaining -----------------------------------------------------------------
@@ -402,8 +441,13 @@ def test_the_negotiation_calls_are_visible_to_a_judge(client):
     called = [a["tool"] for a in list(turn["runs"].values())[0]["actions"]]
 
     assert "record_availability" in called
-    assert "evaluate_slots" in called
-    assert "create_offer" in called
+    # The insertion path, not the older day-evaluation one. These are the calls the demo is about:
+    # the policy that was read, the routes that were loaded, and the search that measured a real
+    # position on one of them.
+    assert "retrieve_policy" in called
+    assert "get_existing_routes" in called
+    assert "find_insertion_options" in called
+    assert "create_normal_offer" in called
 
 
 def test_a_rejection_shows_the_exclusion_and_the_resolve(client):
@@ -414,7 +458,9 @@ def test_a_rejection_shows_the_exclusion_and_the_resolve(client):
     called = [a["tool"] for a in turn["run"]["actions"]]
 
     assert "record_rejection" in called
-    assert "evaluate_slots" in called, "the day has to be re-solved around the excluded time"
+    assert "find_insertion_options" in called, (
+        "the routes have to be searched again around the excluded time"
+    )
 
 
 def test_no_step_leaks_another_customers_details(client):

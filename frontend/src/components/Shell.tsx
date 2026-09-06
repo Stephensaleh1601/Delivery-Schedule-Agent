@@ -20,6 +20,9 @@ const NAV = [
   { href: "/", label: "Orders", hint: "Every booking and where it stands" },
   { href: "/routes", label: "Daily Routes", hint: "The four days, mapped" },
   { href: "/chat", label: "Customer Chat", hint: "Booking, with the agent's working" },
+  // Last, and deliberately so: it explains the three above it, so it only makes sense to someone
+  // who has already seen one of them -- or to a visitor who wants the story before the product.
+  { href: "/about", label: "About", hint: "What this is, in ten slides" },
 ];
 
 export function Shell({ children }: { children: ReactNode }) {

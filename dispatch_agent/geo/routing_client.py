@@ -101,6 +101,20 @@ class RoutingClient:
             for i, a in enumerate(points)
         ]
 
+    def leg(self, origin: Coordinates, destination: Coordinates) -> dict:
+        """One leg as {"minutes", "km"}, from the cache -- no provider call, ever.
+
+        The public face of `_cached_leg`, for callers that ask about the same points hundreds of
+        times. `drive_minutes` and `distance_km` each make their own provider request, which is
+        right for a one-off display figure and ruinous for a search: the insertion search asked
+        236 times per run and spent 34 seconds doing it.
+
+        Warm the cache first with `matrix(points)` -- one batched request covering every pair --
+        and then every lookup here is free. Uncached pairs fall back to the haversine estimate
+        rather than reaching out, so this can never surprise a caller with latency.
+        """
+        return self._cached_leg(origin, destination)
+
     def _cached_leg(self, origin: Coordinates, destination: Coordinates) -> dict:
         """The cached value for one leg, falling back to haversine if the provider never
         supplied one (unconfigured, unreachable, or the pair was rejected as implausible)."""

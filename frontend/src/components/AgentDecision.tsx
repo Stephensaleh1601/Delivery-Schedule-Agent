@@ -45,7 +45,11 @@ export function AgentDecision({ decision }: { decision: Decision }) {
       {decision.candidates.length > 0 && (
         <section className="flex flex-col gap-2">
           <Eyebrow>
-            {decision.candidates.length === 1 ? "The option" : "The two real choices"}
+            {/* Counted, not hard-coded: the fallback offers three, and a heading that says "two"
+              while three cards sit under it is the panel contradicting itself. */}
+            {decision.candidates.length === 1
+              ? "The option"
+              : `Route-friendly options (${decision.candidates.length})`}
           </Eyebrow>
           <div
             className={cx(
@@ -73,6 +77,34 @@ export function AgentDecision({ decision }: { decision: Decision }) {
           <p className="mt-1 text-[14px] font-medium leading-[1.5] text-ink">
             {decision.decision}
           </p>
+        </section>
+      )}
+
+      {decision.evidence.length > 0 && (
+        <section className="flex flex-col gap-1">
+          <Eyebrow>What the agent checked</Eyebrow>
+          <ul className="flex flex-col gap-0.5">
+            {decision.evidence.map((row) => (
+              <li
+                key={row.text}
+                className="flex gap-2 text-[12.5px] leading-[1.5] text-ink-soft"
+              >
+                <span
+                  aria-hidden
+                  className={cx(
+                    "mt-[5px] text-[10px]",
+                    row.tone === "removed" && "text-ink-faint",
+                    row.tone === "solved" && "text-locked",
+                    row.tone === "found" && "text-accent",
+                    row.tone === "neutral" && "text-ink-faint",
+                  )}
+                >
+                  {row.tone === "removed" ? "−" : row.tone === "solved" ? "✓" : "·"}
+                </span>
+                {row.text}
+              </li>
+            ))}
+          </ul>
         </section>
       )}
 

@@ -103,3 +103,22 @@ export const STATUS_LABELS: Record<string, string> = {
   cancelled: "Cancelled",
   exception: "Needs a coordinator",
 };
+
+/** What the customer ordered, in words a coordinator would use.
+ *
+ * The furniture values are still in the backend enum so rows written before the business changed
+ * still validate when read back -- they are never offered, but a legacy row must not render as a
+ * raw identifier if one surfaces. Anything unrecognised falls through to title case.
+ */
+export const ORDER_LABELS: Record<string, string> = {
+  pet_food_box: "Subscription box",
+  one_off_pet_order: "One-off order",
+  other: "Other",
+  sofa: "Sofa (legacy)",
+  bed: "Bed (legacy)",
+  cabinet: "Cabinet (legacy)",
+};
+
+export function orderLabel(jobType: string): string {
+  return ORDER_LABELS[jobType] ?? titleCase(jobType);
+}
