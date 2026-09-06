@@ -1,273 +1,370 @@
 # Slide 1 — Title
 
-## Smarter delivery promises for purchases that cannot be left at the door
+*Judging criterion: presentation*
 
-An AI scheduling agent that finds a customer-approved delivery time while minimising delivery cost.
+## Nobody should spend an afternoon asking 40 people when they are home
 
-**[Product name]**  
-SimplifyNext Agentic AI Hackathon 2026  
-**Team:** [Names]
+An AI helper that agrees a delivery time with every customer by text message —
+and only offers times the van can actually make.
+
+**Built with** Floof.sg, a Singapore company that delivers fresh pet food
+**IGNITE Agentic AI Hackathon 2026** · Digital track
+**Team:** Majestic Fighters
 
 ---
 
 # Slide 2 — The problem
 
-## One experienced coordinator is holding the entire process together
+*Judging criterion: presentation*
 
-Large purchases such as doors, furniture and appliances cannot simply be left outside. The customer must be present to provide access and accept the delivery.
+## Two hard jobs, both done by hand
 
-From our conversations with delivery businesses, the current process is highly manual:
+Floof.sg makes fresh pet food. It goes bad in Singapore's heat, so it can't be
+left at the door. **Someone has to be home.** That means every order needs a
+time the customer said yes to.
 
-```text
-Contact every customer
-        ↓
-Negotiate several possible timings
-        ↓
-Record everything in a spreadsheet
-        ↓
-Manually group and sequence deliveries
-        ↓
-Redo the plan whenever something changes
+### Hard job 1 — asking everyone
+
+```
+   40 orders                one person,               and if one person
+   for the week      →      a whole afternoon   →     says "not Friday",
+                            of WhatsApp               you start again
 ```
 
-> “One person sits down, collects a few possible timings from every customer, then maps the routes using their experience of Singapore’s roads.”
+> "It's more to negotiate with the customers when is the delivery time slots
+> they prefer. **That's the hardest part.**"
+> — Floof.sg, 5 Sep 2026
 
-*Paraphrased from industry conversations.*
+### Hard job 2 — deciding who to visit first
 
-### Why this matters
+```
+   Good order:   depot → A → B → C → D → home      short drive, everyone on time
 
-- Route quality depends on one employee’s personal knowledge.
-- Customer availability and route efficiency are planned separately.
-- A cancellation or product delay can force the route to be rebuilt.
-- A failed delivery is costly because the item cannot be left unattended.
+   Bad order:    depot → A → D → B → C → home      long detours, and the
+                          └──────┘  └──┘           last people wait all day
+```
+
+Getting the order wrong means big detours. Big detours mean late deliveries.
+Right now a person works this out by hand — and drivers still change it on the
+road when something comes up.
+
+### The problem, in one sentence
+
+> A delivery coordinator at Floof.sg needs a way to agree a time with every
+> customer **and** put them in a sensible driving order, **because** doing both
+> by hand takes a whole afternoon, and one "sorry, not Friday" undoes it.
 
 ---
 
-# Slide 3 — The planning goal
+# Slide 3 — What we built
 
-## Find a customer-approved timing with the lowest delivery cost
+*Judging criterion: effectiveness*
 
-The objective is not simply to find the shortest route or automatically accept the customer’s first preference.
+## The customer texts. The helper answers with a time it can keep.
 
-### Customer suitability comes first
+```
+   Customer                    Our helper                 The van's day
+   ────────                    ──────────                 ─────────────
 
-The agent removes any timing that:
-
-- Is outside the customer’s stated availability
-- Has insufficient driver or vehicle capacity
-- Would exceed working hours
-- Has a product that is not ready
-- Would break another confirmed appointment
-
-### Route efficiency decides between the workable options
-
-For every feasible timing, the agent measures:
-
-- Additional driving time and distance
-- Route completion time
-- Potential driver overtime
-- Whether another delivery day must be opened
-- Available vehicle and driver capacity
-- Customer preference
-
-```text
-Customer-approved timings
-            +
-Operational route impact
-            ↓
-Best overall appointment options
+   "I'm free                 reads the                  looks at Friday's
+    Saturday      ──────►    message      ──────►       real route
+    morning"                                                  │
+                                                              ▼
+   "Yes, that                 offers ONE                 finds a gap
+    works"        ◄──────     time it can  ◄──────       between two
+                              keep                       real stops
+        │
+        ▼
+   Booked. The route updates. Nobody else gets moved.
 ```
 
-### Why plan 2–4 days ahead?
+No forms. No "please give us three options". One message, one answer.
 
-Based on our industry conversations, coordinators typically plan several days in advance.
+### The two customers in our demo
 
-This gives the agent enough flexibility to group nearby deliveries while remaining close enough to know which products will actually be ready.
+| | what they do | what the helper does |
+|---|---|---|
+| **Mrs Chua** | says yes straight away | one search, one offer, done |
+| **Mr Rajan** | says no, twice | looks wider, offers three, or asks a person for help |
 
-### What “cost” means
-
-For the prototype, cost is represented as **route impact**:
-
-```text
-Route impact =
-additional driving
-+ overtime impact
-+ opening an otherwise empty delivery day
-```
-
-It is not yet a dollar amount.
-
-In production, it can be converted into money using:
-
-```text
-Driver and vehicle hours
-+ fuel or charging cost per kilometre
-+ overtime
-+ additional vehicle deployment
-```
-
-> The agent protects the customer’s acceptable timings while minimising the operational cost of fulfilling that promise.
+About 7 in 10 customers are like Mrs Chua. We built it so the other 3 still get
+a good answer.
 
 ---
 
-# Slide 4 — Technical architecture
+# Slide 4 — Why an AI agent, and not just a form
 
-## One scheduling agent connects the customer, delivery data and route engine
+*Judging criterion: originality*
 
-### Architecture diagram
+## A form can take a time. It can't have a conversation.
 
-```text
-                         PLANNING TRIGGERS
-            Product ready • Customer reply • Product delay
-                                  │
-                                  ▼
-┌──────────────┐       ┌───────────────────────────┐
-│   Customer   │◄─────►│ Mock WhatsApp Conversation│
-└──────────────┘       └─────────────┬─────────────┘
-                                     │
-                                     ▼
-                          ┌────────────────────────┐
-                          │    Scheduling Agent    │
-                          │ Claude + AWS Bedrock   │
-                          │ LangGraph workflow     │
-                          └────────────┬───────────┘
-                                       │
-       ┌───────────────────────────────┼────────────────────────────┐
-       ▼                               ▼                            ▼
-┌──────────────────┐       ┌────────────────────┐       ┌────────────────────┐
-│ Customer Tools   │       │ Route Evaluation   │       │ Operations Tools   │
-│ Create offer     │       │ OR-Tools solver    │       │ Lock appointment   │
-│ Send message     │       │ Google Maps data   │       │ Replan route       │
-└────────┬─────────┘       └─────────┬──────────┘       └─────────┬──────────┘
-         │                           │                            │
-         └───────────────────────────┼────────────────────────────┘
-                                     ▼
-                          ┌────────────────────────┐
-                          │ Orders and Route State │
-                          │ FastAPI + SQLite       │
-                          └────────────┬───────────┘
-                                       │
-                         ┌─────────────┴─────────────┐
-                         ▼                           ▼
-              Confirmed customer slot      Daily driver route
+```
+   A FORM                              OUR AGENT
+
+   asks a fixed question               reads what they actually wrote
+   takes a fixed answer                "Sat morning", "after 1", "not Friday"
+
+   offers whatever is free             offers what the van can really do
+                                       and explains why
+
+   gives up when they say no           tries somewhere else when they say no
+
+   answers nothing else                answers "why that time?" and
+                                       "can you leave it at my door?"
 ```
 
-### Core entities
+An "agent" just means software that can **plan**, **do things**, and **change
+its mind** when it gets new information:
 
-```text
-Customer
-   ↓
-Order
-   ↓
-Availability windows
-   ↓
-Appointment offer
-   ↓
-Confirmed appointment
-   ↓
-Route plan and numbered stops
-```
-
-The system also stores each route version, agent run and actual tool call for traceability.
+- **Plans** — works out where this customer fits into a day that's already busy
+- **Does** — offers a time, books it, replies, updates the route
+- **Changes its mind** — a "no" makes it search somewhere different, not just
+  say sorry
 
 ---
 
-# Slide 5 — Expected user flow
+# Slide 5 — How it is built
 
-## The customer sees a simple conversation; the agent performs the planning behind it
+*Judging criterion: technical quality*
 
-| Customer experience | What happens behind the scenes |
+## Everything comes back to the same question
+
+Each box is marked **[AI]** or **[CODE]**. The AI appears twice — and neither
+time does it touch a number.
+
+```
+        A customer texts  —  or a scheduled run starts
+                     handle_planning_event()
+                              │
+                              ▼
+                Work out what they want        [AI] [CODE]
+          Their words, quoted. Then turned into real dates.
+        agents/understanding.py → planning/language.py
+                              │
+                              ▼
+                         MAIN AGENT            [AI]
+                   "What should I do next?"
+          agents/scheduling_agent.py  observe → decide → act
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        ▼                     ▼                     ▼
+  POLICY TOOLS           ROUTE TOOLS           ACTION TOOLS
+  reads the KB:          reads the published   reads the order book
+  delivery-policy.md     routes, measured      and the customer's
+  26 numbered rules      with OR-Tools         thread
+
+  search_delivery_       find_normal_slot      confirm_offer
+    policy                 their own day         book what they took
+    find the rule        find_requested_       explain_offer
+  retrieve_policy          day_slot              say why that time
+    pull up a topic        the day they named  escalate_booking
+                         find_fallback_          hand to a person
+                           options             send_message
+                           both days, only       send the wording
+                           after a "no"          the tool produced
+        │                     │                     │
+    comes back            comes back            comes back
+        │                     │                     │
+  The rule text,        Times PROVED against  A booking, and one
+  and its number        the real route,       reply the customer
+  (WINDOW-1)            never guessed         actually sees
+        │                     │                     │
+        └─────────────────────┼─────────────────────┘
+                              ▼
+                MAIN AGENT DECIDES AGAIN       [AI]
+            Given what came back — is this finished?
+                              │
+                              ▼
+                  Finish, or go round again
+                     MAX_TOOL_STEPS = 10
+          a counter in the code, not the AI's judgement
+```
+
+The finished route goes to the driver from the coordinator's screen, the day
+before. That is deliberately **not** one of the agent's tools — a customer
+conversation can never dispatch a van.
+
+**Six actions, not sixty.** Each is a whole job, the way a person would think
+about it. A long list of small steps is a long list of chances to pick wrong.
+
+**It can't search the wrong day.** Which days an action may read is built into
+that action, not typed in by the AI. "Their usual day" can only see one day.
+
+---
+
+# Slide 6 — The one big rule
+
+*Judging criterion: originality*
+
+## The AI chooses. The maths decides what's true.
+
+```
+   ┌──────────────────────────┐      ┌──────────────────────────┐
+   │         THE AI           │      │        THE MATHS         │
+   │                          │      │                          │
+   │  reads the message       │      │  works out the dates     │
+   │  picks one of 6 jobs     │      │  measures the driving    │
+   │  repeats their words:    │      │  checks the time fits    │
+   │   "Saturday morning"     │      │  puts options in order   │
+   │                          │      │                          │
+   │  never works out a date  │      │  never guesses           │
+   │  never invents a time    │      │                          │
+   └──────────────────────────┘      └──────────────────────────┘
+             chooses                          decides
+```
+
+AI can sound confident and still be wrong. "Next Tuesday is the 15th" — is it?
+
+So we never let it do the sums. It only repeats the customer's own words
+("Saturday morning"), and our code works out what that actually means. **There
+is nowhere for a made-up date to get in.**
+
+### We tested this on a real AI. Twice it misbehaved:
+
+| What it did | What we did about it |
 |---|---|
-| Product becomes ready for delivery | A product-readiness event starts the scheduling workflow |
-| Customer receives a WhatsApp message | The agent requests 2–3 available windows, 2–4 days ahead |
-| Customer submits several possible timings | Availability is saved against the order |
-| Customer sees “Checking available delivery slots…” | `evaluate_slots` tests every timing using OR-Tools and Google Maps |
-| Customer receives the best workable options | `create_offer` selects the feasible options with the lowest route impact |
-| Appointment options arrive through WhatsApp | `send_message` delivers the offer |
-| Customer confirms an option | `lock_appointment` protects the customer promise |
-| Customer receives confirmation | The affected route is published as a new version |
-| Customer receives a delivery reminder | The coordinator and driver receive the final numbered route |
+| Booked a slot while its own question was still unanswered | Now the code refuses unless the customer really said yes |
+| Rewrote our message into "Dear Mrs Lee… Best regards" and deleted the reason | Now the code sends the message, not the AI's rewrite |
 
-### Actual agent tool sequence
-
-```text
-evaluate_slots
-Tests every customer-approved timing against its possible route
-        ↓
-create_offer
-Chooses the best feasible appointment options
-        ↓
-send_message
-Sends those options through WhatsApp
-        ↓
-lock_appointment
-Locks the selected appointment and updates the route
-        ↓
-finish
-Records that the task has completed
-```
-
-### When something changes
-
-```text
-Product becomes delayed
-        ↓
-replan_day
-Rebuilds the route without moving confirmed appointments
-        ↓
-find_ready_replacements
-Finds another waiting customer who can use the freed capacity
-        ↓
-create_offer
-Offers the recovered slot through WhatsApp
-        ↓
-Customer accepts
-        ↓
-Appointment locks and the next route version is published
-```
-
-The interface shows the real tool name, input, result and a short decision summary. It does not expose private chain-of-thought.
+Telling it "please don't" didn't work. So we made it impossible.
 
 ---
 
-# Slide 6 — Impact and conclusion
+# Slide 7 — Fitting someone into a day that's already planned
 
-## Better customer choice without sacrificing delivery efficiency
+*Judging criterion: technical quality*
 
-### New appointment
+## Slide them in. Don't rebuild the whole day.
 
-```text
-Customer provided             3 workable timings
-Options evaluated             3 upcoming delivery routes
-Selected appointment          [Date and time]
-Route version                 v1 → v2
-Additional driving            +[X] minutes
-New delivery day required     No
-Confirmed appointments moved  0
+Floof.sg delivers on **two days a week**. Each day covers one part of Singapore:
+
+```
+   FRIDAY                              SATURDAY
+   North · North-East · South · East   Central · City · West
 ```
 
-### Operational disruption
+So your address already tells us your normal day. Then we look for a gap:
 
-```text
-Product delayed               1 order removed
-Route version                 v2 → v3
-Driving time                  [X] min → [X] min
-Freed capacity                1 delivery slot
-Replacement delivery offered  1
-Confirmed appointments moved  0
+```
+   Friday's van, already planned:
+
+   depot ──► Chen Li Hua ──► [ NEW HERE? ] ──► Marcus Tan ──► ... ──► depot
+                    ▲               ▲                ▲
+              is the new       we try both      does everyone
+              customer         before and       after still
+              nearby?          after            arrive on time?
+              (within 10km)
 ```
 
-*Replace the bracketed values with the final clean demo results.*
+| The rule | In plain words |
+|---|---|
+| Don't shuffle | everyone already booked stays exactly where they are |
+| Don't make anyone late | we check every later stop, we don't just hope |
+| Don't add a new day | it can only fill days the van is already driving |
+| One offer, or three | one good time normally; three only if they say no |
 
-### Business value
+Customers get a wide window — **morning 10–2, afternoon 2–5, evening 5–9** —
+because that's what the business can honestly promise. Not a fake 15-minute slot.
 
-- Less coordinator time spent negotiating and rebuilding routes
-- Lower driving, overtime and vehicle-deployment costs
-- Fewer failed delivery attempts for high-value purchases
-- Route-planning knowledge is no longer trapped with one employee
-- Confirmed customer promises remain protected during disruptions
-- Applicable to doors, furniture, appliances, installations and field services
+---
 
-> Every customer gets a workable choice. Every driver gets a better route. Every confirmed promise remains protected.
+# Slide 8 — What the office sees
 
-**Implementation note:** the application currently allows N+2 to N+5. Change the maximum to N+4 if the presentation and interview evidence will consistently say “2–4 days ahead.”
+*Judging criterion: technical quality*
+
+## Three screens, and the helper shows its working
+
+```
+   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+   │   ORDERS     │  │    ROUTES    │  │     CHAT     │
+   │              │  │              │  │              │
+   │ every order  │  │ Friday and   │  │ the customer │
+   │ and where    │  │ Saturday on  │  │ chat, and    │
+   │ it's up to   │  │ a map, in    │  │ what the     │
+   │              │  │ visit order  │  │ helper did   │
+   └──────────────┘  └──────────────┘  └──────────────┘
+```
+
+While the customer waits a few seconds, the screen says what's really happening
+instead of just spinning:
+
+```
+   ✓ Read the message                        0.9s
+   ✓ Checked Friday's route — 17 stops       2.3s
+   ✓ Offered 2–5pm, right after Chen Li Hua  0.4s
+```
+
+Every line is written by the part of the program that actually did that thing,
+at the moment it did it. Nothing is faked to look busy.
+
+### What production still needs
+
+| Ready now | Swap-ins, clearly marked |
+|---|---|
+| The agent, the route maths, the written rules, the console, the database | Real WhatsApp instead of our simulated thread |
+| Python · FastAPI · Next.js · OR-Tools · Claude on AWS Bedrock | Floof.sg's own address lookup |
+
+Each swap-in sits behind one interface, with a working stand-in today. Nothing
+else has to change around it.
+
+---
+
+# Slide 9 — How do we know it works?
+
+*Judging criterion: effectiveness*
+
+## We check it, we don't just claim it
+
+| What we check | Where it stands |
+|---|---|
+| **Automatic tests** | 429 of them — they run every rule on slide 7 |
+| **Tests that call the internet** | none, on purpose. So results never change by accident |
+| **Can it get stuck in a loop?** | no — it's cut off after 10 steps, and it can't argue |
+| **Can it invent an action?** | no — anything it makes up is refused, not guessed at |
+| **Can we see why it said that?** | yes — every answer points to the written rule behind it |
+
+### Two things we chose *not* to do
+
+**We never show one big "score".** A single number that mixes driving minutes
+with made-up penalties looks meaningful and isn't. We show the real parts
+instead: minutes, kilometres, extra hours.
+
+**We never let the AI describe the route.** It would happily say "we'll be in
+the East that morning" when the van isn't going there. Those sentences are
+built from the real planned route.
+
+---
+
+# Slide 10 — What changes, and what's next
+
+*Judging criterion: benefits*
+
+## An afternoon of texting becomes something that answers itself
+
+| Before | After |
+|---|---|
+| One person, one afternoon, 40 customers | Each customer answered as they reply |
+| Drivers sorting out times between stops | Drivers get a finished route the day before |
+| "Not Friday" means starting over | A "no" makes it look somewhere else, by itself |
+| The plan is in one person's head | Every decision can be looked up later |
+
+### Why it spreads easily
+
+| | |
+|---|---|
+| **More days** | Delivery days are settings, not code. Add Tuesday and it plans Tuesday |
+| **More vans** | The route maths already solves one day. A second van is a second day to solve |
+| **Other trades** | Anything where somebody must be home: groceries, medicine, repairs, installs |
+
+```
+   now              →   regular customers   →   more days,        →   any delivery
+                        get rebooked            more vans             where someone
+   two days,            automatically                                 must be home
+   one van each         every week
+```
+
+This isn't really about pet food.
+
+> Every customer gets a time they agreed to.
+> Every driver gets a route that makes sense.
+> Nobody spends an afternoon on WhatsApp.
