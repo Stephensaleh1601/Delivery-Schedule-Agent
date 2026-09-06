@@ -16,11 +16,21 @@ The guarantee, and why it is here rather than in a comment:
 """
 from __future__ import annotations
 
+import hashlib
+from datetime import date as Date
+from time import monotonic, sleep
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from dispatch_agent.agents import progress
-from dispatch_agent.agents.scheduling_agent import LLMDecisionAgent, handle_planning_event
+from dispatch_agent.agents.scheduling_agent import (
+    LLMDecisionAgent,
+    RuleDecisionAgent,
+    handle_planning_event,
+    reserve_planning_run,
+)
+from dispatch_agent.config import settings
 from dispatch_agent.agents.understanding import MessageReader
 from dispatch_agent.db import JobsRepository
 from dispatch_agent.models import (
@@ -33,6 +43,7 @@ from dispatch_agent.planning import clusters, conversation, offer_service, tools
 from dispatch_agent.planning.clock import PlanningClock
 
 router = APIRouter()
+REPLAY_WAIT_SECONDS = 15.0
 
 
 class InboundMessage(BaseModel):
@@ -40,6 +51,42 @@ class InboundMessage(BaseModel):
     # Optional client-supplied key. A retry with the same key returns what happened the first time
     # rather than starting a second negotiation.
     client_message_id: str | None = None
+
+
+def _client_event_id(kind: str, scope: str, key: str) -> str:
+    """A compact, namespaced event id derived from a client retry key."""
+    digest = hashlib.sha256(f"{kind}:{scope}:{key}".encode()).hexdigest()[:24]
+    return f"client-{digest}"
+
+
+def _body_hash(body: str) -> str:
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def _assert_same_retry(event: PlanningEvent, body: str) -> None:
+    expected = event.payload.get("_client_body_sha256")
+    if expected and expected != _body_hash(body):
+        raise HTTPException(409, "client_message_id was already used for a different message")
+
+
+def _replayed_turn(repo: JobsRepository, order_id: str, event_id: str, body: str) -> dict:
+    """Return the winner's completed turn, never a blank snapshot of work still in flight."""
+    event = repo.get_planning_event(event_id)
+    if event is None:
+        raise HTTPException(409, "Message reservation disappeared; please retry")
+    _assert_same_retry(event, body)
+
+    deadline = monotonic() + REPLAY_WAIT_SECONDS
+    while True:
+        run = repo.agent_run_for_event(event_id)
+        if run is not None and run.status is not AgentRunStatus.RUNNING:
+            return _turn(repo, order_id, duplicate=True)
+        if monotonic() >= deadline:
+            # A crashed worker must not turn a retry into a false 200 with an empty conversation.
+            # This response is explicitly retryable; a healthy concurrent winner normally finishes
+            # inside the wait and returns its complete persisted turn above.
+            raise HTTPException(409, "That message is still processing; please retry shortly")
+        sleep(0.05)
 
 
 def _slot_labels(offer) -> list[str]:
@@ -74,23 +121,20 @@ def receive_message(order_id: str, payload: InboundMessage) -> dict:
     if not body:
         raise HTTPException(400, "Empty message")
 
+    event_id = (
+        _client_event_id("message", order_id, payload.client_message_id)
+        if payload.client_message_id
+        else None
+    )
+    if event_id:
+        existing_event = repo.get_planning_event(event_id)
+        if existing_event is not None:
+            return _replayed_turn(repo, order_id, event_id, body)
+
     # The double-tap guard. Checked before anything is written, so a retry cannot append a second
     # copy of the customer's words or open a second negotiation.
     if conversation.is_duplicate_send(repo, order_id, body):
         return _turn(repo, order_id, duplicate=True)
-
-    inbound = conversation.record_inbound(repo, order_id, body)
-
-    # The trace starts here, so a client polling immediately sees the reading rather than an
-    # empty panel. Stale comment below about one model call per message: no longer true, the loop
-    # decides with the model now -- kept honest by the provenance fields at the end.
-    progress.begin(order_id)
-    progress.stage(
-        order_id,
-        "understanding",
-        "Understanding your request",
-        "Reading what you asked for, in your own words",
-    )
 
     live_offer = conversation.open_offer(repo, order_id)
     reader = MessageReader()
@@ -102,16 +146,40 @@ def receive_message(order_id: str, payload: InboundMessage) -> dict:
         already_stated=_stated_labels(order),
     )
     said = understanding.interpretation
-    progress.finish_stage(
-        order_id, "understanding", detail=f"Understood as: {said.intent.replace('_', ' ')}"
-    )
-
     event = _event_for(order_id, said, live_offer, order)
     if event is None:
         # An acceptance we could not pin to a slot. Asking is the only safe answer -- booking the
         # nearest guess puts a van at the wrong door, and the customer cannot see it coming.
         progress.complete(order_id, "Asked which of the offered times you meant.")
         return _turn(repo, order_id, extra_run=None)
+
+    reserved_run = None
+    if event_id:
+        event.id = event_id
+        event.payload["_client_body_sha256"] = _body_hash(body)
+        # Reservation, initial RUNNING trace and the inbound message are one write. If the request
+        # dies before the agent starts, the key is rolled back and a retry can genuinely take over.
+        with repo.transaction():
+            reserved_run, created = reserve_planning_run(event, repo)
+            if created:
+                inbound = conversation.record_inbound(repo, order_id, body)
+        if not created:
+            return _replayed_turn(repo, order_id, event_id, body)
+    else:
+        inbound = conversation.record_inbound(repo, order_id, body)
+
+    # The trace starts only after this request has won the idempotency reservation. A concurrent
+    # retry may parse the same words, but it cannot publish a second progress stream or message.
+    progress.begin(order_id)
+    progress.stage(
+        order_id,
+        "understanding",
+        "Understanding your request",
+        "Reading what you asked for, in your own words",
+    )
+    progress.finish_stage(
+        order_id, "understanding", detail=f"Understood as: {said.intent.replace('_', ' ')}"
+    )
 
     ctx = tools.ToolContext(repo=repo)
     # ONE model call per customer message: the reading above. Execution is then deterministic.
@@ -127,8 +195,14 @@ def receive_message(order_id: str, payload: InboundMessage) -> dict:
     # The model chooses the actions, from the set the state gate says are legal right now.
     # `use_fallback=True` so a provider outage degrades to the standard procedure mid-run
     # instead of ending the conversation -- and says so, per step, in the activity log.
+    offline = settings.llm_provider == "none"
     run = handle_planning_event(
-        event, repo=repo, ctx=ctx, decider=LLMDecisionAgent(), use_fallback=True
+        event,
+        repo=repo,
+        ctx=ctx,
+        decider=RuleDecisionAgent() if offline else LLMDecisionAgent(),
+        use_fallback=not offline,
+        reserved_run=reserved_run,
     )
 
     # Two providers, two fields. `decider`/`model_id` are set by the loop and say who chose the
@@ -168,12 +242,21 @@ def _event_for(order_id: str, said, live_offer, order):
             # re-solve; otherwise ask which of the offered times they meant.
             counter = _counter_proposal(said, live_offer)  # only from their own words
             if counter:
+                search_scope = (
+                    "requested"
+                    if any(
+                        clusters.is_off_cluster(order, Date.fromisoformat(w["date"]))
+                        for w in counter
+                    )
+                    else "cluster"
+                )
                 return PlanningEvent(
                     event_type=PlanningEventType.NEW_ORDER,
                     order_id=order_id,
                     payload={
                         "intent": "provide_availability",
                         "stated_windows": counter,
+                        "search_scope": search_scope,
                         "is_fixed": conversation.is_only_option(order),
                     },
                 )
@@ -206,11 +289,42 @@ def _event_for(order_id: str, said, live_offer, order):
         # it is what makes the re-solve land where they asked.
         if said.windows:
             payload["stated_windows"] = _windows_payload(said)
+            payload["search_scope"] = (
+                "requested"
+                if any(clusters.is_off_cluster(order, w.date) for w in said.windows)
+                else "cluster"
+            )
         return PlanningEvent(
             event_type=PlanningEventType.CUSTOMER_REJECTED_OFFER,
             order_id=order_id,
             payload=payload,
         )
+
+    if said.intent == "provide_availability" and live_offer and said.windows:
+        covered = next(
+            (
+                slot
+                for slot in live_offer.options
+                for window in said.windows
+                if window.date == slot.date
+                and window.window.start >= slot.window.start
+                and window.window.end <= slot.window.end
+            ),
+            None,
+        )
+        if covered is not None:
+            return PlanningEvent(
+                event_type=PlanningEventType.MANUAL_RETRY,
+                order_id=order_id,
+                payload={
+                    "intent": "unclear",
+                    "question": (
+                        f"Yes — that time is inside the {offer_service.format_window(covered.window)} "
+                        "window already offered. Would you like me to confirm it?"
+                    ),
+                    "message": said.note,
+                },
+            )
 
     if said.intent == "provide_availability":
         # Deliberately NOT `and said.windows`. "Any time works for me" is availability with no
@@ -220,6 +334,12 @@ def _event_for(order_id: str, said, live_offer, order):
         payload = {
             "intent": "provide_availability",
             "is_fixed": said.is_fixed or conversation.is_only_option(order),
+            "search_scope": (
+                "requested"
+                if said.windows
+                and any(clusters.is_off_cluster(order, window.date) for window in said.windows)
+                else "cluster"
+            ),
         }
         if said.windows:
             payload["stated_windows"] = _windows_payload(said)

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dispatch-agent"
 version = "0.1.0"
-description = "Dispatch sequencing agent for a home-installation delivery scheduling system"
+description = "Agentic delivery-time coordination with route-checked promises"
 requires-python = ">=3.11"
 
 [tool.setuptools]

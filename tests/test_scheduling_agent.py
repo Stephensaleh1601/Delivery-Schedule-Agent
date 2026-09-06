@@ -71,6 +71,84 @@ def _event(order, event_type=PlanningEventType.NEW_ORDER, **payload):
     return PlanningEvent(event_type=event_type, order_id=order.id, payload=payload)
 
 
+@pytest.mark.parametrize("intent", ["explain", "policy_question", "general_support", "unclear"])
+def test_the_fallback_only_asks_for_actions_the_intent_allows(temp_db, intent):
+    """The standard procedure and the intent gate must agree. Otherwise every proposed action is
+    refused and a harmless customer question ends in an unnecessary coordinator hand-off."""
+    order = _order(temp_db)
+    question = "Why are you suggesting this time?"
+
+    run = handle_planning_event(
+        _event(
+            order,
+            PlanningEventType.MANUAL_RETRY,
+            intent=intent,
+            message=question,
+            question=question,
+        ),
+        repo=temp_db,
+        decider=RuleDecisionAgent(),
+        use_fallback=False,
+    )
+
+    refused = [
+        (action.tool, action.error)
+        for action in run.actions
+        if action.error in {"not_allowed_for_intent", "not_legal_yet", "action_not_allowed"}
+    ]
+    assert refused == [], refused
+
+
+@pytest.mark.parametrize(
+    ("search_scope", "expected", "forbidden"),
+    [
+        ("cluster", "find_normal_slot", "find_requested_day_slot"),
+        ("requested", "find_requested_day_slot", "find_normal_slot"),
+    ],
+)
+def test_a_live_decider_is_shown_only_the_customer_requested_route_scope(
+    temp_db, search_scope, expected, forbidden
+):
+    order = _order(temp_db)
+    stated = order.availability_options[0]
+
+    class CaptureScope:
+        def __init__(self):
+            self.seen = []
+
+        def decide(self, state, allowed):
+            self.seen.append(set(allowed))
+            if "record_availability" in allowed:
+                return ActionDecision(
+                    action="record_availability",
+                    reason_summary="Recording the customer's exact words.",
+                    arguments={"order_id": order.id},
+                )
+            return ActionDecision(action="finish", reason_summary="scope captured")
+
+    decider = CaptureScope()
+    handle_planning_event(
+        _event(
+            order,
+            intent="provide_availability",
+            search_scope=search_scope,
+            stated_windows=[
+                {
+                    "date": stated.date.isoformat(),
+                    "start": stated.window.start.strftime("%H:%M"),
+                    "end": stated.window.end.strftime("%H:%M"),
+                }
+            ],
+        ),
+        repo=temp_db,
+        decider=decider,
+        use_fallback=False,
+    )
+
+    assert any(expected in legal for legal in decider.seen)
+    assert all(forbidden not in legal for legal in decider.seen)
+
+
 # -- guardrails ---------------------------------------------------------------
 
 
@@ -132,7 +210,9 @@ def test_the_step_limit_stops_the_loop_and_escalates(temp_db):
     )
 
     assert run.status is AgentRunStatus.STEP_LIMIT_REACHED
-    assert len(run.actions) == MAX_TOOL_STEPS, f"ran {len(run.actions)} steps against a cap of {MAX_TOOL_STEPS}"
+    model_actions = [action for action in run.actions if action.decider != "controller"]
+    assert len(model_actions) == MAX_TOOL_STEPS
+    assert run.actions[-1].tool == "send_message", "the controller must still answer the customer"
     assert any(e.kind == "step_limit" for e in temp_db.open_exceptions())
 
 
@@ -166,6 +246,28 @@ def test_a_replayed_event_does_not_run_twice(temp_db):
 
     assert second.id == first.id
     assert len(temp_db.offers_for_order(order.id)) == 1, "replaying the event made a second offer"
+
+
+def test_graph_exception_is_redacted_before_the_run_is_persisted(temp_db, monkeypatch):
+    from dispatch_agent.agents import scheduling_agent
+
+    order = _order(temp_db)
+    secret = "AKIAIOSFODNN7EXAMPLE"
+
+    class BrokenGraph:
+        def invoke(self, *args, **kwargs):
+            raise RuntimeError(f"AWS failed for {secret} token=supersecrettoken")
+
+    monkeypatch.setattr(scheduling_agent, "build_graph", lambda *args, **kwargs: BrokenGraph())
+
+    run = handle_planning_event(
+        _event(order), repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False
+    )
+
+    persisted = temp_db.get_agent_run(run.id)
+    assert secret not in persisted.final_summary
+    assert "supersecrettoken" not in persisted.final_summary
+    assert "[redacted]" in persisted.final_summary
 
 
 # -- the flows ----------------------------------------------------------------
@@ -546,7 +648,7 @@ def test_an_unanswered_offer_cannot_be_locked_by_the_agent(temp_db):
     )
 
     assert run.actions[0].ok is False
-    assert run.actions[0].error == "customer_has_not_accepted"
+    assert run.actions[0].error == "not_legal_yet"
     job = temp_db.get_job(order.id)
     assert job.planning_status is PlanningStatus.OFFERED
     assert job.locked_window is None, "an unanswered offer became a booking"

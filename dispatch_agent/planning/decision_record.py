@@ -109,6 +109,11 @@ def _step(run: AgentRunLog, tool: str):
     return matches[-1] if matches else None
 
 
+def _step_any(run: AgentRunLog, *tools: str):
+    matches = [a for a in run.actions if a.tool in tools and a.ok]
+    return matches[-1] if matches else None
+
+
 def _window_label(date: str, start: str, end: str) -> str:
     from datetime import date as Date
 
@@ -165,9 +170,10 @@ def build(
     # position, the detour -- measured against the published route. Preferred over the
     # evaluation-derived cards, which describe a whole re-solved day and cannot say where in
     # the route the customer would go.
-    record.candidates = _candidates_from_offer(offer) or _candidates(
-        run, evaluations, suggestions, on_the_table
-    )
+    show_offer = intent in {"provide_availability", "reject", "explain"}
+    record.candidates = (
+        _candidates_from_offer(offer) if show_offer else []
+    ) or _candidates(run, evaluations, suggestions, on_the_table)
     _what_changed(record, run, intent)
     _decide(record, run, intent)
 
@@ -179,11 +185,11 @@ def build(
 
 def _intent_of(run: AgentRunLog) -> str:
     tools = [a.tool for a in run.actions]
-    if "lock_appointment" in tools:
+    if "lock_appointment" in tools or "confirm_offer" in tools:
         return "accept"
     if "record_rejection" in tools:
         return "reject"
-    if "explain_choice" in tools:
+    if "explain_choice" in tools or "explain_offer" in tools:
         return "explain"
     if "record_availability" in tools:
         return "provide_availability"
@@ -434,8 +440,16 @@ def _label(candidates: list[Candidate]) -> None:
 
 
 def _decide(record: DecisionRecord, run: AgentRunLog, intent: str) -> None:
-    offered = _step(run, "create_offer")
-    explained = _step(run, "explain_choice")
+    offered = _step_any(
+        run,
+        "create_offer",
+        "create_normal_offer",
+        "create_alternative_offer",
+        "find_normal_slot",
+        "find_requested_day_slot",
+        "find_fallback_options",
+    )
+    explained = _step_any(run, "explain_choice", "explain_offer")
 
     if explained and not offered:
         # A question, answered. Nothing to decide.
@@ -526,7 +540,7 @@ def _explanation_sentence(candidates: list[Candidate], explained) -> str:
 
 
 def _confirmation(record: DecisionRecord, run: AgentRunLog, order=None) -> None:
-    locked = _step(run, "lock_appointment")
+    locked = _step_any(run, "lock_appointment", "confirm_offer")
     if not locked:
         return
     version = locked.data.get("plan_version")
@@ -620,7 +634,16 @@ def _evidence(run: AgentRunLog) -> list[Step]:
             Step(f"Dropped {data['excluded_by_customer']} the customer had ruled out", "removed")
         )
     if data.get("valid_count"):
-        rows.append(Step(f"Produced {data['valid_count']} valid choices", "solved"))
+        valid_count = data["valid_count"]
+        if search.ok:
+            rows.append(Step(f"Produced {valid_count} valid choices", "solved"))
+        elif search.tool == "find_fallback_options" and search.error == "too_few_alternatives":
+            rows.append(
+                Step(
+                    f"Found {valid_count} workable times; policy needs 3 for a fallback offer",
+                    "removed",
+                )
+            )
 
     offered = next(
         (
@@ -675,7 +698,7 @@ def _candidates_from_offer(offer) -> list[Candidate]:
                     slot.window.end.strftime("%H:%M"),
                 ),
                 kind="route",
-                badge="Lowest impact" if e.added_distance_km == cheapest else "",
+                badge="Lowest route impact" if e.added_distance_km == cheapest else "",
                 explanation=slot.reason or "",
                 added_drive_minutes=e.added_minutes,
                 added_distance_km=e.added_distance_km,

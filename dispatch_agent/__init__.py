@@ -1,4 +1,3 @@
-"""Dispatch sequencing agent: intake, planning, sequencing and reschedule logic
-for a home-installation delivery scheduling system."""
+"""Dispatch: agentic delivery-time coordination with route-checked promises."""
 
 __version__ = "0.1.0"

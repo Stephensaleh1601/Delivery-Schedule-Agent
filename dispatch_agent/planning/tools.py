@@ -88,7 +88,14 @@ def sanitise_for_log(value, _depth: int = 0):
 # fallback reason is persisted and then rendered in the inspector, so this is a leak with a UI.
 _SECRET_PATTERNS = [
     re.compile(r"(?i)\b(?:sk|rk)-[A-Za-z0-9_\-]{12,}"),      # OpenAI-style keys
+    re.compile(r"\bAIza[0-9A-Za-z_\-]{20,}\b"),              # Google API keys
     re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),            # AWS access key ids
+    re.compile(r"(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])"),
+    # Credential-bearing URL query parameters, which provider exceptions often echo verbatim.
+    re.compile(
+        r"(?i)(?:[?&](?:key|api[_-]?key|access[_-]?key|secret|token|password)=)"
+        r"[^&#\s\"']+"
+    ),
     re.compile(r"(?i)\barn:aws[^\s\"']{6,}"),                # ARNs carry the account number
     re.compile(
         r"(?i)\b(?:api[_-]?key|secret|token|password|authorization|bearer)"
@@ -741,7 +748,12 @@ def dispatch(action: str, arguments: dict | None, ctx: ToolContext) -> ToolResul
     try:
         result = spec.fn(args, ctx)
     except Exception as exc:  # noqa: BLE001 -- surfaced to the coordinator, never swallowed
-        return ToolResult(ok=False, tool=action, error=type(exc).__name__, summary=str(exc))
+        return ToolResult(
+            ok=False,
+            tool=action,
+            error=type(exc).__name__,
+            summary=redact_secrets(str(exc)) or "The tool failed without a safe error message.",
+        )
 
     if result.ok:
         ctx.succeeded.add(action)
@@ -954,6 +966,16 @@ def legal_actions(state: dict, ctx: ToolContext) -> list[str]:
     # An answer must come from a rule. Before the search there is nothing to write from.
     if "search_delivery_policy" not in ctx.succeeded:
         legal.discard("answer_from_policy")
+
+    # A support request needs both halves of the hand-off: prepare the human-readable reply, then
+    # create exactly one coordinator exception. Sending immediately after the clarification used
+    # to make the trace look complete while silently dropping the escalation.
+    if (
+        ctx.allowed_tools == INTENT_TOOLS["general_support"]
+        and "ask_clarification" in ctx.succeeded
+        and "escalate_booking" not in ctx.succeeded
+    ):
+        return ["escalate_booking"]
 
     # -- once there is an outcome, there is one move left ------------------------------
     #

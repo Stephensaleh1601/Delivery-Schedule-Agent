@@ -1,7 +1,7 @@
 """What the agent may do right now, and why the model is shown that rather than the registry.
 
 `dispatch()` has always refused an out-of-scope action. The gap this closes is what the model was
-*offered*: the whole tool list, with `lock_appointment` sitting in it before anyone had accepted
+*offered*: the whole tool list, with `confirm_offer` sitting in it before anyone had accepted
 anything. Being shown an action you are not allowed to take is an invitation to take it, and a
 live model accepted that invitation more than once -- which is why the browser regressions exist.
 
@@ -35,31 +35,33 @@ def test_finishing_is_always_available():
     assert "finish" in tools.legal_actions({}, _ctx("unclear"))
 
 
-def test_an_offer_is_not_offered_before_anything_has_been_searched():
-    """Offering before searching is offering something nobody checked."""
+def test_fallback_search_is_not_offered_before_rejection_is_recorded():
+    """The bounded fallback owns search plus offer, but only after the rejection is recorded."""
     ctx = _ctx("reject")
 
-    assert "create_alternative_offer" not in tools.legal_actions({}, ctx)
+    assert "find_fallback_options" not in tools.legal_actions({}, ctx)
 
-    ctx.scratch["insertion"] = _Fake(["one option"])
-    assert "create_alternative_offer" in tools.legal_actions({}, ctx)
+    ctx.succeeded.add("record_rejection")
+    assert "find_fallback_options" in tools.legal_actions({}, ctx)
 
 
-def test_a_search_that_found_nothing_does_not_unlock_an_offer():
-    """An empty result is a search that happened, not a list to offer from."""
-    ctx = _ctx("reject", scratch={"insertion": _Fake([])})
+def test_a_failed_fallback_does_not_unlock_a_customer_message():
+    """A failed bounded workflow may be retried, but cannot send wording it never prepared."""
+    ctx = _ctx("reject")
+    ctx.succeeded.add("record_rejection")
 
-    assert "create_alternative_offer" not in tools.legal_actions({}, ctx)
+    assert "send_message" not in tools.legal_actions({}, ctx)
+    assert "find_fallback_options" in tools.legal_actions({}, ctx)
 
 
 def test_nothing_can_be_locked_until_the_customer_accepted_a_slot():
     """The tool refuses this too. Hiding it as well means the model is never shown a booking it
     could make by mistake."""
     ctx = _ctx("accept")
-    assert "lock_appointment" not in tools.legal_actions({}, ctx)
+    assert "confirm_offer" not in tools.legal_actions({}, ctx)
 
     ctx.accepted = ("offer-1", "slot-1")
-    assert "lock_appointment" in tools.legal_actions({}, ctx)
+    assert "confirm_offer" in tools.legal_actions({}, ctx)
 
 
 def test_a_message_needs_wording_a_tool_prepared():
@@ -94,11 +96,12 @@ def test_after_the_customer_has_been_written_to_the_run_is_over():
 
 
 def test_a_once_per_run_action_disappears_after_it_succeeds():
-    ctx = _ctx("reject", scratch={"insertion": _Fake(["x"])})
-    assert "create_alternative_offer" in tools.legal_actions({}, ctx)
+    ctx = _ctx("reject")
+    ctx.succeeded.add("record_rejection")
+    assert "find_fallback_options" in tools.legal_actions({}, ctx)
 
-    ctx.succeeded.add("create_alternative_offer")
-    assert "create_alternative_offer" not in tools.legal_actions({}, ctx)
+    ctx.succeeded.add("find_fallback_options")
+    assert "find_fallback_options" not in tools.legal_actions({}, ctx)
 
 
 def test_the_gate_never_widens_the_intent_scope():
@@ -123,8 +126,8 @@ def test_a_read_only_intent_is_never_given_a_way_to_book(intent):
     legal = set(tools.legal_actions({}, ctx))
 
     assert not legal & {
-        "lock_appointment", "create_offer", "create_normal_offer",
-        "create_alternative_offer", "record_rejection", "record_availability",
+        "confirm_offer", "find_normal_slot", "find_requested_day_slot",
+        "find_fallback_options", "record_rejection", "record_availability",
     }
 
 

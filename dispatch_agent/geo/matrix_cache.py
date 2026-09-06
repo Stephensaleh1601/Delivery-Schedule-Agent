@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dispatch_agent.config import settings
+from dispatch_agent.db import current_connection
 from dispatch_agent.models import Coordinates
 
 Key = tuple[str, int, int, int, int]
@@ -88,11 +89,18 @@ class DriveTimeCache:
         if not path.exists():
             return
         try:
-            with sqlite3.connect(path) as conn:
-                conn.executescript(SCHEMA)
-                rows = conn.execute(
+            active = current_connection()
+            if active is not None:
+                active.execute(SCHEMA)
+                rows = active.execute(
                     "SELECT provider, o_lat, o_lng, d_lat, d_lng, minutes, km FROM drive_time_cache"
                 ).fetchall()
+            else:
+                with sqlite3.connect(path) as conn:
+                    conn.execute(SCHEMA)
+                    rows = conn.execute(
+                        "SELECT provider, o_lat, o_lng, d_lat, d_lng, minutes, km FROM drive_time_cache"
+                    ).fetchall()
         except sqlite3.Error:
             return
         for provider, o_lat, o_lng, d_lat, d_lng, minutes, km in rows:
@@ -105,15 +113,26 @@ class DriveTimeCache:
         try:
             path = self._db_path()
             path.parent.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(path) as conn:
-                conn.executescript(SCHEMA)
-                conn.executemany(
+            active = current_connection()
+            if active is not None:
+                active.execute(SCHEMA)
+                active.executemany(
                     "INSERT INTO drive_time_cache "
                     "(provider, o_lat, o_lng, d_lat, d_lng, minutes, km, fetched_at) "
                     "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO UPDATE SET "
                     "minutes=excluded.minutes, km=excluded.km, fetched_at=excluded.fetched_at",
                     [(*k, v["minutes"], v["km"], now) for k, v in entries],
                 )
+            else:
+                with sqlite3.connect(path) as conn:
+                    conn.execute(SCHEMA)
+                    conn.executemany(
+                        "INSERT INTO drive_time_cache "
+                        "(provider, o_lat, o_lng, d_lat, d_lng, minutes, km, fetched_at) "
+                        "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO UPDATE SET "
+                        "minutes=excluded.minutes, km=excluded.km, fetched_at=excluded.fetched_at",
+                        [(*k, v["minutes"], v["km"], now) for k, v in entries],
+                    )
         except sqlite3.Error:
             pass  # a cache that cannot persist is still a working cache
 

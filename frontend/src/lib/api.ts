@@ -549,12 +549,19 @@ export const dispatch = {
   /** The single planning call: one agent run returning the offer AND the evaluations behind it,
    *  so what the customer is shown is by construction what the log records. */
   planAgentic: (orderId: string) => api.post<PlanOptions>(`/api/orders/${orderId}/plan-agentic`),
-  respond: (offerId: string, accepted: boolean, slotId?: string) =>
-    api.post<AcceptResponse>(`/api/offers/${offerId}/respond`, { accepted, slot_id: slotId ?? null }),
+  respond: (offerId: string, accepted: boolean, slotId?: string, eventId?: string) =>
+    api.post<AcceptResponse>(`/api/offers/${offerId}/respond`, {
+      accepted,
+      slot_id: slotId ?? null,
+      event_id: eventId ?? null,
+    }),
 
   /** One customer message. THE conversational call: one message, one agent run, one offer round. */
-  sendMessage: (orderId: string, body: string) =>
-    api.post<ChatTurn>(`/api/orders/${orderId}/messages`, { body }),
+  sendMessage: (orderId: string, body: string, clientMessageId: string) =>
+    api.post<ChatTurn>(`/api/orders/${orderId}/messages`, {
+      body,
+      client_message_id: clientMessageId,
+    }),
   /** What the agent is doing, or what it did. Live while a turn is in flight; rebuilt from
    *  the persisted run afterwards, so a refresh keeps the completed trace. */
   progress: (orderId: string) => api.get<AgentProgressState>(`/api/orders/${orderId}/progress`),

@@ -6,6 +6,7 @@ import type { NextConfig } from "next";
  * relative fetch works in dev and behind a single reverse proxy in production.
  */
 const nextConfig: NextConfig = {
+  distDir: process.env.NEXT_DIST_DIR ?? ".next",
   async rewrites() {
     return [
       {

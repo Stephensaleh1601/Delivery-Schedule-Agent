@@ -1,74 +1,78 @@
-# Pitch script — The Dispatch Agent
+# Dispatch — five-minute pitch script
 
-Spoken narration for the 7-slide deck at `/about`, one section per slide. Roughly 30–45 seconds
-a slide — about 5 minutes end to end, plus time for the live demo cutaways marked below.
-Source of truth for the *content* is `slides.md`; this is only the delivery, so update both if
-the slides change.
+Spoken narration for the seven-slide deck at `/about`, including the planned
+cutaways to the working product.
 
----
+## 1. The ask — presentation
 
-## 1. Title — *presentation*
-
-> Nobody should spend an afternoon asking forty people when they're home.
+> Nobody should spend an afternoon asking forty people when they are home.
 >
-> That's the line we kept coming back to, based on our interview with the Founder of Floof.sg, a Pet Food Company in Singapore which delivers fresh pet food. This means every
-> order needs someone standing at the door to receive it. 
-> We're Team Majestic Fighters, and we have built the AI Dipatch Agent to help companies like floof handle delivery route scheduling.
-
----
-
-## 2. The problem — *presentation*
-
-> Floof.sg has two hard jobs, and right now both are done manually.
+> We spoke to Floof.sg, a Singapore company that delivers fresh pet food. Every
+> delivery needs an agreed recipient window, so somebody has to coordinate
+> customers and the route at the same time.
 >
-> Firstly, they get at least forty orders a week, one person has to spend a whole afternoon on WhatsApp messaging customers on delivery timings 
-> if one customer says no, you're starting that conversation over. 
-> Here's the founder, in their own words about the difficulty of neogtiating timings with customers
-> Secondly: the person still has to decide the sequence of delivery. Getting that wrong means long detours, and the last customer on the list waits all day.
-> So the real problem is coordinating a time with every customer, and put them in a sensible driving order — at the same time.
+> We are Team Majestic Fighters, and we built Dispatch to do that work.
 
----
+## 2. The problem — benefits and presentation
 
-## 3. What we built — *effectiveness*
-
-> [Cue: switch to the **Customer Chat** tab]
+> Floof has two hard jobs. First, a coordinator asks customers when they can
+> receive their order. Second, those answers have to become a sensible driving
+> sequence.
 >
-> The customer texts in their own words. The agent reads it, checks the real route for that day, and offers back one time it can actually keep.
-> Watch what happens with two different customers. Mrs Chua says yes straight away. 
-> Mr Rajan says no, twice — so the agent looks wider, comes back with three real alternatives, and if none of those work either, it hands him to a person rather than guessing.
+> Floof reported that a busy day can reach roughly thirty to forty deliveries.
+> The hardest part was not drawing a route. It was negotiating delivery slots
+> with customers. One rejection changes both the conversation and the plan.
 
----
+## 3. What we built — effectiveness
 
-## 4. How it is built — *technical quality*
-
-> Here's the architecture, 
-> A message comes in, gets turned from the customer's own words into real dates using `understanding.py` and `language.py`. 
-> Then the main agent picks the relevant tools which are categorised into the Policy, Route and Action tools to determine what to do
-> this way it replicates how a real person would think and reduce the mistakes made
-
----
-
-## 5. Fitting someone into a day that's already planned — *technical quality*
-
-> [Cue: switch to the **Daily Routes** tab]
+> [Cut to Customer Chat.]
 >
-> In this use case, Floof delivers two days a week, and each day covers one half of Singapore
->so a customer's address already tells us which day is theirs. From there we can find a gap in a route and determine whether it fits 
+> The customer writes in their own words. The agent checks the published route
+> and offers one time it can actually keep.
+>
+> Mrs Chua accepts the first offer. Mr Rajan rejects his, so the agent records
+> the rejection, excludes that slot and searches again. If policy cannot produce
+> a complete fallback set, it hands the case to a person instead of guessing.
+>
+> Nothing moves until the customer agrees.
 
+## 4. How it is built — innovation and technical quality
 
----
+> This is the loop. The agent asks, “What should I do next?”, chooses an approved
+> action, reads the result and decides again.
+>
+> Policy tools find the relevant rule. Route tools calculate feasible windows.
+> Action tools explain, confirm or escalate.
+>
+> AWS Bedrock handles language and action selection. Deterministic code owns
+> dates, distance, consent and route truth. LangGraph keeps the loop bounded and
+> records each step.
 
-## 6. What the office sees — *technical quality*
+## 5. Fitting people in — innovation and technical quality
 
-> Our current prototype is able to track every order, view the daily routes and observe customer conversations 
+> [Cut to Daily Routes.]
+>
+> Our repeatable demo has two published delivery days. A postal region tells the
+> agent which route to check first.
+>
+> It tests the new customer around nearby stops, then checks every later promise.
+> Existing confirmed stops keep their order. Nobody already booked is made late.
+> A rejection opens the bounded fallback search, not an unlimited negotiation.
 
+## 6. The prototype — effectiveness and technical quality
 
----
+> The product has three working views: orders, daily routes and customer chat.
+> The customer gets one simple reply. The coordinator can open the trace and see
+> what the agent read, which route it checked and why it made that offer.
+>
+> The working stack is Python, FastAPI, Next.js, LangGraph, AWS Bedrock, OR-Tools
+> and SQLite. The customer channel and address lookup are clear integration
+> points for the operator’s systems.
 
-## 7. What changes, and what's next — *benefits*
+## 7. What changes — benefits
 
-> So — overall, the agent is about reply customers, think of the best routes and schedule them according to customer's request and proximity
-
->Some improvements we can make is to add more days, more drivers and customisable to other industries
-
-> Therefore, with our dispatch agent, every customer gets a time they agreed to, every driver gets a route that makes sense, no more afternoons spent glued to WhatsApp
+> With Dispatch, a rejection no longer sends a coordinator back to the start.
+> The agent excludes it, replans and asks for consent again.
+>
+> Every confirmed customer gets a time they accepted. Every driver gets a route
+> built from accepted promises. Unresolved cases go to the coordinator.

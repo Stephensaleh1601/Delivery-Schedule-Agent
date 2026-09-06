@@ -5,7 +5,10 @@
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
+    "build:e2e": "node scripts/next-e2e.mjs build",
     "start": "next start -p 3000",
+    "start:e2e": "node scripts/next-e2e.mjs start -p 3765",
+    "test:e2e": "playwright test",
     "gen:api": "openapi-typescript http://localhost:8000/openapi.json -o src/lib/api-types.ts"
   },
   "dependencies": {
@@ -14,6 +17,7 @@
     "react-dom": "19.1.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4.1.13",
     "@types/node": "^22",
     "@types/react": "^19",

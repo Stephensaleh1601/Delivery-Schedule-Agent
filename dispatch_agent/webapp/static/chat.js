@@ -5,9 +5,8 @@ const composerInput = document.getElementById("composer-input");
 let state = { flow: null, step: null };
 
 const JOB_TYPE_OPTIONS = [
-  { value: "sofa", label: "Sofa" },
-  { value: "bed", label: "Bed" },
-  { value: "cabinet", label: "Cabinet" },
+  { value: "pet_food_box", label: "Subscription box" },
+  { value: "one_off_pet_order", label: "One-off order" },
   { value: "other", label: "Other" },
 ];
 
@@ -57,7 +56,7 @@ function addBookingForm() {
       <label>Phone (optional)<input type="tel" name="phone" /></label>
       <label>Address<input type="text" name="address_raw" required /></label>
       <label>Postal code<input type="text" name="postal_code" inputmode="numeric" pattern="\\d{6}" maxlength="6" required /></label>
-      <label>Furniture type
+      <label>Order type
         <select name="job_type">
           ${JOB_TYPE_OPTIONS.map((o) => `<option value="${o.value}">${o.label}</option>`).join("")}
         </select>

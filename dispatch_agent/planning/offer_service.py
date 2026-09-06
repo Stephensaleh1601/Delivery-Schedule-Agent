@@ -246,6 +246,38 @@ def accept_offer(
     routing_client: RoutingClient | None = None,
     run_id: str | None = None,
 ) -> AcceptanceOutcome:
+    """Confirm a customer's choice as one atomic database operation."""
+    try:
+        with repo.transaction():
+            return _accept_offer(
+                repo,
+                offer_id,
+                slot_id,
+                routing_client=routing_client,
+                run_id=run_id,
+            )
+    except OfferError as exc:
+        if exc.kind == "acceptance_failed":
+            offer = repo.get_offer(offer_id)
+            job = repo.get_job(offer.order_id) if offer else None
+            slot = next((s for s in offer.options if s.id == slot_id), None) if offer else None
+            plan_service.raise_coordinator_exception(
+                repo,
+                str(exc),
+                kind=exc.kind,
+                order_id=job.id if job else None,
+                delivery_date=slot.date if slot else None,
+            )
+        raise
+
+
+def _accept_offer(
+    repo: JobsRepository,
+    offer_id: str,
+    slot_id: str,
+    routing_client: RoutingClient | None = None,
+    run_id: str | None = None,
+) -> AcceptanceOutcome:
     """Lock in a slot the customer chose, then republish that day's plan.
 
     Replaying the same acceptance is harmless: the conditional claim below fails the second
@@ -258,6 +290,30 @@ def accept_offer(
     slot = next((s for s in offer.options if s.id == slot_id), None)
     if slot is None:
         raise OfferError("that slot was not part of this offer")
+
+    # A network retry arrives after the first acceptance has already republished the route. Its
+    # insertion evidence therefore points at the deliberately superseded source plan, so checking
+    # freshness first would reject the retry as stale. Settle replays from the recorded outcome
+    # before validating an as-yet-unanswered offer, and never pretend a different slot was chosen.
+    if offer.status is OfferStatus.ACCEPTED:
+        if offer.accepted_slot_id != slot_id:
+            raise OfferError(
+                "this offer was already confirmed for a different time",
+                kind="different_slot_already_accepted",
+            )
+        job = repo.get_job(offer.order_id)
+        if job is None:
+            raise OfferError("that order no longer exists")
+        plan = repo.active_plan(job.delivery_date) if job and job.delivery_date else None
+        return AcceptanceOutcome(
+            offer=offer,
+            job=job,
+            plan=plan,
+            idempotent=True,
+            message="That booking is already confirmed.",
+        )
+    if offer.status not in (OfferStatus.PENDING, OfferStatus.SENT):
+        raise OfferError("that offer is no longer open", kind="offer_already_settled")
 
     # An insertion was tested against a specific published route. If that day has been republished
     # since -- somebody else booked into it, or a delay rebuilt it -- the position we measured no
@@ -299,8 +355,14 @@ def accept_offer(
         source_plan = current
 
     if not repo.claim_offer_response(offer_id, OfferStatus.ACCEPTED.value):
-        # Someone already responded. Return what happened then, without re-solving.
+        # A concurrent request won between the read and the conditional claim. Only the exact
+        # same choice is an idempotent replay; a different choice is a conflict, not success.
         settled = repo.get_offer(offer_id)
+        if settled.status is not OfferStatus.ACCEPTED or settled.accepted_slot_id != slot_id:
+            raise OfferError(
+                "this offer was already answered with a different choice",
+                kind="different_slot_already_accepted",
+            )
         job = repo.get_job(settled.order_id)
         plan = repo.active_plan(job.delivery_date) if job and job.delivery_date else None
         return AcceptanceOutcome(
@@ -362,24 +424,12 @@ def accept_offer(
                 routing_client=routing_client,
             )
     except (LockedPlanInfeasibleError, UnsolvableDayError) as exc:
-        # The day was quoted as feasible moments ago, so this means something else changed in
-        # between. Roll the order back rather than leaving it confirmed against a plan that does
-        # not exist, and let a human sort it out.
-        job.delivery_date = previous_date
-        job.locked_window = None
-        job.set_planning_status(PlanningStatus.EXCEPTION)
-        repo.save_job(job)
-        offer.status = OfferStatus.CLOSED
-        repo.save_offer(offer)
-        plan_service.raise_coordinator_exception(
-            repo,
-            f"{job.customer_name} accepted {slot.date} but the day could no longer be routed: {exc}",
-            kind="acceptance_failed",
-            order_id=job.id,
-            delivery_date=slot.date,
-        )
+        # The surrounding transaction restores the offer, order and plan together. Recording an
+        # EXCEPTION job here used to destroy an earlier confirmed promise and consume the offer.
         raise OfferError(
-            "sorry -- that slot was taken while we were confirming. Our team will call you."
+            "Sorry, we could not confirm that slot because the route changed. "
+            "The offer is still open and our team will help.",
+            kind="acceptance_failed",
         ) from exc
 
     # The customer has left the day they were on, so it has one fewer stop and must be

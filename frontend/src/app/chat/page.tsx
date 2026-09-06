@@ -70,6 +70,10 @@ export default function ChatPage() {
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const feed = useRef<HTMLDivElement>(null);
+  // A failed request keeps its key, so clicking retry asks the server for the original outcome
+  // instead of starting a second negotiation or publishing another route version.
+  const pendingMessageIds = useRef(new Map<string, string>());
+  const pendingResponseIds = useRef(new Map<string, string>());
 
   // Survives a reload. The conversation itself lives on the server; this is only the pointer to
   // it, and it is what makes "refresh the browser" a step the demo can actually perform.
@@ -84,7 +88,22 @@ export default function ChatPage() {
 
   const load = useCallback(async (id: string) => {
     try {
-      setTurn(await dispatch.conversation(id));
+      const next = await dispatch.conversation(id);
+      setTurn(next);
+      if (next.confirmed && next.delivery_date) {
+        const [active, versions] = await Promise.all([
+          dispatch.activePlan(next.delivery_date).catch(() => null),
+          dispatch.planVersions(next.delivery_date).catch(() => []),
+        ]);
+        setAfter(active);
+        if (active) {
+          const parent = versions.find((version) => version.id === active.parent_plan_id);
+          const previous = [...versions]
+            .filter((version) => version.version < active.version)
+            .sort((a, b) => b.version - a.version)[0];
+          setBefore(parent ?? previous ?? null);
+        }
+      }
     } catch (err) {
       setError(err);
     }
@@ -105,13 +124,15 @@ export default function ChatPage() {
   const openOffer = turn?.open_offer_id ? turn.offers[turn.open_offer_id] : null;
   const confirmed = turn?.confirmed ?? false;
   const lastRun = turn?.run ?? null;
-  // The last run that actually DECIDED something -- read from the server, so it survives a refresh
-  // and a confirmed booking keeps its explanation instead of reverting to "waiting".
-  const decision = turn?.decision ?? null;
+  // A successful confirmation is the newest truth. The previous rejection remains useful history
+  // under its message, but showing it as the current decision made a booked customer look refused.
+  const decision = confirmed ? null : (turn?.decision ?? null);
 
   async function send(text: string) {
     const body = text.trim();
     if (!body || !orderId || busy) return;
+    const clientMessageId = pendingMessageIds.current.get(body) ?? crypto.randomUUID();
+    pendingMessageIds.current.set(body, clientMessageId);
 
     setBusy(true);
     setError(null);
@@ -130,7 +151,8 @@ export default function ChatPage() {
     }
 
     try {
-      const next = await dispatch.sendMessage(orderId, body);
+      const next = await dispatch.sendMessage(orderId, body, clientMessageId);
+      pendingMessageIds.current.delete(body);
       setTurn(next);
       if (next.confirmed && next.delivery_date) {
         setAfter(await dispatch.activePlan(next.delivery_date).catch(() => null));
@@ -157,6 +179,9 @@ export default function ChatPage() {
     if (!orderId || busy) return;
     setBusy(true);
     setError(null);
+    const responseKey = `${offerId}:${slotId}`;
+    const eventId = pendingResponseIds.current.get(responseKey) ?? crypto.randomUUID();
+    pendingResponseIds.current.set(responseKey, eventId);
 
     const discussing = openOffer?.options.find((o) => o.id === slotId)?.date;
     if (discussing) {
@@ -165,7 +190,8 @@ export default function ChatPage() {
     }
 
     try {
-      await dispatch.respond(offerId, true, slotId);
+      await dispatch.respond(offerId, true, slotId, eventId);
+      pendingResponseIds.current.delete(responseKey);
       // Reload the thread rather than patching it: the acceptance writes a confirmation message
       // and republishes the day, and the server's version of both is the one to show.
       await load(orderId);
@@ -201,6 +227,8 @@ export default function ChatPage() {
     setInput("");
     setBefore(null);
     setAfter(null);
+    pendingMessageIds.current.clear();
+    pendingResponseIds.current.clear();
     setError(null);
     boot.reload();
   }
@@ -233,9 +261,14 @@ export default function ChatPage() {
         />
       )}
 
-      <div className="enter grid grid-cols-[380px_minmax(0,1fr)] items-start gap-6">
+      <div className="enter grid grid-cols-1 items-start gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
         {/* -- the phone -------------------------------------------------- */}
-        <div className="sticky top-[74px] flex flex-col gap-3">
+        <div
+          className={cx(
+            "flex flex-col gap-3 lg:order-1 lg:sticky lg:top-[74px]",
+            orderId ? "order-1" : "order-2",
+          )}
+        >
           {/* Keep the phone inside the viewport. Only the message wallpaper scrolls; the header,
               quick replies and composer stay put like a real messaging app. */}
           <Phone
@@ -317,11 +350,6 @@ export default function ChatPage() {
             />
           </Phone>
 
-          {!orderId && boot.data && (
-            <Card className="px-4 py-3.5">
-              <IntroForm boot={boot.data} busy={busy} onSubmit={start} />
-            </Card>
-          )}
           {error ? <ErrorPanel error={error} onRetry={() => setError(null)} /> : null}
           {orderId && (
             <p className="font-mono text-[11px] text-ink-faint">order {orderId} · survives a refresh</p>
@@ -329,16 +357,18 @@ export default function ChatPage() {
         </div>
 
         {/* -- the agent -------------------------------------------------- */}
-        <div className="flex flex-col gap-4">
+        <div className={cx("flex flex-col gap-4 lg:order-2", orderId ? "order-2" : "order-1")}>
           <div className="flex flex-col gap-1">
             <Eyebrow>Agent decisions and tool results</Eyebrow>
             {/* The heading is the question this run answers. "Why these times?" and "Why the offer
                 changed" are different questions, and one panel titled for both answers neither. */}
             <h2 className="text-[17px] font-semibold text-ink">
               {!orderId
-                ? "Nothing decided yet"
+                ? "Open one customer conversation"
                 : busy
                   ? "Reading the message and solving the route…"
+                  : confirmed
+                    ? "Appointment locked. The route has been republished."
                   : decision?.meaningful
                     ? decision.heading
                     : lastRun
@@ -352,11 +382,24 @@ export default function ChatPage() {
             </p>
           </div>
 
+          {!orderId && boot.data && (
+            <Card className="border-accent/20 px-5 py-5 shadow-[var(--shadow-lift)]">
+              <div className="mb-4 max-w-[58ch]">
+                <Eyebrow>Start the live demo</Eyebrow>
+                <p className="mt-1 text-[14px] leading-[1.5] text-ink-soft">
+                  Give the agent a customer and address. Availability is negotiated in the chat;
+                  every proposed window is checked against a real route before it is offered.
+                </p>
+              </div>
+              <IntroForm boot={boot.data} busy={busy} onSubmit={start} />
+            </Card>
+          )}
+
           {/* Which route this customer belongs to, and why. Shown from the moment the order
               exists rather than only after a decision: it is the first thing the system worked
               out, before any message was read, and a judge should be able to check the greeting
               against it. */}
-          {turn?.placement?.region && (
+          {orderId && turn?.placement?.region && (
             <Card className="px-4 py-3">
               <Eyebrow>Routed by postal code</Eyebrow>
               <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
@@ -511,7 +554,7 @@ function Greeting({ boot, placement }: { boot: Bootstrap | null; placement: Plac
   return (
     <>
       <Bubble from="them" time="9:02 am">
-        Hi! This is Majestic Fighters Fresh Pet Food. Your food is made fresh and can&apos;t be
+        Hi! This is Floof. Your food is made fresh and can&apos;t be
         left at the door, so I just need a time you&apos;ll be home.
       </Bubble>
       <Bubble from="them" time="9:02 am">

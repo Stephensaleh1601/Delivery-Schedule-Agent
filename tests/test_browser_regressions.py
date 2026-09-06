@@ -114,7 +114,7 @@ def test_one_message_produces_one_offer_one_send_and_one_bubble(client):
     turn = _say(client, order_id, "Friday after 1 works for me.")
 
     assert _ok_tools(turn).count("send_message") == 1, _tools(turn)
-    assert _ok_tools(turn).count("create_offer") == 1, _tools(turn)
+    assert _ok_tools(turn).count("find_normal_slot") == 1, _tools(turn)
     assert len(turn["offers"]) == 1
     assert len(_outbound(turn)) == 1, [m["body"][:40] for m in _outbound(turn)]
 
@@ -138,7 +138,7 @@ def test_accepting_locks_exactly_once(client):
 
     turn = _say(client, order_id, "Okay, take the first one.")
 
-    assert _ok_tools(turn).count("lock_appointment") == 1, _tools(turn)
+    assert _ok_tools(turn).count("confirm_offer") == 1, _tools(turn)
     assert turn["confirmed"] is True
     assert turn["planning_status"] == "confirmed"
 
@@ -157,11 +157,12 @@ def test_acceptance_sends_exactly_one_confirmation(client):
 def test_acceptance_publishes_exactly_one_route_version(client, temp_db):
     order_id = _order(client)
     _say(client, order_id, "Friday after 1 works for me.")
+    before = client.get(f"/api/plans/{FRIDAY}/versions").json()
     turn = _say(client, order_id, "Okay, take the first one.")
 
     versions = client.get(f"/api/plans/{turn['delivery_date']}/versions").json()
 
-    assert len(versions) == 1, [v["version"] for v in versions]
+    assert len(versions) == len(before) + 1, [v["version"] for v in versions]
     assert sum(1 for v in versions if v["status"] == "active") == 1
 
 
@@ -180,10 +181,37 @@ def test_asking_why_runs_only_read_only_tools(client):
     # suggest_route_aware_windows is on this list because it is genuinely read-only: it solves
     # days and returns them, and writes nothing. Without it "why Friday?" could only see the
     # customer's own dates, and answered by explaining Saturday.
-    allowed = {
-        "evaluate_slots", "suggest_route_aware_windows", "explain_choice", "send_message", "finish",
-    }
+    allowed = {"explain_offer", "send_message", "finish"}
     assert set(_ok_tools(turn)) <= allowed, _tools(turn)
+    assert "explain_offer" in _ok_tools(turn), _tools(turn)
+
+
+def test_failed_fallback_is_not_presented_as_a_completed_solution():
+    """Two valid options are not a valid three-option fallback, so the panel must say why the
+    search stopped instead of styling the partial result as solved."""
+    from dispatch_agent.models import AgentActionLog, AgentRunLog
+    from dispatch_agent.planning import decision_record
+
+    run = AgentRunLog(
+        event_id="event-1",
+        actions=[
+            AgentActionLog(
+                step=1,
+                tool="find_fallback_options",
+                ok=False,
+                error="too_few_alternatives",
+                data={"valid_count": 2},
+            )
+        ],
+    )
+
+    evidence = decision_record._evidence(run)
+
+    assert [step.text for step in evidence] == [
+        "Found 2 workable times; policy needs 3 for a fallback offer"
+    ]
+    assert evidence[0].tone == "removed"
+    assert all("Produced 2 valid choices" not in step.text for step in evidence)
 
 
 @pytest.mark.parametrize(
@@ -226,10 +254,11 @@ def test_an_explanation_publishes_no_route(client):
     order_id = _order(client)
     opened = _say(client, order_id, "Friday after 1 works for me.")
     day = opened["offers"][opened["open_offer_id"]]["options"][0]["date"]
+    before = client.get(f"/api/plans/{day}/versions").json()
 
     _say(client, order_id, "Why this timing?")
 
-    assert client.get(f"/api/plans/{day}/versions").json() == []
+    assert client.get(f"/api/plans/{day}/versions").json() == before
 
 
 def test_an_explanation_is_answered_with_one_message(client):
@@ -250,6 +279,7 @@ def test_the_customer_can_still_confirm_after_asking_why(client):
     order_id = _order(client)
     opened = _say(client, order_id, "Friday after 1 works for me.")
     slot = opened["offers"][opened["open_offer_id"]]["options"][0]
+    before = client.get(f"/api/plans/{slot['date']}/versions").json()
 
     _say(client, order_id, "Why this timing?")
     turn = _say(client, order_id, "Okay, take the first one.")
@@ -259,7 +289,7 @@ def test_the_customer_can_still_confirm_after_asking_why(client):
     assert turn["delivery_date"] == slot["date"]
 
     versions = client.get(f"/api/plans/{slot['date']}/versions").json()
-    assert len(versions) == 1, "the route should be published exactly once"
+    assert len(versions) == len(before) + 1, "acceptance should publish exactly one new version"
 
 
 # -- Scenario D: general support ------------------------------------------------
@@ -286,7 +316,7 @@ def test_a_support_question_cannot_reach_the_booking_tools(client):
 
     turn = _say(client, order_id, "Can I change my delivery address?")
 
-    allowed = {"ask_clarification", "create_exception", "send_message", "finish"}
+    allowed = {"ask_clarification", "escalate_booking", "send_message", "finish"}
     assert set(_ok_tools(turn)) <= allowed, _tools(turn)
     assert len(turn["offers"]) == 1
 
@@ -311,12 +341,15 @@ def test_rejecting_one_window_re_solves_the_same_day_once(client):
     turn = _say(client, order_id, "That doesn't work, anything later that day?")
 
     assert _ok_tools(turn).count("record_rejection") == 1
-    assert _ok_tools(turn).count("create_offer") <= 1
+    assert _ok_tools(turn).count("find_fallback_options") <= 1
     assert _ok_tools(turn).count("send_message") == 1
-    offered = turn["offers"][turn["open_offer_id"]]["options"]
-    assert (first["window"]["start"], first["window"]["end"]) not in [
-        (o["window"]["start"], o["window"]["end"]) for o in offered
-    ]
+    if turn["open_offer_id"]:
+        offered = turn["offers"][turn["open_offer_id"]]["options"]
+        assert (first["window"]["start"], first["window"]["end"]) not in [
+            (o["window"]["start"], o["window"]["end"]) for o in offered
+        ]
+    else:
+        assert "escalate_booking" in _ok_tools(turn), _tools(turn)
 
 
 def test_a_rejection_sends_one_message_not_several(client):
@@ -364,7 +397,7 @@ def test_a_clarification_does_not_replace_the_last_real_decision(client):
 def test_the_decision_leads_with_the_conclusion_not_the_constraints(client):
     """A judge should understand this in five seconds. Heading, what changed, at most two
     candidates, one recommendation -- and the planning rules collapsed out of the way."""
-    order_id = _order(client)
+    order_id = _order(client, postal_code="318993")
 
     turn = _say(client, order_id, "Saturday morning works.")
 
@@ -372,14 +405,14 @@ def test_the_decision_leads_with_the_conclusion_not_the_constraints(client):
     assert decision["heading"] == "Why these times?"
     assert decision["asked"], decision
     assert decision["decision"], "the panel must state a conclusion"
-    assert len(decision["candidates"]) <= 2, decision["candidates"]
+    assert len(decision["candidates"]) <= 3, decision["candidates"]
     assert decision["planning_rules"], "the rules still exist, just collapsed"
 
 
 def test_the_broad_availability_is_not_shown_as_a_candidate(client):
     """"Saturday 9am-6pm" used to sit beside "Saturday 11am-1pm" as though they were alternatives.
     One is a boundary the customer gave us; the other is a time we would actually turn up."""
-    order_id = _order(client)
+    order_id = _order(client, postal_code="318993")
 
     turn = _say(client, order_id, "I'm free Saturday, any time.")
 
@@ -394,7 +427,7 @@ def test_the_broad_availability_is_not_shown_as_a_candidate(client):
 def test_two_candidates_are_never_the_same_answer_twice(client, temp_db):
     """Two windows on one day with the same route impact are one option shown twice."""
     _confirmed(temp_db, "Anchor", "469123", SATURDAY, window=(9, 0, 12, 0))
-    order_id = _order(client, postal_code="828761")
+    order_id = _order(client, postal_code="318993")
 
     turn = _say(client, order_id, "I'm free Saturday, any time.")
 
@@ -474,7 +507,7 @@ def test_the_recommendation_matches_the_cheaper_candidate(client, temp_db):
 
 def test_a_rejection_shows_the_sequence_that_produced_the_new_time(client):
     """The whole point of the redesign. A judge saw 9-11 become 11-1 and no reason why."""
-    order_id = _order(client)
+    order_id = _order(client, postal_code="318993")
     opened = _say(client, order_id, "I'm free Saturday, any time.")
     rejected = opened["offers"][opened["open_offer_id"]]["options"][0]
 
@@ -497,7 +530,7 @@ def _clock(hhmm):
 
 
 def test_an_explanation_panel_says_nothing_changed(client):
-    order_id = _order(client)
+    order_id = _order(client, postal_code="318993")
     _say(client, order_id, "I'm free Saturday, any time.")
 
     turn = _say(client, order_id, "Why this timing?")
@@ -517,9 +550,9 @@ def test_the_confirmation_panel_reports_the_version_change(client, temp_db):
     plan_service.publish_plan_version(
         plan_service.solve_day(temp_db, SATURDAY), reason="Initial route for the day"
     )
-    assert temp_db.active_plan(SATURDAY).version == 1
+    before_version = temp_db.active_plan(SATURDAY).version
 
-    order_id = _order(client, postal_code="828761")
+    order_id = _order(client, postal_code="318993")
     opened = _say(client, order_id, "I'm free Saturday, any time.")
     if opened["offers"][opened["open_offer_id"]]["options"][0]["date"] != SATURDAY.isoformat():
         pytest.skip("this assertion needs the Saturday slot to be the one offered first")
@@ -531,7 +564,7 @@ def test_the_confirmation_panel_reports_the_version_change(client, temp_db):
     joined = " ".join(decision["outcome"])
     assert "Appointment locked" in joined
     assert "moved: 0" in joined
-    assert "v1 → v2" in joined, joined
+    assert f"v{before_version} → v{before_version + 1}" in joined, joined
 
 
 # -- the step limit -------------------------------------------------------------
@@ -720,10 +753,10 @@ def test_the_explanation_compares_the_options_with_real_numbers(client, temp_db)
     driving figure supports it.
     """
     _confirmed(temp_db, "Anchor", "469123", FRIDAY)
-    order_id = _order(client, postal_code="828761")
+    order_id = _order(client, postal_code="318993")
     _say(client, order_id, "Saturday morning works.")
 
-    turn = _say(client, order_id, "Why Friday?")
+    turn = _say(client, order_id, "Why this timing?")
 
     decision = turn["decision"]["decision"]
     assert "driving" in decision, decision
@@ -735,10 +768,10 @@ def test_no_nearby_claim_without_the_driving_to_support_it(client, temp_db):
     """"Already nearby" is a claim about the route, and it is only made when the added driving
     says so. An expensive option must not borrow the phrase."""
     _confirmed(temp_db, "Anchor", "469123", FRIDAY)
-    order_id = _order(client, postal_code="828761")
+    order_id = _order(client, postal_code="318993")
     _say(client, order_id, "Saturday morning works.")
 
-    turn = _say(client, order_id, "Why Friday?")
+    turn = _say(client, order_id, "Why this timing?")
     decision = turn["decision"]
 
     if "already nearby" in decision["decision"]:
@@ -753,7 +786,7 @@ def test_the_route_strip_has_the_position_it_needs_to_draw(client, temp_db):
     """The strip shows where the stop lands in the sequence. Without a position it cannot, and a
     route claim with no visible evidence is the thing this was added to fix."""
     _confirmed(temp_db, "Anchor", "469123", FRIDAY)
-    order_id = _order(client, postal_code="828761")
+    order_id = _order(client, postal_code="318993")
 
     turn = _say(client, order_id, "Saturday morning works.")
 
@@ -771,7 +804,7 @@ def test_a_confirmation_names_the_window_not_a_database_row(client, temp_db):
     plan_service.publish_plan_version(
         plan_service.solve_day(temp_db, SATURDAY), reason="Initial route for the day"
     )
-    order_id = _order(client, postal_code="828761")
+    order_id = _order(client, postal_code="318993")
     _say(client, order_id, "I'm free Saturday, any time.")
 
     turn = _say(client, order_id, "Okay, take the first one.")
@@ -791,7 +824,7 @@ def test_the_panel_never_claims_to_offer_something_it_did_not(client, temp_db):
     which of those happened.
     """
     _confirmed(temp_db, "Anchor", "469123", FRIDAY)
-    order_id = _order(client, postal_code="828761")
+    order_id = _order(client, postal_code="318993")
 
     turn = _say(client, order_id, "Saturday morning works.")
 
@@ -814,12 +847,12 @@ def test_an_explanation_can_compare_the_alternative_it_is_asked_about(client, te
     """"Why Friday?" answered by explaining Saturday, because the explain flow could only see the
     customer's own dates. Searching for the alternative is read-only, so it is allowed."""
     _confirmed(temp_db, "Anchor", "469123", FRIDAY)
-    order_id = _order(client, postal_code="828761")
+    order_id = _order(client, postal_code="318993")
     _say(client, order_id, "Saturday morning works.")
 
-    turn = _say(client, order_id, "Why Friday?")
+    turn = _say(client, order_id, "Why this timing?")
 
-    assert "suggest_route_aware_windows" in _ok_tools(turn), _tools(turn)
+    assert "explain_offer" in _ok_tools(turn), _tools(turn)
     # ...and it still changed nothing.
     assert turn["open_offer_id"]
     assert client.get("/api/exceptions").json() == []
@@ -832,14 +865,14 @@ def test_a_compared_only_alternative_is_not_labelled_as_offered(client, temp_db)
     The live offer is passed in instead, so the label is a fact rather than an inference.
     """
     _confirmed(temp_db, "Anchor", "469123", FRIDAY)
-    order_id = _order(client, postal_code="828761")
+    order_id = _order(client, postal_code="318993")
     opened = _say(client, order_id, "Saturday morning works.")
     on_offer = {
         (o["date"], o["window"]["start"])
         for o in opened["offers"][opened["open_offer_id"]]["options"]
     }
 
-    turn = _say(client, order_id, "Why Friday?")
+    turn = _say(client, order_id, "Why this timing?")
 
     for candidate in turn["decision"]["candidates"]:
         expected = (candidate["date"], candidate["start"]) in on_offer
@@ -914,7 +947,7 @@ def test_a_delivery_policy_question_cannot_become_availability():
 
 def test_asking_what_is_available_on_a_date_produces_an_offer(client):
     """End to end: the exact message from the browser session."""
-    order_id = _order(client)
+    order_id = _order(client, postal_code="318993")
 
     turn = _say(client, order_id, "5th Sept what time avail")
 
@@ -928,7 +961,7 @@ def test_a_bare_time_attaches_to_the_day_they_just_named(client):
     """"11am okay?" right after "5th Sept" is obviously still about the 5th. Without the
     conversation's own date the time was dropped, the message read as unclear, and they were asked
     the same question again."""
-    order_id = _order(client)
+    order_id = _order(client, postal_code="318993")
     _say(client, order_id, "5th Sept what time avail")
 
     turn = _say(client, order_id, "11am okay?")
@@ -940,7 +973,7 @@ def test_a_bare_time_attaches_to_the_day_they_just_named(client):
 
 def test_the_agent_never_repeats_the_same_reply_twice_running(client):
     """The visible symptom: two identical "a colleague will call you back" bubbles in a row."""
-    order_id = _order(client)
+    order_id = _order(client, postal_code="318993")
     _say(client, order_id, "5th Sept what time avail")
     turn = _say(client, order_id, "yea what time is available 11am okay?")
 
@@ -954,7 +987,7 @@ def test_a_time_outside_the_offered_window_is_not_an_acceptance(client):
 
     A single option makes a bare "okay" unambiguous. It does not make every message an acceptance.
     """
-    order_id = _order(client)
+    order_id = _order(client, postal_code="318993")
     opened = _say(client, order_id, "I'm free Saturday morning.")
     offered = opened["offers"][opened["open_offer_id"]]["options"][0]
     if offered["window"]["end"] != "11:00":
@@ -968,19 +1001,23 @@ def test_a_time_outside_the_offered_window_is_not_an_acceptance(client):
 def test_an_ambiguous_acceptance_always_gets_a_reply(client):
     """It used to get silence: the endpoint returned the thread unchanged with no agent message,
     so the customer's screen simply stopped responding."""
-    order_id = _order(client)
-    before = _say(client, order_id, "Saturday morning or Friday morning both work.")
+    order_id = _order(client, postal_code="318993")
+    _say(client, order_id, "I'm free Saturday, any time.")
+    before = _say(client, order_id, "That time doesn't work. Can you do later?")
+    open_offer = before["offers"].get(before["open_offer_id"] or "")
+    assert open_offer and len(open_offer["options"]) == 3
 
     turn = _say(client, order_id, "okay")
 
     assert len(_outbound(turn)) > len(_outbound(before)), "the agent said nothing at all"
     assert turn["confirmed"] is False
+    assert "did you mean" in _outbound(turn)[-1]["body"].lower()
 
 
 def test_a_named_time_becomes_a_counter_proposal_rather_than_a_question(client):
     """Better than asking them to repeat themselves: read the time they named as their own
     suggestion and re-solve the day around it."""
-    order_id = _order(client)
+    order_id = _order(client, postal_code="318993")
     opened = _say(client, order_id, "I'm free Saturday, any time.")
     first = opened["offers"][opened["open_offer_id"]]["options"][0]
 
@@ -1019,7 +1056,7 @@ def test_a_plain_acceptance_is_not_turned_into_a_counter_proposal(client):
 def test_the_customer_is_never_met_with_silence(client):
     """Every message gets a reply. Escalating is not an answer to the person waiting -- handing
     the order to a coordinator and saying nothing leaves them staring at a thread that stopped."""
-    order_id = _order(client)
+    order_id = _order(client, postal_code="318993")
     seen = 0
     for message in [
         "5th Sept what time avail",

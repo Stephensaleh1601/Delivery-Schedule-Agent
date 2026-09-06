@@ -7,6 +7,7 @@ these guarantees a single booking would fan out into dozens of billed requests.
 A counting fake stands in for Google so the numbers are exact and nothing touches the network.
 """
 from datetime import date, time
+from time import monotonic
 
 import pytest
 
@@ -57,6 +58,18 @@ def test_cold_matrix_is_one_batched_request(google):
     google.matrix(POINTS)
     assert len(google.requests) == 1, f"expected one rectangle, got {google.requests}"
     assert google.elements == len(POINTS) * len(POINTS)
+
+
+def test_cache_persistence_reuses_the_active_write_transaction(temp_db):
+    """A confirmation must not wait on a second SQLite writer behind its own transaction."""
+    MATRIX_CACHE.clear()
+    started = monotonic()
+    with temp_db.transaction():
+        MATRIX_CACHE.put("google", POINTS[0], POINTS[1], {"minutes": 12, "km": 4.2})
+    elapsed = monotonic() - started
+
+    assert elapsed < 1.0, f"cache write deadlocked behind the active transaction for {elapsed:.2f}s"
+    assert MATRIX_CACHE.peek("google", POINTS[0], POINTS[1]) == {"minutes": 12, "km": 4.2}
 
 
 def test_resolving_the_same_day_again_costs_nothing(google):

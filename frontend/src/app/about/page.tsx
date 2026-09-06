@@ -25,7 +25,6 @@ import {
   DetourComparison,
   Figure,
   Flow,
-  Quote,
   RouteLine,
 } from "@/components/about/parts";
 
@@ -51,8 +50,8 @@ export default function AboutPage() {
         <Slide n={0} eyebrow="The ask" criterion="Presentation" first>
           <Headline>Nobody should spend an afternoon asking forty people when they are home</Headline>
           <Lede>
-            An AI helper that agrees a delivery time with every customer by text — and only offers
-            times the van can actually make.
+            An AI delivery coordinator that agrees a time by text, checks the published route and
+            only offers windows the van can keep.
           </Lede>
 
           <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -61,7 +60,7 @@ export default function AboutPage() {
             <Pill>Team Majestic Fighters</Pill>
           </div>
 
-          <p className="text-[14px] leading-[1.6] text-ink-muted">
+          <p className="text-[17px] leading-[1.6] text-ink-muted">
             The three tabs beside this one are the working product.{" "}
             <Link href="/chat" className="text-accent underline underline-offset-2">
               Customer Chat
@@ -71,44 +70,45 @@ export default function AboutPage() {
         </Slide>
 
         {/* 02 ------------------------------------------------------------- */}
-        <Slide n={1} eyebrow="The problem" criterion="Presentation">
+        <Slide n={1} eyebrow="The problem" criterion="Benefits · Presentation">
           <Headline>Two hard jobs, both done by hand</Headline>
           <Lede>
-            Fresh pet food spoils in Singapore&rsquo;s heat, so it can&rsquo;t be left at the door.{" "}
-            <Strong>Somebody has to be home.</Strong> Every order needs a time the customer agreed
-            to.
+            Floof.sg coordinates attended deliveries for fresh pet food. <Strong>Somebody has to
+            be home.</Strong> Every order needs a time the customer agreed to.
           </Lede>
 
           <Segment label="Job 1 — asking everybody">
             <Figure>
               <Flow
                 steps={[
-                  { title: "40 orders", note: "for the week" },
-                  { title: "One person", note: "an afternoon on WhatsApp" },
-                  { title: "One “no”", note: "and you start again" },
+                  { title: "30–40 deliveries", note: "on a busy day" },
+                  {
+                    title: "One coordinator",
+                    note: "asking on WhatsApp",
+                    icon: <WhatsAppMark />,
+                  },
+                  { title: "One “no”", note: "starts another route search" },
                 ]}
               />
             </Figure>
-            <Quote source="Floof.sg — interview, 5 September 2026">
-              “It&rsquo;s more to negotiate with the customers when is the delivery time slots they
-              prefer. That&rsquo;s the hardest part.”
-            </Quote>
+            <Note title="The bottleneck">
+              Customer availability becomes route input. One “no” starts another route search.
+            </Note>
           </Segment>
 
           <Segment label="Job 2 — deciding who to visit first">
             <Figure caption="Same five customers, same van, same day. Only the order changed.">
               <DetourComparison />
             </Figure>
-            <p className="text-[14px] leading-[1.6] text-ink-soft">
+            <p className="text-[17px] leading-[1.6] text-ink-soft">
               Detours turn into late deliveries. A person works this out by hand — and drivers still
               change it on the road, so the plan and the day drift apart.
             </p>
           </Segment>
 
           <Statement>
-            A coordinator at Floof.sg needs to agree a time with every customer <em>and</em> put
-            them in a sensible driving order, <Strong>because</Strong> doing both by hand takes an
-            afternoon — and one “sorry, not Friday” undoes it.
+            The hard part is turning changing customer answers into promises the route can
+            actually keep.
           </Statement>
         </Slide>
 
@@ -138,19 +138,19 @@ export default function AboutPage() {
               <PersonCard
                 name="Mr Rajan"
                 tone="pending"
-                does="Says no. Twice."
+                does="Rejects the first offer."
                 agent="Looks wider, offers three, or hands it to a person."
               />
             </div>
-            <p className="text-[13.5px] leading-[1.55] text-ink-muted">
-              Roughly 7 in 10 customers are Mrs Chua. We built it so the other 3 still get an answer
-              instead of an apology.
+            <p className="text-[16px] leading-[1.55] text-ink-muted">
+              The easy path takes one search and one confirmation. The difficult path adapts to a
+              rejection without guessing or moving an existing booking.
             </p>
           </Segment>
         </Slide>
 
         {/* 04 ------------------------------------------------------------- */}
-        <Slide n={3} eyebrow="How it is built" criterion="Technical quality">
+        <Slide n={3} eyebrow="How it is built" criterion="Innovation · Technical quality">
           <Headline>Everything comes back to the same question</Headline>
           <Lede>
             Each box is marked <Tag who="ai" /> or <Tag who="code" />. The AI appears twice — and
@@ -174,11 +174,11 @@ export default function AboutPage() {
         </Slide>
 
         {/* 05 ------------------------------------------------------------- */}
-        <Slide n={4} eyebrow="Fitting people in" criterion="Technical quality">
+        <Slide n={4} eyebrow="Fitting people in" criterion="Innovation · Technical quality">
           <Headline>Slide them into the day. Don&rsquo;t rebuild it.</Headline>
           <Lede>
-            Two delivery days a week, each covering one part of Singapore. An address already tells
-            us the normal day.
+            Our seeded demo uses two delivery days, each covering one part of Singapore. An
+            address tells the agent which published route to check first.
           </Lede>
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -243,7 +243,7 @@ export default function AboutPage() {
         </Slide>
 
         {/* 06 ------------------------------------------------------------- */}
-        <Slide n={5} eyebrow="The prototype" criterion="Technical quality">
+        <Slide n={5} eyebrow="The prototype" criterion="Effectiveness · Technical quality">
           <Headline>It runs. Here is where.</Headline>
 
           <div className="grid gap-3 sm:grid-cols-3">
@@ -256,34 +256,34 @@ export default function AboutPage() {
             <Figure caption="Each line is written by the code that did that thing, as it did it. Nothing is faked to look busy.">
               <ol className="flex flex-col gap-1.5">
                 {[
-                  ["Read the message", "0.9s"],
-                  ["Checked Friday's route — 17 stops", "2.3s"],
-                  ["Offered 2–5pm, right after Chen Li Hua", "0.4s"],
+                  ["Read the customer’s message", "done"],
+                  ["Checked the published route", "done"],
+                  ["Offered 2–5pm with route evidence", "sent"],
                 ].map(([text, time]) => (
                   <li
                     key={text}
                     className="flex items-center justify-between gap-4 rounded-[9px] border border-rail bg-sunk/50 px-3.5 py-2.5"
                   >
-                    <span className="flex items-center gap-2.5 text-[13.5px] text-ink">
+                    <span className="flex items-center gap-2.5 text-[16px] text-ink">
                       <TickIcon />
                       {text}
                     </span>
-                    <span className="font-mono text-[11.5px] tnum text-ink-faint">{time}</span>
+                    <span className="font-mono text-[13.5px] tnum text-ink-faint">{time}</span>
                   </li>
                 ))}
               </ol>
             </Figure>
           </Segment>
 
-          <Segment label="What production still needs">
+          <Segment label="Integration path">
             <div className="grid gap-3 sm:grid-cols-2">
-              <Note title="Ready now">
-                The agent, the route maths, the rules, the console, the database. Python, FastAPI,
-                Next.js, OR-Tools, Claude on AWS Bedrock.
+              <Note title="Working now">
+                The agent loop, route maths, policy rules, operations console and database. Python,
+                FastAPI, Next.js, OR-Tools, LangGraph and Claude on AWS Bedrock.
               </Note>
-              <Note title="Swap-ins, clearly marked">
-                Real WhatsApp instead of our simulated thread, and Floof.sg&rsquo;s own address
-                lookup. Both sit behind one interface each, with a working stand-in today.
+              <Note title="Connect to the business">
+                The simulated customer thread and demo address lookup sit behind clear interfaces,
+                ready to connect to the operator&rsquo;s messaging and address systems.
               </Note>
             </div>
           </Segment>
@@ -295,7 +295,7 @@ export default function AboutPage() {
 
           <BeforeAfter
             rows={[
-              { before: "One person, one afternoon, forty customers", after: "Each customer answered as they reply" },
+              { before: "One coordinator chasing dozens of replies", after: "Each customer answered as they reply" },
               { before: "Drivers sorting out timings between stops", after: "Drivers get a finished route the day before" },
               { before: "“Not Friday” means starting over", after: "A “no” searches somewhere else by itself" },
               { before: "The plan lives in one person's head", after: "Every decision can be looked up afterwards" },
@@ -310,7 +310,7 @@ export default function AboutPage() {
               />
               <TraitCard
                 word="More vans"
-                text="The route maths already solves a day. A second van is a second day to solve."
+                text="The same coordination loop can sit above a multi-vehicle route solver."
               />
               <TraitCard
                 word="Other trades"
@@ -320,12 +320,12 @@ export default function AboutPage() {
           </Segment>
 
           <div className="rounded-[14px] border border-accent-edge bg-accent-wash px-7 py-7">
-            <p className="font-display text-[22px] leading-[1.4] text-ink sm:text-[26px]">
-              Every customer gets a time they agreed to.
+            <p className="font-display text-[26px] leading-[1.4] text-ink sm:text-[32px]">
+              Every confirmed customer gets a time they accepted.
               <br />
-              Every driver gets a route that makes sense.
+              Every driver gets a route built from accepted promises.
               <br />
-              <span className="text-accent">Nobody spends an afternoon on WhatsApp.</span>
+              <span className="text-accent">Unresolved cases go to the coordinator.</span>
             </p>
           </div>
         </Slide>
@@ -365,7 +365,7 @@ function Slide({
       style={{ animationDelay: `${Math.min(n, 4) * 55}ms` }}
     >
       <div className="flex items-center gap-3">
-        <span className="font-mono text-[11px] font-medium tabular-nums text-ink-faint">
+        <span className="font-mono text-[13px] font-medium tabular-nums text-ink-faint">
           {String(n + 1).padStart(2, "0")}
         </span>
         <span aria-hidden className="h-px w-6 bg-rail-strong" />
@@ -373,7 +373,7 @@ function Slide({
         <span aria-hidden className="h-px flex-1 bg-rail" />
         <span
           title="The judging criterion this slide answers"
-          className="font-mono text-[9.5px] uppercase tracking-[0.11em] text-ink-faint"
+          className="font-mono text-[11.5px] uppercase tracking-[0.11em] text-ink-faint"
         >
           {criterion}
         </span>
@@ -385,14 +385,14 @@ function Slide({
 
 function Headline({ children }: { children: ReactNode }) {
   return (
-    <h2 className="max-w-[24ch] font-display text-[32px] leading-[1.1] tracking-[-0.015em] text-ink sm:text-[40px]">
+    <h2 className="max-w-[24ch] font-display text-[40px] leading-[1.1] tracking-[-0.015em] text-ink sm:text-[50px]">
       {children}
     </h2>
   );
 }
 
 function Lede({ children }: { children: ReactNode }) {
-  return <p className="max-w-[64ch] text-[15.5px] leading-[1.6] text-ink-soft">{children}</p>;
+  return <p className="max-w-[64ch] text-[19px] leading-[1.6] text-ink-soft">{children}</p>;
 }
 
 function Strong({ children }: { children: ReactNode }) {
@@ -405,7 +405,7 @@ function Tag({ who }: { who: "ai" | "code" }) {
     <span
       className={cx(
         "inline-block rounded-full border px-2 py-[1px] align-[1px]",
-        "font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em]",
+        "font-mono text-[11.5px] font-semibold uppercase tracking-[0.1em]",
         who === "ai"
           ? "border-accent-edge bg-accent-wash text-accent"
           : "border-rail-strong bg-sunk text-ink-muted",
@@ -416,7 +416,7 @@ function Tag({ who }: { who: "ai" | "code" }) {
   );
 }
 
-/** A labelled block inside a slide. This is what keeps ten dense slides readable. */
+/** A labelled block inside a slide. This keeps each slide readable. */
 function Segment({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-3.5 pt-2">
@@ -433,7 +433,7 @@ function Statement({ children }: { children: ReactNode }) {
   return (
     <div className="mt-2 rounded-[14px] border border-rail bg-surface px-6 py-5 shadow-[var(--shadow-raise)]">
       <Eyebrow>The problem, in one sentence</Eyebrow>
-      <p className="mt-2 font-display text-[20px] leading-[1.42] text-ink sm:text-[22px]">
+      <p className="mt-2 font-display text-[24px] leading-[1.42] text-ink sm:text-[26px]">
         {children}
       </p>
     </div>
@@ -464,7 +464,7 @@ function Rail({ active }: { active: number }) {
               i === active ? "w-5 bg-accent" : "w-2.5 bg-rail-strong group-hover:w-4",
             )}
           />
-          <span className="truncate text-[12px] leading-[1.4]">{label}</span>
+          <span className="truncate text-[14px] leading-[1.4]">{label}</span>
         </a>
       ))}
     </nav>
@@ -528,10 +528,10 @@ function PersonCard({
     <div className="flex flex-col gap-2.5 rounded-[12px] border border-rail bg-surface px-5 py-4 shadow-[var(--shadow-raise)]">
       <div className="flex items-center gap-2">
         <span className={cx("h-1.5 w-1.5 rounded-full", tone === "locked" ? "bg-locked" : "bg-pending")} />
-        <span className="text-[14px] font-semibold text-ink">{name}</span>
+        <span className="text-[17px] font-semibold text-ink">{name}</span>
       </div>
-      <p className="text-[13.5px] leading-[1.5] text-ink-muted">{does}</p>
-      <p className="border-t border-rail pt-2.5 text-[13.5px] leading-[1.5] text-ink-soft">{agent}</p>
+      <p className="text-[16px] leading-[1.5] text-ink-muted">{does}</p>
+      <p className="border-t border-rail pt-2.5 text-[16px] leading-[1.5] text-ink-soft">{agent}</p>
     </div>
   );
 }
@@ -539,8 +539,8 @@ function PersonCard({
 function TraitCard({ word, text }: { word: string; text: string }) {
   return (
     <div className="flex flex-col gap-1.5 rounded-[12px] border border-rail bg-surface px-5 py-4">
-      <span className="font-display text-[20px] leading-none text-accent">{word}</span>
-      <p className="text-[13px] leading-[1.5] text-ink-muted">{text}</p>
+      <span className="font-display text-[24px] leading-none text-accent">{word}</span>
+      <p className="text-[15.5px] leading-[1.5] text-ink-muted">{text}</p>
     </div>
   );
 }
@@ -548,8 +548,8 @@ function TraitCard({ word, text }: { word: string; text: string }) {
 function DayCard({ day, regions }: { day: string; regions: string }) {
   return (
     <div className="flex flex-col gap-1 rounded-[12px] border border-rail bg-surface px-5 py-4 shadow-[var(--shadow-raise)]">
-      <span className="font-display text-[22px] leading-none text-ink">{day}</span>
-      <span className="text-[13px] leading-[1.5] text-ink-muted">{regions}</span>
+      <span className="font-display text-[26px] leading-none text-ink">{day}</span>
+      <span className="text-[15.5px] leading-[1.5] text-ink-muted">{regions}</span>
     </div>
   );
 }
@@ -563,7 +563,7 @@ function ScreenCard({ href, name, text }: { href: string; name: string; text: st
         "shadow-[var(--shadow-raise)] transition-colors duration-150 hover:border-accent-edge hover:bg-accent-wash/40",
       )}
     >
-      <span className="flex items-center gap-1.5 text-[14px] font-semibold text-ink">
+      <span className="flex items-center gap-1.5 text-[17px] font-semibold text-ink">
         {name}
         <svg
           viewBox="0 0 12 12"
@@ -574,7 +574,7 @@ function ScreenCard({ href, name, text }: { href: string; name: string; text: st
           <path d="M3.5 2.5 7.5 6l-4 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </span>
-      <span className="text-[13px] leading-[1.5] text-ink-muted">{text}</span>
+      <span className="text-[15.5px] leading-[1.5] text-ink-muted">{text}</span>
     </Link>
   );
 }
@@ -582,8 +582,8 @@ function ScreenCard({ href, name, text }: { href: string; name: string; text: st
 function Note({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5 rounded-[12px] border border-rail bg-sunk/50 px-5 py-4">
-      <span className="text-[13.5px] font-semibold text-ink">{title}</span>
-      <p className="text-[13px] leading-[1.55] text-ink-muted">{children}</p>
+      <span className="text-[16px] font-semibold text-ink">{title}</span>
+      <p className="text-[15.5px] leading-[1.55] text-ink-muted">{children}</p>
     </div>
   );
 }
@@ -599,5 +599,19 @@ function TickIcon() {
         strokeLinejoin="round"
       />
     </svg>
+  );
+}
+
+/** Recognisable channel cue without adding an icon dependency. Path from Simple Icons (CC0). */
+function WhatsAppMark() {
+  return (
+    <span
+      aria-label="WhatsApp"
+      className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-wa-accent text-white"
+    >
+      <svg viewBox="0 0 24 24" aria-hidden className="h-[17px] w-[17px] fill-current">
+        <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" />
+      </svg>
+    </span>
   );
 }

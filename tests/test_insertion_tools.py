@@ -89,7 +89,7 @@ def test_no_published_pair_is_a_refusal_not_an_empty_list(seeded):
 def test_the_tool_returns_the_ranked_options_and_the_counts(seeded):
     order = _order(seeded, "Mr Rajan")
 
-    result = tools.dispatch("find_insertion_options", {"order_id": order.id}, _ctx(seeded))
+    result = tools.dispatch("find_fallback_options", {"order_id": order.id}, _ctx(seeded))
 
     assert result.ok
     assert result.data["routes_checked"] == 2
@@ -105,7 +105,7 @@ def test_the_model_cannot_smuggle_in_its_own_numbers(seeded):
     order = _order(seeded, "Mr Rajan")
 
     result = tools.dispatch(
-        "find_insertion_options",
+        "find_fallback_options",
         {"order_id": order.id, "distance_km": 2.0, "lat": 1.3, "lng": 103.8},
         _ctx(seeded),
     )
@@ -119,7 +119,7 @@ def test_an_unlocatable_order_fails_rather_than_guessing(seeded):
     order.address.coordinates = None
     seeded.save_job(order)
 
-    result = tools.dispatch("find_insertion_options", {"order_id": order.id}, _ctx(seeded))
+    result = tools.dispatch("find_normal_slot", {"order_id": order.id}, _ctx(seeded))
 
     assert not result.ok
     assert result.error == "not_geocoded"
@@ -131,7 +131,7 @@ def test_the_search_result_is_left_where_the_offer_can_read_it(seeded):
     order = _order(seeded, "Mr Rajan")
     ctx = _ctx(seeded)
 
-    tools.dispatch("find_insertion_options", {"order_id": order.id}, ctx)
+    tools.dispatch("find_fallback_options", {"order_id": order.id}, ctx)
 
     assert ctx.scratch["insertion"].options
     assert ctx.scratch["insertion"].options[0].source_plan_version >= 1
@@ -140,18 +140,26 @@ def test_the_search_result_is_left_where_the_offer_can_read_it(seeded):
 # -- intent scoping -------------------------------------------------------------
 
 
-@pytest.mark.parametrize("intent", ["reject", "provide_availability", "explain"])
-def test_the_search_is_reachable_on_the_intents_that_need_it(seeded, intent):
-    """Without an INTENT_TOOLS entry dispatch() refuses these as not_allowed_for_intent, and a
-    declined offer has nowhere to go but a coordinator."""
+@pytest.mark.parametrize(
+    ("intent", "action"),
+    [
+        ("reject", "find_fallback_options"),
+        ("provide_availability", "find_normal_slot"),
+        ("explain", "explain_offer"),
+    ],
+)
+def test_the_workflow_action_is_reachable_on_the_intents_that_need_it(seeded, intent, action):
+    """Each intent exposes its bounded workflow, not the retired granular search primitives."""
     order = _order(seeded, "Mr Rajan")
 
-    result = tools.dispatch("find_insertion_options", {"order_id": order.id}, _ctx(seeded, intent))
+    result = tools.dispatch(action, {"order_id": order.id}, _ctx(seeded, intent))
 
     assert result.error != "not_allowed_for_intent"
 
 
-@pytest.mark.parametrize("action", ["retrieve_policy", "get_existing_routes", "find_insertion_options"])
+@pytest.mark.parametrize(
+    "action", ["retrieve_policy", "find_normal_slot", "find_fallback_options"]
+)
 def test_none_of_them_are_reachable_while_accepting(seeded, action):
     """The customer said yes to a specific slot. Re-searching at that point is how an agent books
     something other than what was accepted."""
@@ -166,12 +174,11 @@ def test_a_question_cannot_change_the_booking(seeded):
     order = _order(seeded, "Mr Rajan")
     before = order.model_dump()
 
-    for action, args in (
-        ("retrieve_policy", {"topic": "alternatives"}),
-        ("get_existing_routes", {}),
-        ("find_insertion_options", {"order_id": order.id}),
-    ):
-        tools.dispatch(action, args, _ctx(seeded, "explain"))
+    tools.dispatch(
+        "explain_offer",
+        {"order_id": order.id, "reason": "Why this timing?"},
+        _ctx(seeded, "explain"),
+    )
 
     after = seeded.get_job(order.id).model_dump()
     assert {k: v for k, v in after.items() if k != "updated_at"} == {

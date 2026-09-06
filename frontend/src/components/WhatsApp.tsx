@@ -18,8 +18,8 @@ import { cx } from "@/components/ui";
 export function Phone({
   children,
   status,
-  name = "Majestic Fighters Fresh Pet Food",
-  initials = "MF",
+  name = "Floof",
+  initials = "F",
   className,
 }: {
   children: ReactNode;

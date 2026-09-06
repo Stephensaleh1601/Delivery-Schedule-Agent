@@ -134,6 +134,20 @@ def _last_error(state, tool_name: str) -> str | None:
     return attempts[-1].error if attempts else None
 
 
+def _named_off_cluster_day(state, stated: list[dict] | None) -> bool:
+    """Whether the customer explicitly named a day outside their regional run."""
+    normal_day = (state.get("placement") or {}).get("normal_day")
+    if not normal_day:
+        return False
+    for option in stated or []:
+        try:
+            if Date.fromisoformat(option["date"]).strftime("%A") != normal_day:
+                return True
+        except (KeyError, TypeError, ValueError):
+            continue
+    return False
+
+
 
 # The conversational path, step by step. Both customer intents walk it; only the first action and
 # the offer at the end differ. It lives here rather than being inlined twice so that the standard
@@ -301,12 +315,17 @@ class RuleDecisionAgent:
                 return ActionDecision(action="finish",
                                       reason_summary="Waiting for a date we can actually book.")
             if conversational:
-                # The standard procedure always takes the customer's own day. Distinguishing
-                # an off-cluster request is the model's job on the live path; a fallback that has
-                # to make that call as well is a fallback with its own failure modes.
+                # A named day is part of the customer's request, not a judgement call. The
+                # deterministic path must honour it exactly as the model-driven path does.
+                requested = event.payload.get("search_scope") == "requested"
+                if event.payload.get("search_scope") is None:
+                    requested = _named_off_cluster_day(state, stated)
                 return _insertion_sequence(
                     event, done, state, topic="cluster_days",
-                    offer_action="find_normal_slot", scope="cluster",
+                    offer_action=(
+                        "find_requested_day_slot" if requested else "find_normal_slot"
+                    ),
+                    scope="requested" if requested else "cluster",
                 )
 
             if "evaluate_slots" not in done:
@@ -377,11 +396,12 @@ class RuleDecisionAgent:
             return ActionDecision(action="finish", reason_summary="Offer sent; waiting on the customer.")
 
         if event.event_type is PlanningEventType.CUSTOMER_ACCEPTED_OFFER:
-            if "lock_appointment" not in done:
-                return ActionDecision(action="lock_appointment",
-                                      reason_summary="Locking the slot the customer chose.",
-                                      arguments={"offer_id": event.payload.get("offer_id"),
-                                                 "slot_id": event.payload.get("slot_id")})
+            if "confirm_offer" not in done:
+                return ActionDecision(
+                    action="confirm_offer",
+                    reason_summary="Locking the exact slot the customer chose.",
+                    arguments={"order_id": event.order_id},
+                )
             return ActionDecision(action="finish", reason_summary="Appointment confirmed.")
 
         if event.event_type is PlanningEventType.CUSTOMER_REJECTED_OFFER:
@@ -492,36 +512,13 @@ class RuleDecisionAgent:
             intent = event.payload.get("intent")
 
             if intent == "explain":
-                # The figures must come from a solve, so re-evaluate before answering. Explaining
-                # from memory is how an agent ends up confidently quoting a route it no longer has.
-                if "evaluate_slots" not in done:
+                if "explain_offer" not in done:
                     return ActionDecision(
-                        action="evaluate_slots",
-                        reason_summary="Re-checking the route so the answer is the current one.",
-                        arguments={"order_id": event.order_id},
-                    )
-                # The alternative is usually the thing being asked about -- "why Tuesday?" is a
-                # question about a day we proposed, not about the day they requested.
-                if "suggest_route_aware_windows" not in done:
-                    return ActionDecision(
-                        action="suggest_route_aware_windows",
-                        reason_summary="Re-checking the alternative so the comparison is current.",
-                        arguments={"order_id": event.order_id},
-                    )
-                if "explain_choice" not in done:
-                    return ActionDecision(
-                        action="explain_choice",
-                        reason_summary="Answering from the solved route.",
-                        arguments={"order_id": event.order_id,
-                                   "question": event.payload.get("message", "")},
-                    )
-                if _last_failed(state, "explain_choice") and "ask_clarification" not in done:
-                    return ActionDecision(
-                        action="ask_clarification",
-                        reason_summary="Nothing solved to explain; asking what they need.",
+                        action="explain_offer",
+                        reason_summary="Explaining the live offer from its route evidence.",
                         arguments={
                             "order_id": event.order_id,
-                            "question": "Sorry -- which delivery time would you like me to explain?",
+                            "reason": event.payload.get("message", ""),
                         },
                     )
             elif intent == "general_support":
@@ -538,14 +535,13 @@ class RuleDecisionAgent:
                             or "A colleague will call you back about that.",
                         },
                     )
-                if "create_exception" not in done:
+                if "escalate_booking" not in done:
                     return ActionDecision(
-                        action="create_exception",
+                        action="escalate_booking",
                         reason_summary="Passing a non-scheduling request to a coordinator.",
                         arguments={
                             "order_id": event.order_id,
-                            "kind": f"customer_{event.payload.get('topic') or 'request'}",
-                            "message": (
+                            "reason": (
                                 f"Customer asked about "
                                 f"{event.payload.get('topic') or 'something outside scheduling'}: "
                                 f"{event.payload.get('message', '')[:160]}"
@@ -908,6 +904,24 @@ def build_graph(ctx: tools.ToolContext, decider: DecisionAgent, fallback: Decisi
     return graph.compile()
 
 
+def reserve_planning_run(
+    event: PlanningEvent, repo: JobsRepository
+) -> tuple[AgentRunLog, bool]:
+    """Claim an event and its initial run as one database operation."""
+    run = AgentRunLog(
+        event_id=event.id,
+        event_type=event.event_type,
+        order_id=event.order_id,
+        status=AgentRunStatus.RUNNING,
+    )
+    if repo.reserve_planning_run(event, run):
+        return run, True
+    existing = repo.agent_run_for_event(event.id)
+    if existing is None:
+        raise RuntimeError(f"Planning event {event.id} exists without an agent run")
+    return existing, False
+
+
 def handle_planning_event(
     event: PlanningEvent,
     repo: JobsRepository | None = None,
@@ -915,6 +929,7 @@ def handle_planning_event(
     routing_client: RoutingClient | None = None,
     use_fallback: bool = True,
     ctx: tools.ToolContext | None = None,
+    reserved_run: AgentRunLog | None = None,
 ) -> AgentRunLog:
     """Run the agent for one event and return its persisted log.
 
@@ -932,17 +947,14 @@ def handle_planning_event(
     """
     repo = repo or (ctx.repo if ctx is not None else JobsRepository())
 
-    if not repo.save_planning_event(event):
-        # This event id has been handled already -- replaying it must not redo the work.
-        existing = repo.agent_run_for_event(event.id)
-        if existing is not None:
-            return existing
-
-    run = AgentRunLog(
-        event_id=event.id, event_type=event.event_type, order_id=event.order_id,
-        status=AgentRunStatus.RUNNING,
-    )
-    repo.save_agent_run(run)
+    if reserved_run is None:
+        run, created = reserve_planning_run(event, repo)
+        if not created:
+            return run
+    else:
+        if reserved_run.event_id != event.id:
+            raise ValueError("Reserved run does not belong to this planning event")
+        run = reserved_run
 
     ctx = ctx if ctx is not None else tools.ToolContext(repo=repo, routing_client=routing_client)
     # The run row is created just above, so the context can carry its id from the first tool call
@@ -967,7 +979,18 @@ def handle_planning_event(
     # to anybody.
     intent = event.payload.get("intent")
     if intent in tools.INTENT_TOOLS:
-        ctx.allowed_tools = tools.INTENT_TOOLS[intent]
+        allowed = tools.INTENT_TOOLS[intent]
+        # Off-cluster availability is a hard route scope, not a suggestion to the model. Expose
+        # exactly one search composite so a live Bedrock decision cannot accidentally price the
+        # customer's normal delivery day after they explicitly asked for another one.
+        search_scope = event.payload.get("search_scope")
+        if intent == "provide_availability" and search_scope in {"cluster", "requested"}:
+            wrong_search = (
+                "find_requested_day_slot" if search_scope == "cluster" else "find_normal_slot"
+            )
+            allowed = frozenset(action for action in allowed if action != wrong_search)
+            ctx.scratch["search_scope"] = search_scope
+        ctx.allowed_tools = allowed
     if intent:
         # The tools need it too: which routes a search may look at is decided by the intent, not
         # by judgement, and a model that picks the scope differently on two runs of the same
@@ -992,7 +1015,8 @@ def handle_planning_event(
         )
     except Exception as exc:  # noqa: BLE001
         run.status = AgentRunStatus.FAILED
-        run.final_summary = f"The scheduling agent could not complete: {exc}"
+        safe_error = tools.redact_secrets(str(exc)) or type(exc).__name__
+        run.final_summary = f"The scheduling agent could not complete: {safe_error}"
         # Before the save, on EVERY exit. A crash is the case where the customer is most likely
         # to be left with silence, and silence is indistinguishable from a broken server.
         _guarantee_a_reply(repo, event, ctx, run)
@@ -1009,7 +1033,7 @@ def handle_planning_event(
 
     if final.get("error"):
         run.status = AgentRunStatus.FAILED
-        run.final_summary = final["error"]
+        run.final_summary = tools.redact_secrets(final["error"]) or "The scheduling agent failed."
     elif final.get("step_count", 0) >= MAX_TOOL_STEPS and not final.get("completed"):
         run.status = AgentRunStatus.STEP_LIMIT_REACHED
         run.final_summary = (

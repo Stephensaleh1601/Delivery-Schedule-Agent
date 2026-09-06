@@ -9,5 +9,6 @@ venv/
 build/
 .streamlit/
 *.log
+.codex-artifacts/
 .env.local
 .env.*.local

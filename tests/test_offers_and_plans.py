@@ -25,7 +25,7 @@ from dispatch_agent.planning import offer_service, plan_service
 from dispatch_agent.planning.candidate_service import CandidateService
 from dispatch_agent.planning.clock import PlanningClock
 from dispatch_agent.planning.offer_service import OfferError
-from dispatch_agent.solver import LockedPlanInfeasibleError
+from dispatch_agent.solver import LockedPlanInfeasibleError, UnsolvableDayError
 
 BASE = date(2026, 9, 2)
 
@@ -225,6 +225,51 @@ def test_accepting_twice_does_not_create_a_second_plan_version(temp_db):
     assert second.idempotent is True
     assert len(temp_db.plan_versions(chosen.date)) == len(temp_db.plan_versions(first.plan.delivery_date))
     assert len(temp_db.plan_versions(chosen.date)) == 1
+
+
+def test_failed_acceptance_rolls_back_the_offer_and_order(temp_db, monkeypatch):
+    """A route failure must not consume the offer or erase the customer's previous state."""
+    day = PlanningClock.horizon_dates()[0]
+    order = _order(temp_db, options=[_option(day)])
+    offer = offer_service.create_offer(
+        temp_db, order, CandidateService(repo=temp_db).evaluate_all(order)
+    )
+    before = temp_db.get_job(order.id).model_dump()
+
+    def fail_to_publish(*args, **kwargs):
+        raise UnsolvableDayError("forced route failure")
+
+    monkeypatch.setattr(plan_service, "replan_day", fail_to_publish)
+
+    with pytest.raises(OfferError, match="could not confirm"):
+        offer_service.accept_offer(temp_db, offer.id, offer.options[0].id)
+
+    assert temp_db.get_job(order.id).model_dump() == before
+    assert temp_db.get_offer(offer.id).status is OfferStatus.SENT
+    assert temp_db.plan_versions(day) == []
+
+
+def test_failure_after_plan_publication_rolls_back_the_whole_acceptance(temp_db, monkeypatch):
+    """Even the final confirmation message is inside the offer/order/plan transaction."""
+    day = PlanningClock.horizon_dates()[0]
+    order = _order(temp_db, options=[_option(day)])
+    offer = offer_service.create_offer(
+        temp_db, order, CandidateService(repo=temp_db).evaluate_all(order)
+    )
+    before = temp_db.get_job(order.id).model_dump()
+
+    def fail_confirmation(*args, **kwargs):
+        raise RuntimeError("forced message failure")
+
+    monkeypatch.setattr(offer_service, "record_message", fail_confirmation)
+
+    with pytest.raises(RuntimeError, match="forced message failure"):
+        offer_service.accept_offer(temp_db, offer.id, offer.options[0].id)
+
+    assert temp_db.get_job(order.id).model_dump() == before
+    assert temp_db.get_offer(offer.id).status is OfferStatus.SENT
+    assert temp_db.plan_versions(day) == []
+    assert temp_db.messages(order.id) == []
 
 
 def test_accepting_closes_the_other_offered_slot(temp_db):

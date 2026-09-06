@@ -43,10 +43,13 @@ def _order(repo, name):
 def _search(repo, name, scope):
     order = _order(repo, name)
     ctx = tools.ToolContext(repo=repo)
-    result = tools.dispatch(
-        "find_insertion_options", {"order_id": order.id, "scope": scope}, ctx
-    )
-    return result, ctx.scratch.get("insertion_scope", {})
+    action = {
+        "cluster": "find_normal_slot",
+        "requested": "find_requested_day_slot",
+        "both": "find_fallback_options",
+    }[scope]
+    result = tools.dispatch(action, {"order_id": order.id}, ctx)
+    return result, ctx.scratch.get("searched", {})
 
 
 # -- the rule itself ------------------------------------------------------------
