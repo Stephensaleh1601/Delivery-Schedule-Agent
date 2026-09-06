@@ -183,6 +183,35 @@ def test_new_order_evaluates_then_offers_then_messages(temp_db):
     assert temp_db.messages(order.id), "the customer was never actually told"
 
 
+@pytest.mark.parametrize("intent", ["explain", "policy_question", "general_support", "unclear"])
+def test_the_fallback_only_asks_for_actions_the_intent_allows(temp_db, intent):
+    """The intent gate and the standard procedure are two lists of tool names, and nothing ties
+    them together except this test. A fallback that asks for a tool outside the scope is refused
+    at every step, finishes having done nothing, and the completion guarantee then hands a
+    customer who only asked a question to a coordinator."""
+    order = _order(temp_db)
+    question = "Why are you suggesting this time?"
+
+    run = handle_planning_event(
+        _event(
+            order,
+            PlanningEventType.MANUAL_RETRY,
+            intent=intent,
+            message=question,
+            question=question,
+        ),
+        repo=temp_db,
+        decider=RuleDecisionAgent(),
+        use_fallback=False,
+    )
+
+    refused = [
+        (a.tool, a.error) for a in run.actions
+        if a.error in {"not_allowed_for_intent", "not_legal_yet", "action_not_allowed"}
+    ]
+    assert refused == [], refused
+
+
 def test_policy_search_keeps_the_customers_exact_question(temp_db):
     """A model omitting the query must not turn a clear policy question into an escalation."""
     order = _order(temp_db)

@@ -294,7 +294,15 @@ def test_asking_why_gets_an_answer_built_from_the_route(client):
 
     assert turn["intent"] == "explain"
     reply = _outbound(turn)[-1]["body"]
-    assert reply.strip(), "an explanation request must be answered"
+    # Non-empty is not enough. The completion guarantee also sends a non-empty reply -- the one
+    # that hands the customer to a coordinator -- so a blank check passed while every "why" on the
+    # fallback path was escalating. The answer has to carry the route figures.
+    assert "coordinators will call" not in reply, reply
+    assert "km" in reply, reply
+    run = turn["runs"][turn["decision_run_id"]]
+    assert "explain_offer" in {a["tool"] for a in run["actions"] if a["ok"]}, [
+        (a["tool"], a["error"]) for a in run["actions"]
+    ]
 
 
 def test_an_explanation_never_names_another_customer(client):

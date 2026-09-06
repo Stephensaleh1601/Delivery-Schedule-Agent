@@ -492,37 +492,17 @@ class RuleDecisionAgent:
             intent = event.payload.get("intent")
 
             if intent == "explain":
-                # The figures must come from a solve, so re-evaluate before answering. Explaining
-                # from memory is how an agent ends up confidently quoting a route it no longer has.
-                if "evaluate_slots" not in done:
+                # One tool, because the intent scope allows one: `explain_offer` answers from the
+                # evidence stored on the offer the customer is looking at, so there is nothing to
+                # re-solve first. It has to be the workflow name. The granular tools it wraps are
+                # outside the scope, and a fallback that asks for them is refused at every step
+                # and ends the turn having said nothing.
+                if "explain_offer" not in done:
                     return ActionDecision(
-                        action="evaluate_slots",
-                        reason_summary="Re-checking the route so the answer is the current one.",
-                        arguments={"order_id": event.order_id},
-                    )
-                # The alternative is usually the thing being asked about -- "why Tuesday?" is a
-                # question about a day we proposed, not about the day they requested.
-                if "suggest_route_aware_windows" not in done:
-                    return ActionDecision(
-                        action="suggest_route_aware_windows",
-                        reason_summary="Re-checking the alternative so the comparison is current.",
-                        arguments={"order_id": event.order_id},
-                    )
-                if "explain_choice" not in done:
-                    return ActionDecision(
-                        action="explain_choice",
-                        reason_summary="Answering from the solved route.",
+                        action="explain_offer",
+                        reason_summary="Answering from the offer on the table.",
                         arguments={"order_id": event.order_id,
-                                   "question": event.payload.get("message", "")},
-                    )
-                if _last_failed(state, "explain_choice") and "ask_clarification" not in done:
-                    return ActionDecision(
-                        action="ask_clarification",
-                        reason_summary="Nothing solved to explain; asking what they need.",
-                        arguments={
-                            "order_id": event.order_id,
-                            "question": "Sorry -- which delivery time would you like me to explain?",
-                        },
+                                   "reason": event.payload.get("message", "")},
                     )
             elif intent == "general_support":
                 # Not a scheduling question. Answer the one we can ("what's the new postal code?")
