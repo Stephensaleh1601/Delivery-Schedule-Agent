@@ -479,3 +479,104 @@ def _scope_for(order, ctx: ToolContext, cycle_dates) -> str:
         return "requested"
 
     return "cluster"
+
+
+class PolicyQuestionArgs(_Args):
+    # `order_id` is accepted and unused. Every other action takes one, so the model passes one
+    # here too -- and with extra="forbid" that is a rejected call, not a tolerated field.
+    order_id: str = ""
+    question: str = ""
+
+
+@tool("search_delivery_policy", PolicyQuestionArgs)
+def search_delivery_policy(args: PolicyQuestionArgs, ctx: ToolContext) -> ToolResult:
+    """The rules that answer a customer's question about how delivery works.
+
+    Deliberately returns facts and not wording. `retrieve_policy` next to it takes a topic the
+    agent already knows it needs; this takes the customer's question and finds the topic. Both
+    return rule text with IDs, so an answer can be checked against the rule it claims to follow.
+
+    Read-only, and the intent scope around it is what makes that structural: a run answering a
+    question is never given a tool that could record availability, make an offer or move a route.
+    """
+    from dispatch_agent.planning import policy_kb
+
+    question = (args.question or "").strip()
+    if not question:
+        return ToolResult(
+            ok=False, tool="search_delivery_policy", error="no_question",
+            summary="No question was given to look up.",
+        )
+
+    hits = policy_kb.search(question)
+    if not hits:
+        # A miss is a real finding, and the reply that follows must say so rather than reach for
+        # the nearest rule. The flag is what lets `escalate_booking` say "I can't confirm that"
+        # instead of its booking wording.
+        ctx.scratch["policy_no_answer"] = question
+        return ToolResult(
+            ok=False, tool="search_delivery_policy", error="not_in_policy",
+            summary=f"The delivery policy does not cover {question!r}.",
+            data={"question": question, "policy_ids": [], "rules": []},
+        )
+
+    ctx.scratch["policy_hits"] = [r.to_dict() for r in hits]
+    ids = [r.id for r in hits if r.id]
+    # The IDs AND what they say. A trace line reading "Found WINDOW-1" makes a judge go and look
+    # the rule up; naming it means the evidence and the reply can be compared on one screen.
+    cited = ", ".join(f"{r.id} ({r.title})" if r.id else r.title for r in hits)
+    return ToolResult(
+        ok=True,
+        tool="search_delivery_policy",
+        summary=f"Answered from the policy: {cited}.",
+        data={
+            "question": question,
+            "policy_ids": ids,
+            "rules": [r.to_dict() for r in hits],
+        },
+    )
+
+
+class PolicyAnswerArgs(_Args):
+    order_id: str = ""
+    answer: str = ""
+
+
+@tool("answer_from_policy", PolicyAnswerArgs)
+def answer_from_policy(args: PolicyAnswerArgs, ctx: ToolContext) -> ToolResult:
+    """Put the model's own wording of a policy answer on the context, ready to send.
+
+    This exists to make the policy path look like every other path. Everywhere else a tool
+    prepares the customer's wording and `send_message` sends it; the policy path originally asked
+    the model to break that habit and pass the text to `send_message` instead. It would not --
+    nine identical `nothing_to_send` failures in one turn, every turn, because "the previous step
+    prepares the wording" is the rule it had been taught everywhere else.
+
+    So the wording is written into the argument the model is actually being asked for, and the
+    step after it is the same `send_message` as always.
+
+    The answer is the model's sentence, not a template: only it can turn two retrieved rules into
+    a reply that addresses what was asked. What is NOT the model's is whether there were any
+    rules -- this refuses unless a search succeeded first, so an answer can never be produced from
+    nothing.
+    """
+    if "search_delivery_policy" not in ctx.succeeded:
+        return ToolResult(
+            ok=False, tool="answer_from_policy", error="nothing_retrieved",
+            summary="Search the delivery policy first -- an answer must come from a rule.",
+        )
+    answer = (args.answer or "").strip()
+    if not answer:
+        return ToolResult(
+            ok=False, tool="answer_from_policy", error="no_answer",
+            summary="Pass the reply you want to send in `answer`.",
+        )
+
+    ctx.scratch["customer_message"] = answer
+    cited = [r.get("id") for r in ctx.scratch.get("policy_hits", []) if r.get("id")]
+    return ToolResult(
+        ok=True,
+        tool="answer_from_policy",
+        summary=f"Replied using the knowledge base ({', '.join(cited) or 'no rule ids'}).",
+        data={"policy_ids": cited, "answer": answer},
+    )

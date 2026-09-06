@@ -21,6 +21,7 @@ import {
   type ActivePlan,
   type AgentRun,
   type Bootstrap,
+  type Placement,
   type ChatMessage,
   type ChatTurn,
   type Offer,
@@ -245,7 +246,7 @@ export default function ChatPage() {
                   </>
                 ) : (
                   <>
-                    <Greeting boot={boot.data} />
+                    <Greeting boot={boot.data} placement={turn?.placement ?? null} />
                     {messages.map((m) => (
                       <ThreadMessage
                         key={m.id}
@@ -346,6 +347,38 @@ export default function ChatPage() {
             </p>
           </div>
 
+          {/* Which route this customer belongs to, and why. Shown from the moment the order
+              exists rather than only after a decision: it is the first thing the system worked
+              out, before any message was read, and a judge should be able to check the greeting
+              against it. */}
+          {turn?.placement?.region && (
+            <Card className="px-4 py-3">
+              <Eyebrow>Routed by postal code</Eyebrow>
+              <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
+                <span className="font-mono text-ink-soft">
+                  Postal code {turn.placement.postal_code ?? "\u2014"}
+                </span>
+                <span className="text-ink-faint">&rarr;</span>
+                <span className="font-medium text-ink">{turn.placement.region} region</span>
+                <span className="text-ink-faint">&rarr;</span>
+                <span className="font-medium text-ink">
+                  {/* formatDate already opens with the weekday, so naming the day as well
+                      rendered "Saturday Saturday, 12 September". */}
+                  Normal route:{" "}
+                  {turn.placement.normal_date
+                    ? formatDate(turn.placement.normal_date)
+                    : turn.placement.normal_day}
+                </span>
+              </div>
+              {turn.placement.other_day && (
+                <p className="mt-1.5 text-[11.5px] leading-[1.45] text-ink-muted">
+                  A recommendation, not a restriction — if they ask for{" "}
+                  {turn.placement.other_day}, that route is the one we test.
+                </p>
+              )}
+            </Card>
+          )}
+
           {/* The tool calls live under the message that produced them, in "Function calls &
               results". Repeating them here told a judge nothing the modal does not, and crowded
               out the only question this panel should answer: why that time and not the other. */}
@@ -429,7 +462,46 @@ export default function ChatPage() {
 
 // -- thread -------------------------------------------------------------------
 
-function Greeting({ boot }: { boot: Bootstrap | null }) {
+/** The second bubble, written from the customer's own postal region.
+ *
+ *  Every fact in it -- the region, the day that region is delivered on, and the three window
+ *  times -- comes from `turn.placement`, which the backend derives from the same rules the search
+ *  scopes itself with. None of it is re-stated here, so there is no second copy to drift.
+ *
+ *  It offers rather than restricts. Naming the other day in the same breath is what makes the
+ *  normal day a recommendation: a West customer who wants Friday can simply say so, and their
+ *  insertion is tested against Friday's route. */
+function opening(placement: Placement | null, boot: Bootstrap): string {
+  const windows = placement?.windows?.length
+    ? placement.windows.map((w) => `${w.label.toLowerCase()} (${clock(w.start)}–${clock(w.end)})`)
+    : [];
+
+  if (!placement?.region || !placement.normal_day || !placement.normal_date || !windows.length) {
+    // No region for this address -- say what we can rather than inventing a day for them.
+    return `Just tell me when you're free — anything between ${formatDate(boot.horizon.first)} and ${formatDate(boot.horizon.last)}. One time is plenty.`;
+  }
+
+  const choice = `${windows.slice(0, -1).join(', ')} or ${windows[windows.length - 1]}`;
+  const other = placement.other_day
+    ? ` If ${placement.normal_day} does not work, tell me and I can check ${placement.other_day}'s route.`
+    : '';
+
+  return (
+    `Your address is in the ${placement.region}, which we normally deliver to on ` +
+    `${formatDate(placement.normal_date)}. Are you available in the ${choice}?${other}`
+  );
+}
+
+/** "17:00" -> "5pm", "10:00" -> "10am". The times themselves come from the server; this only
+ *  says them the way a person would. */
+function clock(hhmm: string): string {
+  const [h, m] = hhmm.split(':').map(Number);
+  const suffix = h < 12 ? 'am' : 'pm';
+  const hour = h % 12 || 12;
+  return m ? `${hour}:${String(m).padStart(2, '0')}${suffix}` : `${hour}${suffix}`;
+}
+
+function Greeting({ boot, placement }: { boot: Bootstrap | null; placement: Placement | null }) {
   if (!boot) return null;
   return (
     <>
@@ -438,7 +510,7 @@ function Greeting({ boot }: { boot: Bootstrap | null }) {
         left at the door, so I just need a time you&apos;ll be home.
       </Bubble>
       <Bubble from="them" time="9:02 am">
-        {`Just tell me when you're free — anything between ${formatDate(boot.horizon.first)} and ${formatDate(boot.horizon.last)}. One time is plenty.`}
+        {opening(placement, boot)}
       </Bubble>
     </>
   );

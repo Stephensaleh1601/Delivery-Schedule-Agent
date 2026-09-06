@@ -385,8 +385,24 @@ export interface ChatMessage {
  *
  *  Returned by both sending a message and reloading, and identical either way -- which is what
  *  makes a browser refresh show exactly what was on screen before it. */
+/** Where this customer sits, worked out by the backend from their postal code. The region
+ *  mapping and the window times live in `planning/clusters.py` and `planning/slots.py`; nothing
+ *  here re-states them, so the greeting cannot drift from the routes we actually search. */
+export interface Placement {
+  postal_code: string | null;
+  region: string | null;
+  normal_day: string | null;
+  normal_date: string | null;
+  /** The other delivery day. Named in the greeting so the normal day reads as a recommendation
+   *  the customer may decline, which is what it is. */
+  other_day: string | null;
+  other_date: string | null;
+  windows: { name: string; label: string; start: string; end: string }[];
+}
+
 export interface ChatTurn {
   order_id: string;
+  placement: Placement | null;
   intent: string;
   duplicate: boolean;
   planning_status: string | null;

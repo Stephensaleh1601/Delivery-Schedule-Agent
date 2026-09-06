@@ -327,7 +327,23 @@ class Interpretation:
 
 
 INTENTS = frozenset(
-    {"provide_availability", "accept", "reject", "explain", "general_support", "unclear"}
+    {
+        "provide_availability", "accept", "reject", "explain", "policy_question",
+        "general_support", "unclear",
+    }
+)
+
+# Questions about how delivery works, which the written policy can answer. Separate from `explain`
+# (which is about one offer we made) and from `general_support` (which we cannot answer at all):
+# "what timings do you have?" has a published answer, and sending it to a human is as wrong as
+# guessing at it.
+_POLICY_QUESTION = re.compile(
+    r"\b(?:what|which|when|where|how|do|does|can|could|are|is|why)\b[^?]*\b(?:"
+    r"deliver|delivery|deliveries|delivering|timing|timings|slot|slots|window|windows|"
+    r"hours|day|days|friday|saturday|region|area|zone|cluster|west|east|north|south|"
+    r"central|leave|unattended|doorstep|outside|home|person|driver|route|policy|rules?"
+    r")\b",
+    re.I,
 )
 
 # Things customers ask about that are not the timing. Kept separate from `unclear` because they
@@ -430,7 +446,18 @@ def interpret(
     # address?" contains "change" and a question mark, "I don't want the old one" contains a
     # refusal. It was being answered with "which of those times would you like?".
     topic = support_topic(raw)
-    if topic and not windows:
+
+    # A question about how delivery works, which the written policy can answer -- "what timings do
+    # you have?", "can you leave it outside?". Sitting between the two support tiers on purpose:
+    #
+    #   address / cancel / price   a person owns these outright, so they win.
+    #   POLICY QUESTION            we have a published answer, so answer it.
+    #   contact                    "someone", "agent" and "speak" are weak words. Without this
+    #                              order, "why do you need someone at home?" -- a question the
+    #                              policy answers in one rule -- was handed to a human because it
+    #                              contains "someone".
+    policy_like = bool(raw.count("?") and not windows and _POLICY_QUESTION.search(raw))
+    if topic and not windows and not (policy_like and topic == "contact"):
         result.intent = "general_support"
         result.support_topic = topic
         result.note = raw
@@ -465,6 +492,15 @@ def interpret(
         result.intent = "accept"
         result.accepted_ordinal = _accepted_ordinal(lowered)
         result.accepted_phrase = _accepted_phrase(raw)
+        result.note = raw
+        return result
+
+    # A question about how delivery works, with no time in it. Deliberately below accept, reject
+    # and explain: those all mention days too, and with an offer open they are the right reading.
+    # "Can't you come on Saturday?" asks about the slot we proposed; the same words with nothing
+    # on the table ask which days we run.
+    if policy_like:
+        result.intent = "policy_question"
         result.note = raw
         return result
 

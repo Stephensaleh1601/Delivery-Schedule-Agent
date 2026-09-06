@@ -179,6 +179,45 @@ def _insertion_sequence(event, done, state, topic: str, offer_action: str, scope
     return ActionDecision(action="finish", reason_summary="Replied; waiting for the customer.")
 
 
+
+def _policy_sentences(hits: list[dict]) -> list[str]:
+    """A readable answer built from retrieved rules, for when the model is unavailable.
+
+    Plainer than the model's wording, and that is the trade a fallback makes. What it must not do
+    is say anything the rules do not: every sentence here is lifted from the rule text, and a
+    Markdown table becomes the same pairs in prose rather than being dropped -- the windows and the
+    region-to-day mapping are both tables, and they are the two most likely questions.
+    """
+    lines: list[str] = []
+    for hit in hits[:2]:
+        text = (hit.get("text") or "").split("*Enforced")[0]
+        prose: list[str] = []
+        pairs: list[str] = []
+        for raw in text.splitlines():
+            row = raw.strip()
+            if not row:
+                continue
+            if row.startswith("|"):
+                cells = [c.strip() for c in row.strip("|").split("|")]
+                # Skip the header rule (`|---|---|`) and the header row itself.
+                if all(set(c) <= set("-: ") for c in cells):
+                    continue
+                if len(cells) == 2 and cells[0] and cells[1]:
+                    pairs.append(f"{cells[0]} {cells[1]}")
+                continue
+            prose.append(row)
+        if pairs:
+            # The first pair is the table's own header ("Window / Promised arrival"), which reads
+            # as a label rather than a fact.
+            lines.append("; ".join(pairs[1:] if len(pairs) > 1 else pairs) + ".")
+        joined = " ".join(prose).strip()
+        if joined:
+            first = joined.split(". ")[0].strip().rstrip(".")
+            if first:
+                lines.append(first + ".")
+    return lines or ["I could not find a written rule covering that."]
+
+
 class RuleDecisionAgent:
     """A deterministic policy over the same state the model sees.
 
@@ -191,6 +230,49 @@ class RuleDecisionAgent:
         done = {a.tool for a in state.get("actions", [])}
 
         conversational = bool(event.payload.get("intent"))
+
+        # A question about how delivery works. Handled before anything else because it is not a
+        # booking at all: search the policy, then say what it found. The wording here is plainer
+        # than the model's would be -- that is what a fallback is -- but it is built from the same
+        # retrieved rules, so it can never claim something the policy does not say.
+        if event.payload.get("intent") == "policy_question":
+            if "search_delivery_policy" not in done:
+                return ActionDecision(
+                    action="search_delivery_policy",
+                    reason_summary="Looking the question up in the delivery policy.",
+                    arguments={
+                        "order_id": event.order_id,
+                        "question": event.payload.get("question")
+                        or event.payload.get("note")
+                        or "",
+                    },
+                )
+            hits = state.get("policy_hits") or []
+            if hits and "answer_from_policy" not in done:
+                return ActionDecision(
+                    action="answer_from_policy",
+                    reason_summary="Answering from the retrieved policy rules.",
+                    arguments={
+                        "order_id": event.order_id,
+                        "answer": " ".join(_policy_sentences(hits)),
+                    },
+                )
+            if "send_message" not in done:
+                if hits:
+                    return ActionDecision(
+                        action="send_message",
+                        reason_summary="Sending the answer.",
+                        arguments={"order_id": event.order_id},
+                    )
+                return ActionDecision(
+                    action="escalate_booking",
+                    reason_summary="The policy does not cover this question.",
+                    arguments={
+                        "order_id": event.order_id,
+                        "reason": "Question not answered by the delivery policy.",
+                    },
+                )
+            return ActionDecision(action="finish", reason_summary="The question has been answered.")
 
         if event.event_type is PlanningEventType.NEW_ORDER:
             # A conversational turn carries the windows the customer just stated. Writing them down
@@ -505,6 +587,9 @@ class SchedulingState(TypedDict, total=False):
     pending_decision: Optional[object]
     last_tool_result: Optional[dict]
     customer_message: Optional[str]
+    # The policy rules the last search returned. Carried on the state, like customer_message, so
+    # the standard-procedure decider can answer from them when the model is unavailable.
+    policy_hits: Optional[list]
     step_count: int
     completed: bool
     error: Optional[str]
@@ -572,6 +657,10 @@ def _decide_node(ctx: tools.ToolContext, decider: DecisionAgent, fallback: Decis
         # what dispatch will accept, so an illegal action is not something the prompt has to
         # argue it out of.
         legal = tools.legal_actions(state, ctx)
+        # Carried to the act node, which is where dispatch reads it. Set the moment the set exists
+        # and before any early return, so the set the model is offered and the set enforced
+        # against its answer are always the same one.
+        ctx.legal_now = frozenset(legal)
 
         # The model's turn is where most of the wall clock goes -- several round trips at a second
         # or so each. Leaving it unlabelled made the panel show tool steps of 0.03s adding up to
@@ -715,6 +804,8 @@ def _act_node(ctx: tools.ToolContext):
         reply = ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")
         if reply:
             update["customer_message"] = reply
+        if ctx.scratch.get("policy_hits"):
+            update["policy_hits"] = ctx.scratch["policy_hits"]
         if decision.action == "finish":
             update["completed"] = True
         return update

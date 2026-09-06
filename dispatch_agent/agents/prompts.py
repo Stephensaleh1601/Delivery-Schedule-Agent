@@ -62,6 +62,7 @@ WHICH SITUATION IS THIS?
 - They turned down what you offered -> `record_rejection`, then `find_fallback_options`. It searches both routes and offers the calculated top three.
 - They accepted one of the times you offered -> `confirm_offer`.
 - They asked why -> `explain_offer`. A question changes nothing about the booking.
+- They asked how delivery WORKS -- which days, what times, which areas, whether it can be left outside, whether someone must be home -> `search_delivery_policy`, then `answer_from_policy` with the reply written in your own words from ONLY the rules it returned, then `send_message`. If the search finds nothing, `escalate_booking` instead: say you cannot confirm it rather than filling the gap yourself. A question is not a booking -- you cannot record a time or make an offer on this path, and should not try.
 - You cannot tell what they mean -> `ask_clarification`, ONE specific question. Never guess a date.
 - Nothing fits, or the search came back with too few options -> `escalate_booking`.
 
@@ -127,6 +128,48 @@ def action_decision_schema(allowed_actions: list[str]) -> dict:
     }
 
 
+
+
+def _readable(rule: dict) -> str:
+    """One rule as prose the model can quote from.
+
+    Markdown tables are the reason this exists. Flattened naively, WINDOW-1 arrives as
+    "| Window | Promised arrival | |---|---| | Morning | 10:00 - 14:00 |", and a model handed that
+    sensibly declines to repeat it -- so the reply said "three broad arrival windows" and never
+    told the customer what they are. The two tables in the file are the windows and the
+    region-to-day mapping, which are the two most-asked questions.
+    """
+    pairs: list[str] = []
+    prose: list[str] = []
+    for raw in (rule.get("text") or "").split("*Enforced")[0].splitlines():
+        row = raw.strip()
+        if not row:
+            continue
+        if row.startswith("|"):
+            cells = [c.strip() for c in row.strip("|").split("|")]
+            if all(set(c) <= set("-: ") for c in cells):
+                continue  # the |---|---| separator
+            if len(cells) == 2 and cells[0] and cells[1]:
+                pairs.append(f"{cells[0]} = {cells[1]}")
+            continue
+        prose.append(row)
+    # Drop the table's header row, which is a label rather than a fact.
+    table = "; ".join(pairs[1:]) if len(pairs) > 1 else "; ".join(pairs)
+    return " ".join(part for part in (table, " ".join(prose).strip()) if part)
+
+
+def _retrieved_rules(state) -> list[dict]:
+    """The rules the most recent successful policy search returned.
+
+    Read off the persisted tool result, like every other fact in the digest -- so what the model
+    is asked to write from is exactly what the trace shows it was given.
+    """
+    for action in reversed(state.get("actions", [])):
+        if action.tool == "search_delivery_policy" and action.ok and action.data:
+            return list(action.data.get("rules") or [])
+    return []
+
+
 def render_state_digest(state) -> str:
     """A small, typed summary of the situation -- deliberately not raw database rows.
 
@@ -190,6 +233,19 @@ def render_state_digest(state) -> str:
     for action in state.get("actions", []):
         outcome = "ok" if action.ok else f"FAILED ({action.error})"
         lines.append(f"Step {action.step}: {action.tool} -> {outcome}. {action.summary}")
+
+    # The policy text itself, not just which rules matched. Without this the model was told it had
+    # found ATTEND-2 and never told what ATTEND-2 says -- so the only reply it could write would be
+    # one it made up, which is the single thing this path exists to prevent.
+    rules = _retrieved_rules(state)
+    if rules:
+        lines.append("")
+        lines.append(
+            "POLICY RULES RETRIEVED FOR THIS QUESTION. Write the customer's reply from these and "
+            "nothing else, in your own plain sentences, and pass it as `body` to send_message:"
+        )
+        for rule in rules:
+            lines.append(f"  [{rule.get('id') or '-'}] {rule.get('title')}: {_readable(rule)}")
 
     steps_used = state.get("step_count", 0)
     lines.append(f"Steps used: {steps_used}. Choose the next action.")

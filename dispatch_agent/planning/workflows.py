@@ -256,10 +256,18 @@ def escalate_booking(args: ReasonArgs, ctx: ToolContext) -> ToolResult:
     """Hand the customer to a coordinator, and tell them so."""
     from dispatch_agent.planning import plan_service
 
-    message = (
-        "I'm sorry -- I couldn't find a delivery time that works without affecting another "
-        "customer. One of our coordinators will call you shortly to sort it out personally."
-    )
+    # Two escalations, two honest sentences. Reaching here from a question the policy does not
+    # cover and apologising about delivery times answers something nobody asked.
+    if ctx.scratch.get("policy_no_answer"):
+        message = (
+            "I'm sorry -- I can't confirm that one from our delivery policy. Let me have a "
+            "coordinator follow up with you so you get a proper answer."
+        )
+    else:
+        message = (
+            "I'm sorry -- I couldn't find a delivery time that works without affecting another "
+            "customer. One of our coordinators will call you shortly to sort it out personally."
+        )
     ctx.scratch.setdefault("customer_message", message)
     plan_service.raise_coordinator_exception(
         ctx.repo,

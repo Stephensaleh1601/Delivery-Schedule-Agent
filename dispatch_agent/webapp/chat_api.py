@@ -29,7 +29,8 @@ from dispatch_agent.models import (
     PlanningEvent,
     PlanningEventType,
 )
-from dispatch_agent.planning import conversation, offer_service, tools
+from dispatch_agent.planning import clusters, conversation, offer_service, tools
+from dispatch_agent.planning.clock import PlanningClock
 
 router = APIRouter()
 
@@ -233,6 +234,20 @@ def _event_for(order_id: str, said, live_offer, order):
             payload={"intent": "explain", "message": said.note},
         )
 
+    if said.intent == "policy_question":
+        # MANUAL_RETRY, like the other non-booking turns: it is a message that needs an answer and
+        # changes nothing. `question` carries the customer's own words, because that is what the
+        # knowledge base is searched with -- a paraphrase would be us deciding what they asked.
+        return PlanningEvent(
+            event_type=PlanningEventType.MANUAL_RETRY,
+            order_id=order_id,
+            payload={
+                "intent": "policy_question",
+                "message": said.note,
+                "question": said.note or "",
+            },
+        )
+
     if said.intent == "general_support":
         return PlanningEvent(
             event_type=PlanningEventType.MANUAL_RETRY,
@@ -398,8 +413,18 @@ def _turn(
     offers = {o.id: o for o in repo.offers_for_order(order_id)}
     live = conversation.open_offer(repo, order_id)
 
+    # Where this customer sits, computed here rather than in the browser. The greeting names their
+    # region, their delivery day and the three windows; all three come from the same module the
+    # search scopes itself with, so what they are told and what we actually look at agree by
+    # construction rather than by two copies staying in step.
+    placement = None
+    if order is not None:
+        cycle = PlanningClock.coordination_cycle(repo=repo)
+        placement = clusters.describe(order, list(cycle.dates) if cycle else [])
+
     return {
         "order_id": order_id,
+        "placement": placement,
         "intent": intent,
         "duplicate": duplicate,
         "planning_status": order.planning_status.value if order else None,

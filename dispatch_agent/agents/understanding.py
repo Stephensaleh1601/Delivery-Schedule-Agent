@@ -33,8 +33,14 @@ before.
 - `accept` -- they are agreeing to a time we already proposed.
 - `reject` -- they are turning down a time we proposed, with or without suggesting another.
 - `explain` -- they are asking why a time was chosen, or why another is not possible.
-- `general_support` -- they are asking about something that is not the timing at all: changing the \
-delivery ADDRESS, cancelling, what it costs, or wanting to speak to a person. These messages often \
+- `policy_question` -- they are asking how the delivery service works, in general rather than \
+about their own booking: which days we deliver, what time windows exist, which areas go on which \
+day, whether the food can be left outside, why someone has to be home, what happens if they miss \
+it. These have published answers. Choose this even when the question mentions their own area or a \
+day, as long as they are ASKING rather than telling us when they are free.
+- `general_support` -- they are asking about something that is not the timing and not how \
+delivery works: changing the delivery ADDRESS, cancelling, what it costs, products we sell, or \
+wanting to speak to a person. These messages often \
 contain scheduling-looking words ("change", "can I", a question mark) and are still not about when \
 we deliver.
 - `unclear` -- anything else, including messages you are not confident about. Choosing this is \

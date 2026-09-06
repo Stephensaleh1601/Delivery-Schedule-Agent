@@ -184,3 +184,52 @@ tools.
 
 The stops in order, each with its address and broad window, and a Google Maps link covering the
 whole route. The route version and send time are recorded.
+
+---
+
+## attendance
+
+### ATTEND-1 — Somebody must be home
+
+The customer, or someone acting for them, has to be present to take the delivery in person. This
+is why a time is agreed with the customer at all rather than simply announced at them: the whole
+booking conversation exists to find a window they can actually be in.
+
+### ATTEND-2 — Food is never left unattended
+
+The driver does not leave an order at the door, with a neighbour, in a lobby, at a concierge or in
+a parcel locker, and does not leave it with building security. There is no "leave it outside"
+option, and the agent cannot arrange one.
+
+### ATTEND-3 — Why: it is fresh food
+
+The orders are freshly made pet food, not ambient goods. Left in Singapore's heat it spoils within
+hours and is no longer safe to feed an animal. The attendance rule is a food-safety rule, not a
+convenience preference.
+
+### ATTEND-4 — Nobody home
+
+If nobody is there when the driver arrives, the food cannot be left and the delivery is not
+completed. The order goes back to a coordinator, who arranges a new day with the customer. A
+missed delivery is rebooked by a person, not automatically by the agent.
+
+---
+
+## general_enquiries
+
+### GEN-1 — Answer only from this policy
+
+Customer questions about how delivery works are answered from the rules in this file and from
+nothing else. Where this file does not cover a question, the honest answer is that it cannot be
+confirmed here, followed by an offer to have a coordinator follow up.
+
+*Enforced by `search_delivery_policy`, which returns rule text or nothing.*
+
+### GEN-2 — A question changes nothing
+
+Answering a question never records availability, creates or confirms an offer, records a
+rejection, alters a route or dispatches a driver. A customer who asks what the windows are has not
+booked anything.
+
+*Enforced by `INTENT_TOOLS["policy_question"]`, which exposes only the search, the reply, the
+escalation and finish.*

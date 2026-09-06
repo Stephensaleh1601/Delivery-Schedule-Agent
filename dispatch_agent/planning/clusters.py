@@ -101,3 +101,40 @@ def resolve_scope(order: JobRecord, scope: str, cycle_dates: list[Date]) -> list
     if scope == "both":
         return list(cycle_dates)
     return cluster_dates(order, cycle_dates) or list(cycle_dates)
+
+
+def describe(order: JobRecord, cycle_dates: list[Date]) -> dict:
+    """Everything a screen needs to say where this customer sits, from the one mapping.
+
+    Exists so the greeting and the judge panel can be specific -- "your address is in the West,
+    which we normally deliver on Saturday" -- without the browser owning a second copy of the
+    region table or the window times. Both come from here, which is the same module the search
+    scopes itself with, so the sentence a customer reads and the routes we actually look at cannot
+    disagree.
+
+    `other_day` is not a fallback. It is the day we would check if they asked us to, and naming it
+    up front is what turns the normal day from a restriction into a recommendation.
+    """
+    from dispatch_agent.planning import slots
+
+    placement = placement_of(order)
+    mine = cluster_dates(order, cycle_dates)
+    theirs = [d for d in cycle_dates if d not in mine]
+
+    return {
+        "postal_code": order.address.postal_code if order.address else None,
+        "region": placement.region,
+        "normal_day": WEEKDAY_NAME.get(placement.weekday),
+        "normal_date": mine[0].isoformat() if mine else None,
+        "other_day": WEEKDAY_NAME.get(theirs[0].weekday()) if theirs else None,
+        "other_date": theirs[0].isoformat() if theirs else None,
+        "windows": [
+            {
+                "name": slot.name,
+                "label": slot.label,
+                "start": slot.start.strftime("%H:%M"),
+                "end": slot.end.strftime("%H:%M"),
+            }
+            for slot in slots.SLOTS
+        ],
+    }

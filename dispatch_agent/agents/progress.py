@@ -162,6 +162,14 @@ def _prune() -> None:
 TOOL_STAGES: dict[str, tuple[str, str]] = {
     "record_availability": ("Noting what you told us", "Writing down the times you gave"),
     "record_rejection": ("Noting what you turned down", "Excluding that time, not the whole day"),
+    "answer_from_policy": (
+        "Replying from the knowledge base",
+        "Writing the answer from the rules that were found",
+    ),
+    "search_delivery_policy": (
+        "Searching the delivery policy",
+        "Looking up the written rules that answer the question",
+    ),
     "retrieve_policy": ("Reading delivery policy", "Checking the rules before touching a route"),
     "get_existing_routes": (
         "Loading Friday and Saturday routes",

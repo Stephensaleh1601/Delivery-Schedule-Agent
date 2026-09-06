@@ -150,6 +150,9 @@ class ToolContext:
     # Which tools this run may use, from the customer's intent. None means no scoping, for the
     # operational events (a readiness delay, the morning run) that are not a reply to anybody.
     allowed_tools: frozenset[str] | None = None
+    # What `legal_actions` permitted for the step about to run. Narrower than `allowed_tools`,
+    # which is the whole intent scope: this is the same set the model was offered.
+    legal_now: frozenset[str] | None = None
     # Tools that have already succeeded in this run. Used to enforce once-only actions.
     succeeded: set[str] = field(default_factory=set)
     evaluations: list[CandidateSlotEvaluation] = field(default_factory=list)
@@ -380,8 +383,17 @@ def send_message(args: MessageArgs, ctx: ToolContext) -> ToolResult:
     prepared = ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")
     body = prepared or (args.body or "")
     if not body.strip():
-        return ToolResult(ok=False, tool="send_message", error="nothing_to_send",
-                          summary="No message has been prepared, so there is nothing to send.")
+        # Say how to succeed, not just that it failed. A bare "nothing to send" was repeated
+        # verbatim in the digest, so the model read it, learned nothing, and called the same tool
+        # the same way until the step budget ran out -- nine identical failures in one turn.
+        if "search_delivery_policy" in ctx.succeeded:
+            summary = (
+                "This reply is yours to write. Call send_message again with `body` set to the "
+                "answer, in your own words, using only the policy rules listed above."
+            )
+        else:
+            summary = "No message has been prepared, so there is nothing to send."
+        return ToolResult(ok=False, tool="send_message", error="nothing_to_send", summary=summary)
     # Linked to the run that produced it and, when this message is presenting an offer, to that
     # offer -- so the inspector under this bubble opens THESE calls after a refresh.
     message = offer_service.record_message(
@@ -632,6 +644,15 @@ INTENT_TOOLS: dict[str, frozenset[str]] = {
         "record_availability", "find_normal_slot", "find_requested_day_slot",
         "escalate_booking", "send_message", "finish",
     }),
+    # A question about how delivery works. Read the policy, answer, stop.
+    #
+    # What is NOT here is the point: no record_availability, no offer, no rejection, no lock, no
+    # route change, no dispatch. Someone asking what the windows are has not booked anything, and
+    # this set is what makes that structurally true rather than something the prompt asks for.
+    "policy_question": frozenset({
+        "search_delivery_policy", "answer_from_policy", "escalate_booking", "send_message",
+        "finish",
+    }),
     "general_support": frozenset({"ask_clarification", "escalate_booking", "send_message", "finish"}),
     "unclear": frozenset({"ask_clarification", "escalate_booking", "send_message", "finish"}),
 }
@@ -665,6 +686,20 @@ def dispatch(action: str, arguments: dict | None, ctx: ToolContext) -> ToolResul
         return ToolResult(
             ok=False, tool=action, error="action_not_allowed",
             summary=f"Refused an action that is not on the approved list: {action!r}.",
+        )
+
+    # The state gate, enforced rather than merely offered. It used to be advisory: the schema the
+    # model saw listed only legal actions, but nothing stopped one outside that list from running,
+    # so a model that ignored the enum reached the tool anyway. It did -- `send_message` before any
+    # wording existed, nine times in one turn, because the failure said what was wrong and never
+    # what was allowed instead.
+    if ctx.legal_now is not None and action not in ctx.legal_now:
+        return ToolResult(
+            ok=False, tool=action, error="not_legal_yet",
+            summary=(
+                f"Refused {action}: not permitted at this point in the run. Right now you may "
+                f"call: {', '.join(sorted(ctx.legal_now))}."
+            ),
         )
 
     if ctx.allowed_tools is not None and action not in ctx.allowed_tools:
@@ -754,6 +789,19 @@ TOOL_GUIDE: dict[str, str] = {
     "record_rejection": (
         "Use when the customer turns down a time they were offered. Excludes that WINDOW, not "
         "the whole day. Next: search for alternatives."
+    ),
+    "search_delivery_policy": (
+        "Use whenever the customer asks about delivery days, available time windows, regional "
+        "clusters, attendance requirements, unattended delivery, booking rules, route policies "
+        "or driver policies. It searches the company delivery-policy knowledge base and returns "
+        "relevant facts. It never changes an order, offer or route. Pass their question in "
+        "`question`, in their own words. Next: answer_from_policy. If it finds nothing, "
+        "escalate_booking instead."
+    ),
+    "answer_from_policy": (
+        "Use straight after search_delivery_policy found something. Write the customer's reply "
+        "yourself in `answer` -- your own plain sentences, built from ONLY the rules the search "
+        "returned, answering what they actually asked. Then send_message."
     ),
     "retrieve_policy": (
         "Reads the written delivery rules. Use before touching a route so the reply can cite the "
@@ -875,6 +923,10 @@ def legal_actions(state: dict, ctx: ToolContext) -> list[str]:
     prepared = ctx.scratch.get("offer_message") or ctx.scratch.get("customer_message")
     if not prepared:
         legal.discard("send_message")
+
+    # An answer must come from a rule. Before the search there is nothing to write from.
+    if "search_delivery_policy" not in ctx.succeeded:
+        legal.discard("answer_from_policy")
 
     # -- once there is an outcome, there is one move left ------------------------------
     #
