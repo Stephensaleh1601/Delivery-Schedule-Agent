@@ -9,6 +9,38 @@ what's actually built and how to run it.
 
 Built for IGNITE Agentic AI Hackathon 2026, digital track.
 
+## Running the App
+
+Open two PowerShell terminals.
+
+### 1. Start the Backend
+
+From the project root:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn dispatch_agent.webapp.main:app `
+  --reload `
+  --host 127.0.0.1 `
+  --port 8000
+```
+
+### 2. Start the Frontend
+
+In a second terminal:
+
+```powershell
+cd frontend
+npm run dev
+```
+
+### Open the App
+
+- App: [http://localhost:3000](http://localhost:3000)
+- Customer Chat: [http://localhost:3000/chat](http://localhost:3000/chat)
+- Backend API: [http://localhost:8000](http://localhost:8000)
+
+> Keep both terminals open. Backend and frontend changes reload automatically.
+
 ## What's built
 
 ### The customer types
