@@ -34,6 +34,7 @@ from dispatch_agent.models import (
     AgentActionLog,
     AgentRunLog,
     AgentRunStatus,
+    MessageDirection,
     PlanningEvent,
     PlanningEventType,
 )
@@ -881,7 +882,15 @@ def _guarantee_a_reply(repo, event, ctx: tools.ToolContext, run: AgentRunLog) ->
     message was owed and never sent. Anything smarter here would be a second decision-maker
     competing with the loop.
     """
-    if "send_message" in ctx.succeeded or ctx.order is None:
+    if ctx.order is None:
+        return
+    # Ask whether the customer was actually answered, not which tool ran. `send_message` is not
+    # the only thing that speaks: accepting a slot writes its own confirmation, and keying off the
+    # tool name meant a successful booking was followed by "sorry, a coordinator will call you".
+    if any(
+        message.run_id == run.id and message.direction == MessageDirection.OUTBOUND
+        for message in repo.messages(ctx.order.id)
+    ):
         return
     if event.event_type not in (
         PlanningEventType.NEW_ORDER,

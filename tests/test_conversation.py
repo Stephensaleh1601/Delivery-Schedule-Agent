@@ -92,8 +92,10 @@ def test_saturday_morning():
     said = language.interpret("I'm free Saturday morning.")
 
     assert said.intent == "provide_availability"
+    # The published morning window, not a generic one. DAY_PARTS reads these off slots.py so a
+    # customer who says "morning" asks for the window we actually run.
     assert [(w.date, w.window.start, w.window.end) for w in said.windows] == [
-        (SATURDAY, time(9, 0), time(13, 0))
+        (SATURDAY, time(10, 0), time(14, 0))
     ]
 
 
@@ -118,7 +120,7 @@ def test_two_alternatives_with_a_stated_preference():
 
     ranked = sorted(said.windows, key=lambda w: w.preference_rank)
     assert [w.date for w in ranked] == [FRIDAY, SATURDAY]
-    assert ranked[0].window.start == time(9, 0)
+    assert ranked[0].window.start == time(10, 0)
 
 
 def test_this_is_my_only_available_time():
@@ -289,7 +291,7 @@ def test_restating_a_day_corrects_it_rather_than_adding_a_second_window(temp_db)
 
     saturdays = [o for o in order.availability_options if o.date == SATURDAY]
     assert len(saturdays) == 1
-    assert saturdays[0].window.start == time(13, 0)
+    assert saturdays[0].window.start == time(14, 0)
 
 
 # -- suggestions are not availability -------------------------------------------

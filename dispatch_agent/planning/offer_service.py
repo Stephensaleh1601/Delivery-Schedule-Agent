@@ -209,10 +209,11 @@ def offer_message(offer: AppointmentOffer, some_requests_unavailable: bool = Fal
     lines = ["We can deliver on:"]
     for i, slot in enumerate(offer.options, start=1):
         lines.append(f"{i}. {format_date(slot.date)}, {format_window(slot.window)}")
-    # Only the recommended slot carries its reason. Two explanations in one message reads as a
-    # sales pitch rather than a coordinator telling you what is convenient.
+    # Only the recommended slot carries its reason -- two explanations in one message reads as a
+    # sales pitch. Say which option it belongs to: unlabelled under a list of three, it reads as
+    # if it describes all of them when it describes only the first.
     if offer.options[0].reason:
-        lines.append(offer.options[0].reason)
+        lines.append(f"The first is our closest fit: {offer.options[0].reason.lstrip()}")
     lines.append("Please choose whichever suits you best.")
     return "\n".join(lines)
 

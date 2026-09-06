@@ -314,8 +314,8 @@ def _preferred(order) -> set:
     wanted = set()
     for option in order.availability_options:
         for slot in SLOTS:
-            # Any overlap counts. "Friday morning" is 09:00-13:00 to the parser and 10:00-14:00 to
-            # the business, and a customer who says one plainly means the other.
+            # Any overlap counts. A named part of the day now matches its published window
+            # exactly, but "between 1 and 3" still straddles two, and both should qualify.
             if option.window.start < slot.end and slot.start < option.window.end:
                 wanted.add((option.date, slot.name))
     return wanted

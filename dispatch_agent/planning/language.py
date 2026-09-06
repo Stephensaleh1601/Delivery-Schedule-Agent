@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 
 from dispatch_agent.config import settings
 from dispatch_agent.models import TimeWindow
+from dispatch_agent.planning import slots
 from dispatch_agent.planning.clock import PlanningClock
 
 SINGAPORE = ZoneInfo("Asia/Singapore")
@@ -39,15 +40,18 @@ WEEKDAYS = {
     "sunday": 6, "sun": 6,
 }
 
-# Named parts of the day, as the operation means them. These are the customer's words being
-# translated into the working day -- 09:00-18:00 -- not invented preferences.
+# Named parts of the day, taken from the delivery windows we actually publish rather than from a
+# generic working day. When "morning" meant 09:00-13:00 here and 10:00-14:00 on the route, the
+# decision panel told the customer they had asked for a window nobody offers.
 DAY_PARTS: dict[str, tuple[Time, Time]] = {
-    "morning": (Time(9, 0), Time(13, 0)),
-    "afternoon": (Time(13, 0), Time(18, 0)),
-    "evening": (Time(16, 0), Time(18, 0)),
-    "midday": (Time(11, 0), Time(14, 0)),
-    "lunchtime": (Time(11, 0), Time(14, 0)),
-    "noon": (Time(11, 0), Time(14, 0)),
+    "morning": (slots.MORNING.start, slots.MORNING.end),
+    "afternoon": (slots.AFTERNOON.start, slots.AFTERNOON.end),
+    "evening": (slots.EVENING.start, slots.EVENING.end),
+    # Not a published window -- deliberately spans the morning/afternoon boundary, so it matches
+    # either rather than silently becoming one of them.
+    "midday": (Time(12, 0), Time(15, 0)),
+    "lunchtime": (Time(12, 0), Time(15, 0)),
+    "noon": (Time(12, 0), Time(15, 0)),
 }
 
 
