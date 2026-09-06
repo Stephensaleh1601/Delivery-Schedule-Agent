@@ -733,6 +733,23 @@ def _decide_node(ctx: tools.ToolContext, decider: DecisionAgent, fallback: Decis
                 },
             }
 
+        if ctx.accepted is not None and "confirm_offer" in legal:
+            # The accepted IDs came from the customer-response event, not from the model. Calling
+            # the one safe confirmation action directly prevents the model from omitting the
+            # required order_id or inventing extra fields before retrying the same booking.
+            return {
+                "pending_decision": ActionDecision(
+                    action="confirm_offer",
+                    reason_summary="Confirming the exact option the customer selected.",
+                    arguments={"order_id": ctx.order.id} if ctx.order else {},
+                ),
+                "step_provenance": {
+                    "decider": "controller",
+                    "model_id": None,
+                    "fallback_reason": None,
+                },
+            }
+
         try:
             decision = decider.decide(state, legal)
         except Exception as exc:  # noqa: BLE001

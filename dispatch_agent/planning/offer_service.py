@@ -29,7 +29,7 @@ from dispatch_agent.models import (
     PlanningStatus,
     RoutePlanVersion,
 )
-from dispatch_agent.planning import plan_service
+from dispatch_agent.planning import insertion, plan_service
 from dispatch_agent.solver import LockedPlanInfeasibleError, UnsolvableDayError
 
 MAX_OFFER_ROUNDS = 2
@@ -264,14 +264,39 @@ def accept_offer(
     # longer means what it meant, and the arrival we promised was computed from stops that have
     # moved. Checked BEFORE the response is claimed, so a refusal leaves the offer open for the
     # customer to choose again rather than burning it.
+    source_plan = None
     if slot.evidence is not None:
         current = repo.active_plan(slot.date)
-        if current is None or current.version != slot.evidence.source_plan_version:
+        if (
+            current is None
+            or current.id != slot.evidence.source_plan_id
+            or current.version != slot.evidence.source_plan_version
+        ):
             raise OfferError(
                 "that day's route changed while you were deciding, so we need you to pick again "
                 "from a fresh set of times",
                 kind="route_moved_on",
             )
+        index = slot.evidence.insert_position - 1
+        previous_id = current.sequence.stops[index - 1].job_id if index > 0 else None
+        next_id = (
+            current.sequence.stops[index].job_id
+            if index < len(current.sequence.stops)
+            else None
+        )
+        if (
+            slot.evidence.previous_stop_id is not None
+            and slot.evidence.previous_stop_id != previous_id
+        ) or (
+            slot.evidence.next_stop_id is not None
+            and slot.evidence.next_stop_id != next_id
+        ):
+            raise OfferError(
+                "that day's route changed while you were deciding, so we need you to pick again "
+                "from a fresh set of times",
+                kind="route_moved_on",
+            )
+        source_plan = current
 
     if not repo.claim_offer_response(offer_id, OfferStatus.ACCEPTED.value):
         # Someone already responded. Return what happened then, without re-solving.
@@ -312,9 +337,30 @@ def accept_offer(
     repo.save_job(job)
 
     try:
-        plan = plan_service.replan_day(
-            repo, slot.date, reason=f"{job.customer_name} confirmed {slot.date}", routing_client=routing_client
-        )
+        if slot.evidence is not None and source_plan is not None:
+            sequence = insertion.build_tested_sequence(
+                repo,
+                source_plan,
+                job,
+                slot.evidence.insert_position,
+                routing_client=routing_client,
+            )
+            jobs_by_id = {
+                stop.job_id: repo.get_job(stop.job_id) for stop in sequence.stops
+            }
+            plan_service.assert_locks_respected(sequence, jobs_by_id)
+            plan = plan_service.publish_plan_version(
+                sequence,
+                reason=f"{job.customer_name} confirmed {slot.date}",
+                parent_plan_id=source_plan.id,
+            )
+        else:
+            plan = plan_service.replan_day(
+                repo,
+                slot.date,
+                reason=f"{job.customer_name} confirmed {slot.date}",
+                routing_client=routing_client,
+            )
     except (LockedPlanInfeasibleError, UnsolvableDayError) as exc:
         # The day was quoted as feasible moments ago, so this means something else changed in
         # between. Roll the order back rather than leaving it confirmed against a plan that does
@@ -544,6 +590,8 @@ def _slot_from_insertion(order: JobRecord, option) -> OfferedSlot:
             anchor_distance_km=option.anchor_distance_km,
             placement=option.placement,
             insert_position=option.insert_position,
+            previous_stop_id=option.previous_stop_id,
+            next_stop_id=option.next_stop_id,
             added_distance_km=option.added_distance_km,
             added_minutes=option.added_minutes,
             expected_arrival=option.expected_arrival,

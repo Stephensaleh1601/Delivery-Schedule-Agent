@@ -262,9 +262,25 @@ def test_the_existing_stop_order_is_preserved_by_an_acceptance(seeded):
     tools.dispatch("create_normal_offer", {"order_id": order.id}, ctx)
     offer = seeded.offers_for_order(order.id)[0]
     slot = offer.options[0]
-    before = [s.job_id for s in seeded.active_plan(slot.date).sequence.stops]
+    source = seeded.active_plan(slot.date)
+    before = [s.job_id for s in source.sequence.stops]
+    expected_index = slot.evidence.insert_position - 1
 
     offer_service.accept_offer(seeded, offer.id, slot.id)
 
-    after = [s.job_id for s in seeded.active_plan(slot.date).sequence.stops]
+    published = seeded.active_plan(slot.date)
+    after = [s.job_id for s in published.sequence.stops]
     assert [j for j in after if j != order.id] == before
+    assert after[expected_index] == order.id
+    assert slot.evidence.previous_stop_id == (before[expected_index - 1] if expected_index else None)
+    assert slot.evidence.next_stop_id == (
+        before[expected_index] if expected_index < len(before) else None
+    )
+    assert (
+        published.sequence.round_trip_drive_minutes
+        - source.sequence.round_trip_drive_minutes
+    ) == slot.evidence.added_minutes
+    assert abs(
+        (published.sequence.round_trip_distance_km - source.sequence.round_trip_distance_km)
+        - slot.evidence.added_distance_km
+    ) <= 0.02

@@ -31,7 +31,15 @@ from dispatch_agent.config import settings
 from dispatch_agent.db import JobsRepository
 from dispatch_agent.geo.routing_client import RoutingClient
 from dispatch_agent.geo.zones import company_depot
-from dispatch_agent.models import Coordinates, JobRecord, RoutePlanVersion, TimeWindow
+from dispatch_agent.models import (
+    Coordinates,
+    DaySequence,
+    JobRecord,
+    RoutePlanVersion,
+    StopAssignment,
+    TimeWindow,
+)
+from dispatch_agent.solver import LockedPlanInfeasibleError, UnsolvableDayError
 from dispatch_agent.planning.clock import PlanningClock
 from dispatch_agent.planning.slots import SLOTS, DeliverySlot, slot_containing
 
@@ -72,6 +80,8 @@ class InsertionOption:
     finish_after: Time
     source_plan_id: str
     source_plan_version: int
+    previous_stop_id: str | None = None
+    next_stop_id: str | None = None
     # Whether this lands on a (date, window) the customer actually asked for. Preference
     # decides what the NORMAL offer tries first; it never reorders the fallback ranking.
     matches_preference: bool = False
@@ -229,6 +239,88 @@ def _finish(legs: list[_Leg], depot: Coordinates, client: RoutingClient) -> Time
     return _clock(simulated[1]) if simulated else _clock(_minutes(settings.hard_route_end))
 
 
+def build_tested_sequence(
+    repo: JobsRepository,
+    source_plan: RoutePlanVersion,
+    order: JobRecord,
+    insert_position: int,
+    routing_client: RoutingClient | None = None,
+    depot: Coordinates | None = None,
+) -> DaySequence:
+    """Build the exact route the insertion search tested, without reordering existing stops.
+
+    ``insert_position`` is one-based because that is what the judge-facing evidence displays.
+    All existing stops keep their relative order; only the accepted customer is added.
+    """
+    client = routing_client or RoutingClient()
+    depot = depot or company_depot()
+    source_ids = [stop.job_id for stop in source_plan.sequence.stops]
+    index = insert_position - 1
+    if index < 0 or index > len(source_ids):
+        raise UnsolvableDayError(f"insertion position {insert_position} is outside the route")
+    if order.id in source_ids:
+        raise UnsolvableDayError("the accepted customer is already on this route")
+
+    ordered_ids = source_ids[:index] + [order.id] + source_ids[index:]
+    jobs: list[JobRecord] = []
+    for job_id in ordered_ids:
+        job = order if job_id == order.id else repo.get_job(job_id)
+        if job is None or job.address.coordinates is None:
+            raise UnsolvableDayError(f"route stop {job_id} has no usable coordinates")
+        jobs.append(job)
+
+    client.matrix([depot] + [job.address.coordinates for job in jobs])
+    at = _minutes(settings.work_day_start)
+    here = depot
+    stops: list[StopAssignment] = []
+    total_drive = 0
+
+    for sequence_index, job in enumerate(jobs):
+        coords = job.address.coordinates
+        leg = client.leg(here, coords)
+        at += leg["minutes"]
+        total_drive += leg["minutes"]
+
+        if job.locked_window is not None:
+            opens = _minutes(job.locked_window.start)
+            closes = _minutes(job.locked_window.end)
+            at = max(at, opens)
+            if at > closes:
+                raise LockedPlanInfeasibleError(
+                    f"the fixed insertion reaches {job.customer_name} after its promised window",
+                    delivery_date=source_plan.delivery_date,
+                    locked_job_ids=[j.id for j in jobs if j.is_locked],
+                    blocking_job_id=job.id,
+                )
+
+        stops.append(
+            StopAssignment(
+                job_id=job.id,
+                sequence_index=sequence_index,
+                arrival_window=TimeWindow(
+                    start=_clock(at), end=_clock(at + job.duration_minutes)
+                ),
+                drive_minutes_from_prev=leg["minutes"],
+                distance_km_from_prev=leg["km"],
+            )
+        )
+        at += job.duration_minutes
+        here = coords
+
+    return_leg = client.leg(here, depot) if stops else {"minutes": 0, "km": 0.0}
+    if at + return_leg["minutes"] > _minutes(settings.hard_route_end):
+        raise UnsolvableDayError("the fixed insertion returns after the driver's hard route end")
+
+    return DaySequence(
+        delivery_date=source_plan.delivery_date,
+        stops=stops,
+        total_drive_minutes=total_drive,
+        return_drive_minutes=return_leg["minutes"],
+        return_distance_km=return_leg["km"],
+        distance_recorded=True,
+    )
+
+
 def search(
     repo: JobsRepository,
     order: JobRecord,
@@ -382,6 +474,14 @@ def search(
                 finish_after=_clock(home),
                 source_plan_id=plan.id,
                 source_plan_version=plan.version,
+                previous_stop_id=(
+                    plan.sequence.stops[position - 1].job_id if position > 0 else None
+                ),
+                next_stop_id=(
+                    plan.sequence.stops[position].job_id
+                    if position < len(plan.sequence.stops)
+                    else None
+                ),
                 matches_preference=(day, slot.name) in (prefer or set()),
             )
 

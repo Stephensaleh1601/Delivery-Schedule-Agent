@@ -917,6 +917,10 @@ def legal_actions(state: dict, ctx: ToolContext) -> list[str]:
     # means the model is never shown a booking it could make by mistake.
     if ctx.accepted is None:
         legal -= {"lock_appointment", "confirm_offer"}
+    elif "confirm_offer" in ctx.succeeded or "lock_appointment" in ctx.succeeded:
+        # Confirmation already wrote the customer reply and published the route. There is no
+        # second decision to make, even when an older event did not carry the narrow accept scope.
+        return ["finish"]
 
     # A policy question is a short, ordered hand-off: retrieve facts, turn those facts into a
     # customer answer, then send it.  Leaving all four actions visible after the search let the

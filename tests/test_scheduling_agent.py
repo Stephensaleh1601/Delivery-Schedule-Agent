@@ -231,7 +231,15 @@ def test_acceptance_locks_the_appointment_and_publishes_a_plan(temp_db):
 
     run = handle_planning_event(
         _event(order, PlanningEventType.CUSTOMER_ACCEPTED_OFFER, offer_id=offer.id, slot_id=slot.id),
-        repo=temp_db, decider=RuleDecisionAgent(), use_fallback=False,
+        repo=temp_db,
+        decider=ScriptedDecisionAgent([
+            {
+                "action": "confirm_offer",
+                "reason_summary": "bad model arguments",
+                "arguments": {"confirm_offer": True},
+            }
+        ]),
+        use_fallback=False,
     )
 
     assert run.status is AgentRunStatus.COMPLETED
@@ -239,6 +247,9 @@ def test_acceptance_locks_the_appointment_and_publishes_a_plan(temp_db):
     assert job.planning_status is PlanningStatus.CONFIRMED
     assert job.is_locked and job.delivery_date == slot.date
     assert temp_db.active_plan(slot.date) is not None
+    assert run.actions[0].tool == "confirm_offer"
+    failed = [(action.tool, action.error, action.arguments) for action in run.actions if not action.ok]
+    assert not failed, failed
 
 
 def test_rejection_leads_to_another_offer(temp_db):
@@ -550,19 +561,15 @@ def test_locking_a_different_slot_than_the_one_accepted_is_refused(temp_db):
     if accepted.id == other.id:
         pytest.skip("this scenario needs two offered slots")
 
-    run = handle_planning_event(
-        _event(order, PlanningEventType.CUSTOMER_ACCEPTED_OFFER,
-               offer_id=offer.id, slot_id=accepted.id),
-        repo=temp_db,
-        decider=ScriptedDecisionAgent([
-            {"action": "lock_appointment", "reason_summary": "confirming the other one",
-             "arguments": {"offer_id": offer.id, "slot_id": other.id}},
-            {"action": "finish", "reason_summary": "done"},
-        ]),
-        use_fallback=False,
+    ctx = tools.ToolContext(repo=temp_db)
+    ctx.accepted = (offer.id, accepted.id)
+    result = tools.dispatch(
+        "lock_appointment",
+        {"offer_id": offer.id, "slot_id": other.id},
+        ctx,
     )
 
-    assert run.actions[0].ok is False and run.actions[0].error == "wrong_slot"
+    assert result.ok is False and result.error == "wrong_slot"
     assert temp_db.get_job(order.id).locked_window is None
 
 

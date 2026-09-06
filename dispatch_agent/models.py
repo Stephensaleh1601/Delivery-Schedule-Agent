@@ -586,6 +586,10 @@ class InsertionEvidence(BaseModel):
     anchor_distance_km: float
     placement: str
     insert_position: int
+    # The exact gap that was tested. Optional so offers created before this field existed still
+    # load, while new acceptances can prove that "after stop 5" still means the same two stops.
+    previous_stop_id: Optional[str] = None
+    next_stop_id: Optional[str] = None
     added_distance_km: float
     added_minutes: int
     expected_arrival: Time
