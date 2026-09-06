@@ -8,10 +8,10 @@ Digital AI track, with **Floof.sg** as the real client use case for attended
 fresh-pet-food delivery.
 
 [Deck](submission/Dispatch-IGNITE-Hackathon-Deck.pptx) ·
-[Architecture](#architecture) · [Engineering evidence](#guardrails-judges-can-inspect) ·
+[Architecture](#architecture) · [Guardrails & tests](#guardrails-and-tests) ·
 [Run it](#run-it)
 
-## The problem in ten seconds
+## The problem
 
 Google Maps can order known stops. A calendar can store appointments. Neither can
 talk to a customer, react to a rejection, check which routes remain feasible,
@@ -73,6 +73,12 @@ Confirm an option. The conversation locks, the route moves to a new version, the
 new stop is highlighted and the panel reports that zero existing promises moved.
 Refresh the page: the conversation, trace and confirmation remain.
 
+<p align="center">
+  <img src="docs/screenshots/customer-negotiation.png" alt="Dispatch offering three route-checked alternatives after a customer rejects the first delivery window" width="49%">
+  <img src="docs/screenshots/route-republished.png" alt="Dispatch locking the accepted appointment and publishing route plan version two" width="49%">
+</p>
+<p align="center"><sub>The difficult path: reject, replan, confirm and publish a new route version.</sub></p>
+
 ## Why existing tools stop short
 
 | Existing tool | What it does | What Dispatch adds |
@@ -82,7 +88,7 @@ Refresh the page: the conversation, trace and confirmation remain.
 | Route optimiser | Solves a fixed input | Reacts to rejection, asks for consent and runs another planning cycle |
 | Generic chatbot | Writes a reply | Uses approved tools, changes state, versions the route and leaves an audit trail |
 
-## Guardrails judges can inspect
+## Guardrails and tests
 
 These are enforced in code, not left to a prompt.
 
@@ -117,7 +123,7 @@ flowchart TB
 - **Persisted per-step logs** make each action and tool result inspectable in
   the product.
 
-## Evidence in the product
+## What the prototype proves
 
 The seeded scenario is deliberately small enough to understand in a five-minute
 judging slot:
@@ -129,13 +135,13 @@ judging slot:
 - persisted per-message tool traces
 - idempotent message and acceptance handling
 - rollback across offer, order, route and confirmation writes
-- four Chromium judge-path tests in CI
+- four Chromium demo-path tests in CI
 
 Open **Function calls & results** under a reply to see which tool ran, what it
 received and what it found. The customer sees a simple conversation; a judge can
 inspect the machinery.
 
-## Repeatable judge demo
+## Repeatable demo
 
 The repository ships with 18 synthetic orders, two published routes and two
 customer journeys so the happy, rejection and confirmation paths are immediately
@@ -146,6 +152,33 @@ stable when credentials are unavailable.
 ## Run it
 
 Requirements: Python 3.11+ and Node.js 22+.
+
+### macOS / Linux
+
+```bash
+git clone https://github.com/Stephensaleh1601/Delivery-Schedule-Agent.git
+cd Delivery-Schedule-Agent
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+cp .env.example .env
+.venv/bin/python scripts/seed_test_clients.py
+```
+
+Start the API:
+
+```bash
+.venv/bin/python -m uvicorn dispatch_agent.webapp.main:app --host 127.0.0.1 --port 8000
+```
+
+Start the console in a second terminal:
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+### Windows PowerShell
 
 ```powershell
 git clone https://github.com/Stephensaleh1601/Delivery-Schedule-Agent.git
@@ -187,7 +220,7 @@ npm run test:e2e
 ```
 
 CI runs the Python suite, TypeScript check, production build and four Chromium
-judge paths on every pull request.
+demo paths on every pull request.
 
 ## Judging criteria
 
@@ -207,7 +240,7 @@ dispatch_agent/
   planning/     Offers, insertion search, policy, consent and route versions
   geo/          Geocoding and routing providers
   webapp/       FastAPI endpoints
-frontend/       Next.js operations console and Playwright judge-path tests
+frontend/       Next.js operations console and Playwright demo-path tests
 knowledge/      Delivery policy used by the agent
 scripts/        Deterministic demo seed and test server
 tests/          Unit, integration and regression suite
@@ -215,4 +248,6 @@ tests/          Unit, integration and regression suite
 
 ## Team
 
-**Majestic Fighters:** Abhishek, Abel and Stephen.
+**Majestic Fighters:** [Abhishek](https://github.com/abhishekvulla),
+[Abel](https://github.com/abel123code) and
+[Stephen](https://github.com/Stephensaleh1601).

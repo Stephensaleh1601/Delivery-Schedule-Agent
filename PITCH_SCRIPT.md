@@ -74,6 +74,5 @@ cutaways to the working product.
 > With Dispatch, a rejection no longer sends a coordinator back to the start.
 > The agent excludes it, replans and asks for consent again.
 >
-> Every customer gets a time they agreed to. Every driver gets a route that
-> makes sense. The coordinator handles the exceptions instead of spending the
-> day on WhatsApp.
+> Every confirmed customer gets a time they accepted. Every driver gets a route
+> built from accepted promises. Unresolved cases go to the coordinator.

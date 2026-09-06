@@ -87,13 +87,12 @@ export default function AboutPage() {
                     note: "asking on WhatsApp",
                     icon: <WhatsAppMark />,
                   },
-                  { title: "One “no”", note: "and the plan must change" },
+                  { title: "One “no”", note: "starts another route search" },
                 ]}
               />
             </Figure>
             <Note title="The bottleneck">
-              Customer availability becomes route input. One “no” changes both the conversation
-              and the plan.
+              Customer availability becomes route input. One “no” starts another route search.
             </Note>
           </Segment>
 
@@ -139,7 +138,7 @@ export default function AboutPage() {
               <PersonCard
                 name="Mr Rajan"
                 tone="pending"
-                does="Says no. Twice."
+                does="Rejects the first offer."
                 agent="Looks wider, offers three, or hands it to a person."
               />
             </div>
@@ -178,7 +177,7 @@ export default function AboutPage() {
         <Slide n={4} eyebrow="Fitting people in" criterion="Innovation · Technical quality">
           <Headline>Slide them into the day. Don&rsquo;t rebuild it.</Headline>
           <Lede>
-            Our repeatable demo uses two delivery days, each covering one part of Singapore. An
+            Our seeded demo uses two delivery days, each covering one part of Singapore. An
             address tells the agent which published route to check first.
           </Lede>
 
@@ -322,11 +321,11 @@ export default function AboutPage() {
 
           <div className="rounded-[14px] border border-accent-edge bg-accent-wash px-7 py-7">
             <p className="font-display text-[26px] leading-[1.4] text-ink sm:text-[32px]">
-              Every customer gets a time they agreed to.
+              Every confirmed customer gets a time they accepted.
               <br />
-              Every driver gets a route that makes sense.
+              Every driver gets a route built from accepted promises.
               <br />
-              <span className="text-accent">Nobody spends an afternoon on WhatsApp.</span>
+              <span className="text-accent">Unresolved cases go to the coordinator.</span>
             </p>
           </div>
         </Slide>

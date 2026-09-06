@@ -28,8 +28,8 @@ home, so each order needs a time the customer accepted.
    coordinator asks customers on WhatsApp.
 2. **Keep the route sensible.** Every accepted time changes where the stop can fit.
 
-**The bottleneck:** Customer availability becomes route input. One “no” changes
-both the conversation and the plan.
+**The bottleneck:** Customer availability becomes route input. One “no” starts
+another route search.
 
 The hard part is turning changing customer answers into promises the route can
 actually keep.
@@ -89,7 +89,7 @@ tool steps and every action is persisted for inspection.
 
 ## Slide them into the day. Don’t rebuild it.
 
-The repeatable demo has two published delivery days:
+The seeded demo has two published delivery days:
 
 - **Friday:** North, North-East, South and East
 - **Saturday:** Central, City and West
@@ -138,6 +138,5 @@ connect to the operator’s messaging and address systems.
 | Route decisions live in one person’s head | Every decision and route version is inspectable |
 | Drivers reconcile appointments on the road | They receive a route built from accepted promises |
 
-Every customer gets a time they agreed to. Every driver gets a route that makes
-sense. The coordinator handles exceptions instead of spending the day on
-WhatsApp.
+Every confirmed customer gets a time they accepted. Every driver gets a route
+built from accepted promises. Unresolved cases go to the coordinator.
