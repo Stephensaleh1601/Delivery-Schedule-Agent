@@ -92,38 +92,7 @@ a good answer.
 
 ---
 
-# Slide 4 — Why an AI agent, and not just a form
-
-*Judging criterion: originality*
-
-## A form can take a time. It can't have a conversation.
-
-```
-   A FORM                              OUR AGENT
-
-   asks a fixed question               reads what they actually wrote
-   takes a fixed answer                "Sat morning", "after 1", "not Friday"
-
-   offers whatever is free             offers what the van can really do
-                                       and explains why
-
-   gives up when they say no           tries somewhere else when they say no
-
-   answers nothing else                answers "why that time?" and
-                                       "can you leave it at my door?"
-```
-
-An "agent" just means software that can **plan**, **do things**, and **change
-its mind** when it gets new information:
-
-- **Plans** — works out where this customer fits into a day that's already busy
-- **Does** — offers a time, books it, replies, updates the route
-- **Changes its mind** — a "no" makes it search somewhere different, not just
-  say sorry
-
----
-
-# Slide 5 — How it is built
+# Slide 4 — How it is built
 
 *Judging criterion: technical quality*
 
@@ -192,45 +161,7 @@ that action, not typed in by the AI. "Their usual day" can only see one day.
 
 ---
 
-# Slide 6 — The one big rule
-
-*Judging criterion: originality*
-
-## The AI chooses. The maths decides what's true.
-
-```
-   ┌──────────────────────────┐      ┌──────────────────────────┐
-   │         THE AI           │      │        THE MATHS         │
-   │                          │      │                          │
-   │  reads the message       │      │  works out the dates     │
-   │  picks one of 6 jobs     │      │  measures the driving    │
-   │  repeats their words:    │      │  checks the time fits    │
-   │   "Saturday morning"     │      │  puts options in order   │
-   │                          │      │                          │
-   │  never works out a date  │      │  never guesses           │
-   │  never invents a time    │      │                          │
-   └──────────────────────────┘      └──────────────────────────┘
-             chooses                          decides
-```
-
-AI can sound confident and still be wrong. "Next Tuesday is the 15th" — is it?
-
-So we never let it do the sums. It only repeats the customer's own words
-("Saturday morning"), and our code works out what that actually means. **There
-is nowhere for a made-up date to get in.**
-
-### We tested this on a real AI. Twice it misbehaved:
-
-| What it did | What we did about it |
-|---|---|
-| Booked a slot while its own question was still unanswered | Now the code refuses unless the customer really said yes |
-| Rewrote our message into "Dear Mrs Lee… Best regards" and deleted the reason | Now the code sends the message, not the AI's rewrite |
-
-Telling it "please don't" didn't work. So we made it impossible.
-
----
-
-# Slide 7 — Fitting someone into a day that's already planned
+# Slide 5 — Fitting someone into a day that's already planned
 
 *Judging criterion: technical quality*
 
@@ -268,7 +199,7 @@ because that's what the business can honestly promise. Not a fake 15-minute slot
 
 ---
 
-# Slide 8 — What the office sees
+# Slide 6 — What the office sees
 
 *Judging criterion: technical quality*
 
@@ -309,33 +240,7 @@ else has to change around it.
 
 ---
 
-# Slide 9 — How do we know it works?
-
-*Judging criterion: effectiveness*
-
-## We check it, we don't just claim it
-
-| What we check | Where it stands |
-|---|---|
-| **Automatic tests** | 429 of them — they run every rule on slide 7 |
-| **Tests that call the internet** | none, on purpose. So results never change by accident |
-| **Can it get stuck in a loop?** | no — it's cut off after 10 steps, and it can't argue |
-| **Can it invent an action?** | no — anything it makes up is refused, not guessed at |
-| **Can we see why it said that?** | yes — every answer points to the written rule behind it |
-
-### Two things we chose *not* to do
-
-**We never show one big "score".** A single number that mixes driving minutes
-with made-up penalties looks meaningful and isn't. We show the real parts
-instead: minutes, kilometres, extra hours.
-
-**We never let the AI describe the route.** It would happily say "we'll be in
-the East that morning" when the van isn't going there. Those sentences are
-built from the real planned route.
-
----
-
-# Slide 10 — What changes, and what's next
+# Slide 7 — What changes, and what's next
 
 *Judging criterion: benefits*
 

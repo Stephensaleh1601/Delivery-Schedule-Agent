@@ -3,7 +3,7 @@
 /**
  * The deck, as a page.
  *
- * Ten slides, read top to bottom, one idea each. The audience is someone meeting this for the
+ * Seven slides, read top to bottom, one idea each. The audience is someone meeting this for the
  * first time -- a judge, a new coordinator, the client -- so every slide leads with a picture and
  * says the least that makes the picture make sense.
  *
@@ -12,7 +12,7 @@
  * left points on the table. The tags also keep the copy honest -- a slide that cannot name its
  * criterion is a slide that is not doing work.
  *
- * Source of truth is `slides.md` at the repo root; this renders the same ten. Move one, move both.
+ * Source of truth is `slides.md` at the repo root; this renders the same seven. Move one, move both.
  */
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -27,19 +27,15 @@ import {
   Flow,
   Quote,
   RouteLine,
-  Versus,
 } from "@/components/about/parts";
 
 const SLIDES = [
   "The ask",
   "The problem",
   "What we built",
-  "Why an agent",
   "How it is built",
-  "The one big rule",
   "Fitting people in",
   "The prototype",
-  "How we know",
   "What changes",
 ];
 
@@ -154,49 +150,7 @@ export default function AboutPage() {
         </Slide>
 
         {/* 04 ------------------------------------------------------------- */}
-        <Slide n={3} eyebrow="Why an agent" criterion="Originality">
-          <Headline>A form can take a time. It can&rsquo;t have a conversation.</Headline>
-
-          <Figure>
-            <Versus
-              left={{
-                label: "A booking form",
-                items: [
-                  "Fixed question, fixed answer",
-                  "Offers whatever slot is free",
-                  "Gives up at “no”",
-                  "Answers nothing else",
-                ],
-              }}
-              right={{
-                label: "Our agent",
-                tone: "accent",
-                items: [
-                  <>
-                    Reads what they wrote — <em>“Sat morning”</em>, <em>“after 1”</em>,{" "}
-                    <em>“not Friday”</em>
-                  </>,
-                  "Offers only what the van can do, and says why",
-                  "Searches somewhere else at “no”",
-                  <>
-                    Answers <em>“why that time?”</em> and <em>“can you leave it at my door?”</em>
-                  </>,
-                ],
-              }}
-            />
-          </Figure>
-
-          <Segment label="“Agent” means software that does three things">
-            <div className="grid gap-3 sm:grid-cols-3">
-              <TraitCard word="Plans" text="Works out where this customer fits into a busy day." />
-              <TraitCard word="Acts" text="Offers, books, replies, updates the route." />
-              <TraitCard word="Adapts" text="A “no” changes where it searches, not just what it says." />
-            </div>
-          </Segment>
-        </Slide>
-
-        {/* 05 ------------------------------------------------------------- */}
-        <Slide n={4} eyebrow="How it is built" criterion="Technical quality">
+        <Slide n={3} eyebrow="How it is built" criterion="Technical quality">
           <Headline>Everything comes back to the same question</Headline>
           <Lede>
             Each box is marked <Tag who="ai" /> or <Tag who="code" />. The AI appears twice — and
@@ -219,60 +173,8 @@ export default function AboutPage() {
           </div>
         </Slide>
 
-        {/* 06 ------------------------------------------------------------- */}
-        <Slide n={5} eyebrow="The one big rule" criterion="Originality">
-          <Headline>The AI chooses. The maths decides what is true.</Headline>
-
-          <Figure>
-            <Versus
-              left={{
-                label: "The AI",
-                tone: "accent",
-                items: [
-                  "Reads the message",
-                  "Picks one of six actions",
-                  <>
-                    Repeats their words: <em>“Saturday morning”</em>
-                  </>,
-                  "Never works out a date. Never invents a time.",
-                ],
-              }}
-              right={{
-                label: "The code",
-                items: [
-                  "Turns those words into real dates",
-                  "Measures the real driving",
-                  "Proves the time fits",
-                  "Ranks the options. Never guesses.",
-                ],
-              }}
-            />
-          </Figure>
-
-          <p className="text-[14px] leading-[1.6] text-ink-soft">
-            AI sounds confident when it is wrong. <em>“Next Tuesday is the 15th”</em> — is it? So it
-            never does the sums. <Strong>There is nowhere for a made-up date to get in.</Strong>
-          </p>
-
-          <Segment label="We tested this on a real AI. Twice it misbehaved.">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <MisbehaviourCard
-                did="Booked a slot while its own question was still unanswered."
-                fix="The code now refuses unless the customer really said yes."
-              />
-              <MisbehaviourCard
-                did="Rewrote our message as “Dear Mrs Lee… Best regards” and deleted the reason."
-                fix="The code now sends the message, not the AI's rewrite."
-              />
-            </div>
-            <p className="text-[13.5px] leading-[1.55] text-ink-muted">
-              Asking it nicely did not work. So we made both impossible.
-            </p>
-          </Segment>
-        </Slide>
-
-        {/* 07 ------------------------------------------------------------- */}
-        <Slide n={6} eyebrow="Fitting people in" criterion="Technical quality">
+        {/* 05 ------------------------------------------------------------- */}
+        <Slide n={4} eyebrow="Fitting people in" criterion="Technical quality">
           <Headline>Slide them into the day. Don&rsquo;t rebuild it.</Headline>
           <Lede>
             Two delivery days a week, each covering one part of Singapore. An address already tells
@@ -340,8 +242,8 @@ export default function AboutPage() {
           </Note>
         </Slide>
 
-        {/* 08 ------------------------------------------------------------- */}
-        <Slide n={7} eyebrow="The prototype" criterion="Technical quality">
+        {/* 06 ------------------------------------------------------------- */}
+        <Slide n={5} eyebrow="The prototype" criterion="Technical quality">
           <Headline>It runs. Here is where.</Headline>
 
           <div className="grid gap-3 sm:grid-cols-3">
@@ -387,33 +289,8 @@ export default function AboutPage() {
           </Segment>
         </Slide>
 
-        {/* 09 ------------------------------------------------------------- */}
-        <Slide n={8} eyebrow="How we know" criterion="Effectiveness">
-          <Headline>We check it. We don&rsquo;t just claim it.</Headline>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Metric figure="429" label="Automatic tests" note="Every rule on the last slide is one of them." />
-            <Metric figure="0" label="Tests that call the internet" note="On purpose — results never drift." />
-            <Metric figure="10" label="Steps, then it stops" note="A counter it cannot argue with." />
-            <Metric figure="100%" label="Replies traceable to a rule" note="Every answer names the rule behind it." />
-          </div>
-
-          <Segment label="Two things we chose not to do">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Note title="No single “score”.">
-                One number mixing driving minutes with invented penalties looks meaningful and
-                isn&rsquo;t. We show the parts: minutes, kilometres, extra hours.
-              </Note>
-              <Note title="The AI never describes the route.">
-                It would say “we&rsquo;ll be in the East that morning” when the van isn&rsquo;t.
-                Those sentences are built from the real planned route.
-              </Note>
-            </div>
-          </Segment>
-        </Slide>
-
-        {/* 10 ------------------------------------------------------------- */}
-        <Slide n={9} eyebrow="What changes" criterion="Benefits" last>
+        {/* 07 ------------------------------------------------------------- */}
+        <Slide n={6} eyebrow="What changes" criterion="Benefits" last>
           <Headline>An afternoon of texting becomes something that answers itself</Headline>
 
           <BeforeAfter
@@ -668,17 +545,6 @@ function TraitCard({ word, text }: { word: string; text: string }) {
   );
 }
 
-function MisbehaviourCard({ did, fix }: { did: string; fix: string }) {
-  return (
-    <div className="flex flex-col gap-2.5 rounded-[12px] border border-alert-edge bg-alert-wash/60 px-5 py-4">
-      <p className="text-[13.5px] leading-[1.5] text-alert">{did}</p>
-      <p className="border-t border-alert-edge/70 pt-2.5 text-[13.5px] leading-[1.5] text-ink-soft">
-        {fix}
-      </p>
-    </div>
-  );
-}
-
 function DayCard({ day, regions }: { day: string; regions: string }) {
   return (
     <div className="flex flex-col gap-1 rounded-[12px] border border-rail bg-surface px-5 py-4 shadow-[var(--shadow-raise)]">
@@ -710,16 +576,6 @@ function ScreenCard({ href, name, text }: { href: string; name: string; text: st
       </span>
       <span className="text-[13px] leading-[1.5] text-ink-muted">{text}</span>
     </Link>
-  );
-}
-
-function Metric({ figure, label, note }: { figure: string; label: string; note: string }) {
-  return (
-    <div className="flex flex-col gap-0.5 rounded-[12px] border border-rail bg-surface px-5 py-4 shadow-[var(--shadow-raise)]">
-      <span className="font-display text-[34px] leading-[1.05] tnum text-ink">{figure}</span>
-      <span className="text-[13.5px] font-medium text-ink-soft">{label}</span>
-      <span className="text-[12.5px] leading-[1.45] text-ink-muted">{note}</span>
-    </div>
   );
 }
 
