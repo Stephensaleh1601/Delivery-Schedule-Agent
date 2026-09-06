@@ -183,6 +183,35 @@ def test_asking_why_runs_only_read_only_tools(client):
     # customer's own dates, and answered by explaining Saturday.
     allowed = {"explain_offer", "send_message", "finish"}
     assert set(_ok_tools(turn)) <= allowed, _tools(turn)
+    assert "explain_offer" in _ok_tools(turn), _tools(turn)
+
+
+def test_failed_fallback_is_not_presented_as_a_completed_solution():
+    """Two valid options are not a valid three-option fallback, so the panel must say why the
+    search stopped instead of styling the partial result as solved."""
+    from dispatch_agent.models import AgentActionLog, AgentRunLog
+    from dispatch_agent.planning import decision_record
+
+    run = AgentRunLog(
+        event_id="event-1",
+        actions=[
+            AgentActionLog(
+                step=1,
+                tool="find_fallback_options",
+                ok=False,
+                error="too_few_alternatives",
+                data={"valid_count": 2},
+            )
+        ],
+    )
+
+    evidence = decision_record._evidence(run)
+
+    assert [step.text for step in evidence] == [
+        "Found 2 workable times; policy needs 3 for a fallback offer"
+    ]
+    assert evidence[0].tone == "removed"
+    assert all("Produced 2 valid choices" not in step.text for step in evidence)
 
 
 @pytest.mark.parametrize(

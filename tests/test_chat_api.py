@@ -380,7 +380,15 @@ def test_asking_why_gets_an_answer_built_from_the_route(client):
 
     assert turn["intent"] == "explain"
     reply = _outbound(turn)[-1]["body"]
-    assert reply.strip(), "an explanation request must be answered"
+    # A non-empty assertion is too weak: the completion guarantee also sends a non-empty
+    # coordinator hand-off when the fallback decider asks for an illegal action. The answer must
+    # contain evidence from the route and the explanation workflow must actually have run.
+    assert "coordinators will call" not in reply.lower(), reply
+    assert "km" in reply.lower(), reply
+    run = turn["runs"][turn["decision_run_id"]]
+    assert "explain_offer" in {action["tool"] for action in run["actions"] if action["ok"]}, [
+        (action["tool"], action["error"]) for action in run["actions"]
+    ]
 
 
 def test_an_explanation_never_names_another_customer(client):

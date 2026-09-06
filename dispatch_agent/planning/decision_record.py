@@ -634,7 +634,16 @@ def _evidence(run: AgentRunLog) -> list[Step]:
             Step(f"Dropped {data['excluded_by_customer']} the customer had ruled out", "removed")
         )
     if data.get("valid_count"):
-        rows.append(Step(f"Produced {data['valid_count']} valid choices", "solved"))
+        valid_count = data["valid_count"]
+        if search.ok:
+            rows.append(Step(f"Produced {valid_count} valid choices", "solved"))
+        elif search.tool == "find_fallback_options" and search.error == "too_few_alternatives":
+            rows.append(
+                Step(
+                    f"Found {valid_count} workable times; policy needs 3 for a fallback offer",
+                    "removed",
+                )
+            )
 
     offered = next(
         (

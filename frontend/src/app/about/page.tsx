@@ -3,7 +3,7 @@
 /**
  * The deck, as a page.
  *
- * Ten slides, read top to bottom, one idea each. The audience is someone meeting this for the
+ * Seven slides, read top to bottom, one idea each. The audience is someone meeting this for the
  * first time -- a judge, a new coordinator, the client -- so every slide leads with a picture and
  * says the least that makes the picture make sense.
  *
@@ -12,7 +12,7 @@
  * left points on the table. The tags also keep the copy honest -- a slide that cannot name its
  * criterion is a slide that is not doing work.
  *
- * Source of truth is `slides.md` at the repo root; this renders the same ten. Move one, move both.
+ * Source of truth is `slides.md` at the repo root; this renders the same seven. Move one, move both.
  */
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -27,19 +27,15 @@ import {
   Flow,
   Quote,
   RouteLine,
-  Versus,
 } from "@/components/about/parts";
 
 const SLIDES = [
   "The ask",
   "The problem",
   "What we built",
-  "Why an agent",
   "How it is built",
-  "The one big rule",
   "Fitting people in",
   "The prototype",
-  "How we know",
   "What changes",
 ];
 
@@ -53,10 +49,10 @@ export default function AboutPage() {
       <div className="flex min-w-0 flex-1 flex-col">
         {/* 01 ------------------------------------------------------------- */}
         <Slide n={0} eyebrow="The ask" criterion="Presentation" first>
-          <Headline>Nobody should spend the day asking customers when they are home</Headline>
+          <Headline>Nobody should spend an afternoon asking forty people when they are home</Headline>
           <Lede>
-            An AI helper that agrees a delivery time with every customer by text — and only offers
-            times the delivery route can actually keep.
+            An AI delivery coordinator that agrees a time by text, checks the published route and
+            only offers windows the van can keep.
           </Lede>
 
           <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -65,7 +61,7 @@ export default function AboutPage() {
             <Pill>Team Majestic Fighters</Pill>
           </div>
 
-          <p className="text-[14px] leading-[1.6] text-ink-muted">
+          <p className="text-[17px] leading-[1.6] text-ink-muted">
             The three tabs beside this one are the working product.{" "}
             <Link href="/chat" className="text-accent underline underline-offset-2">
               Customer Chat
@@ -75,41 +71,42 @@ export default function AboutPage() {
         </Slide>
 
         {/* 02 ------------------------------------------------------------- */}
-        <Slide n={1} eyebrow="The problem" criterion="Presentation">
+        <Slide n={1} eyebrow="The problem" criterion="Benefits · Presentation">
           <Headline>Two hard jobs, both done by hand</Headline>
           <Lede>
-            Fresh pet food cannot simply be left outside. Staff must coordinate a recipient window,
-            then turn those replies into a route that can keep every promise.
+            Floof.sg coordinates attended deliveries for fresh pet food. <Strong>Somebody has to
+            be home.</Strong> Every order needs a time the customer agreed to.
           </Lede>
 
           <Segment label="Job 1 — asking everybody">
             <Figure>
               <Flow
                 steps={[
-                  { title: "30–40 deliveries", note: "in a day, interview-reported" },
-                  { title: "Customer replies", note: "arrive in ordinary language" },
-                  { title: "One “no”", note: "changes the planning input" },
+                  { title: "30–40 deliveries", note: "on a busy day, interview reported" },
+                  { title: "One coordinator", note: "asking on WhatsApp" },
+                  { title: "One “no”", note: "and the plan must change" },
                 ]}
               />
             </Figure>
-            <Quote source="Paraphrased from a Floof.sg interview">
-              The hardest part is negotiating delivery timing with customers.
+            <Quote source="Floof.sg interview — 5 September 2026, paraphrased">
+              Negotiating customers&rsquo; preferred delivery slots is the hardest part.
             </Quote>
           </Segment>
 
-          <Segment label="Job 2 — checking whether the promise fits">
-            <Figure caption="Same five customers, same delivery day. Only the order changed.">
+          <Segment label="Job 2 — deciding who to visit first">
+            <Figure caption="Same five customers, same van, same day. Only the order changed.">
               <DetourComparison />
             </Figure>
-            <p className="text-[14px] leading-[1.6] text-ink-soft">
-              Route checking is the feasibility layer: it tells the coordinator which proposed
-              windows can become real stops without making anyone else late.
+            <p className="text-[17px] leading-[1.6] text-ink-soft">
+              Detours turn into late deliveries. A person works this out by hand — and drivers still
+              change it on the road, so the plan and the day drift apart.
             </p>
           </Segment>
 
           <Statement>
-            A delivery coordinator needs to agree a time with each customer <em>and</em> know the
-            route can keep it, <Strong>because</Strong> a calendar slot is not an operational promise.
+            A coordinator at Floof.sg needs to agree a time with every customer <em>and</em> put
+            them in a sensible driving order, <Strong>because</Strong> doing both by hand takes
+            hours — and one “sorry, not Friday” forces another planning round.
           </Statement>
         </Slide>
 
@@ -123,7 +120,7 @@ export default function AboutPage() {
                 { title: "“I'm free Saturday morning”", note: "their own words" },
                 { title: "Read it", note: "what do they mean?" },
                 { title: "Check the real route", note: "where would they fit?" },
-                { title: "Offer one time", note: "one the route can keep" },
+                { title: "Offer one time", note: "one the van can keep" },
               ]}
             />
           </Figure>
@@ -143,57 +140,15 @@ export default function AboutPage() {
                 agent="Looks wider, offers three, or hands it to a person."
               />
             </div>
-            <p className="text-[13.5px] leading-[1.55] text-ink-muted">
-              The first path proves speed. The second proves the agent can absorb a new constraint,
-              search again and still reach a safe outcome.
+            <p className="text-[16px] leading-[1.55] text-ink-muted">
+              The easy path takes one search and one confirmation. The difficult path adapts to a
+              rejection without guessing or moving an existing booking.
             </p>
           </Segment>
         </Slide>
 
         {/* 04 ------------------------------------------------------------- */}
-        <Slide n={3} eyebrow="Why an agent" criterion="Originality">
-          <Headline>A form can take a time. It can&rsquo;t have a conversation.</Headline>
-
-          <Figure>
-            <Versus
-              left={{
-                label: "A booking form",
-                items: [
-                  "Fixed question, fixed answer",
-                  "Offers whatever slot is free",
-                  "Gives up at “no”",
-                  "Answers nothing else",
-                ],
-              }}
-              right={{
-                label: "Our agent",
-                tone: "accent",
-                items: [
-                  <>
-                    Reads what they wrote — <em>“Sat morning”</em>, <em>“after 1”</em>,{" "}
-                    <em>“not Friday”</em>
-                  </>,
-                  "Offers only what the route can do, and says why",
-                  "Searches somewhere else at “no”",
-                  <>
-                    Answers <em>“why that time?”</em> and <em>“can you leave it at my door?”</em>
-                  </>,
-                ],
-              }}
-            />
-          </Figure>
-
-          <Segment label="“Agent” means software that does three things">
-            <div className="grid gap-3 sm:grid-cols-3">
-              <TraitCard word="Plans" text="Works out where this customer fits into a busy day." />
-              <TraitCard word="Acts" text="Offers, books, replies, updates the route." />
-              <TraitCard word="Adapts" text="A “no” changes where it searches, not just what it says." />
-            </div>
-          </Segment>
-        </Slide>
-
-        {/* 05 ------------------------------------------------------------- */}
-        <Slide n={4} eyebrow="How it is built" criterion="Technical quality">
+        <Slide n={3} eyebrow="How it is built" criterion="Innovation · Technical quality">
           <Headline>Everything comes back to the same question</Headline>
           <Lede>
             Each box is marked <Tag who="ai" /> or <Tag who="code" />. The AI appears twice — and
@@ -216,64 +171,12 @@ export default function AboutPage() {
           </div>
         </Slide>
 
-        {/* 06 ------------------------------------------------------------- */}
-        <Slide n={5} eyebrow="The one big rule" criterion="Originality">
-          <Headline>The AI chooses. The maths decides what is true.</Headline>
-
-          <Figure>
-            <Versus
-              left={{
-                label: "The AI",
-                tone: "accent",
-                items: [
-                  "Reads the message",
-                  "Picks one of six actions",
-                  <>
-                    Repeats their words: <em>“Saturday morning”</em>
-                  </>,
-                  "Never works out a date. Never invents a time.",
-                ],
-              }}
-              right={{
-                label: "The code",
-                items: [
-                  "Turns those words into real dates",
-                  "Measures the real driving",
-                  "Proves the time fits",
-                  "Ranks the options. Never guesses.",
-                ],
-              }}
-            />
-          </Figure>
-
-          <p className="text-[14px] leading-[1.6] text-ink-soft">
-            AI sounds confident when it is wrong. <em>“Next Tuesday is the 15th”</em> — is it? So it
-            never does the sums. <Strong>There is nowhere for a made-up date to get in.</Strong>
-          </p>
-
-          <Segment label="We tested this on a real AI. Twice it misbehaved.">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <MisbehaviourCard
-                did="Booked a slot while its own question was still unanswered."
-                fix="The code now refuses unless the customer really said yes."
-              />
-              <MisbehaviourCard
-                did="Rewrote our message as “Dear Mrs Lee… Best regards” and deleted the reason."
-                fix="The code now sends the message, not the AI's rewrite."
-              />
-            </div>
-            <p className="text-[13.5px] leading-[1.55] text-ink-muted">
-              Asking it nicely did not work. So we made both impossible.
-            </p>
-          </Segment>
-        </Slide>
-
-        {/* 07 ------------------------------------------------------------- */}
-        <Slide n={6} eyebrow="Fitting people in" criterion="Technical quality">
+        {/* 05 ------------------------------------------------------------- */}
+        <Slide n={4} eyebrow="Fitting people in" criterion="Innovation · Technical quality">
           <Headline>Slide them into the day. Don&rsquo;t rebuild it.</Headline>
           <Lede>
-            For the prototype, two published routes each cover one part of Singapore. An address
-            already tells us the normal demo route.
+            Our repeatable demo uses two delivery days, each covering one part of Singapore. An
+            address tells the agent which published route to check first.
           </Lede>
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -283,7 +186,7 @@ export default function AboutPage() {
 
           <Figure caption="We try them before and after each nearby stop, then check everyone after them still arrives on time.">
             <RouteLine
-              label="Friday's route, already planned"
+              label="Friday's van, already planned"
               stops={["Chen Li Hua", "Marcus Tan", "Priya Nair"]}
               insertAt={1}
             />
@@ -313,7 +216,8 @@ export default function AboutPage() {
                   ok: false,
                   text: (
                     <>
-                      <Strong>Never invent a route.</Strong> It only fills routes already published.
+                      <Strong>Never add a delivery day.</Strong> It only fills days the van already
+                      drives.
                     </>
                   ),
                 },
@@ -330,14 +234,14 @@ export default function AboutPage() {
           </Segment>
 
           <Note title="Wide windows, honestly">
-            The demo uses <Strong>morning 10–2</Strong>, <Strong>afternoon 2–5</Strong> and{" "}
-            <Strong>evening 5–9</Strong> prototype windows. The exact boundaries are configuration;
-            the invariant is that every offered window is route-feasible.
+            Customers get <Strong>morning 10–2</Strong>, <Strong>afternoon 2–5</Strong> or{" "}
+            <Strong>evening 5–9</Strong> — what the business can genuinely promise. A fake
+            15-minute slot breaks on the first traffic jam.
           </Note>
         </Slide>
 
-        {/* 08 ------------------------------------------------------------- */}
-        <Slide n={7} eyebrow="The prototype" criterion="Technical quality">
+        {/* 06 ------------------------------------------------------------- */}
+        <Slide n={5} eyebrow="The prototype" criterion="Effectiveness · Technical quality">
           <Headline>It runs. Here is where.</Headline>
 
           <div className="grid gap-3 sm:grid-cols-3">
@@ -346,77 +250,52 @@ export default function AboutPage() {
             <ScreenCard href="/chat" name="Customer Chat" text="The conversation, and what the helper did." />
           </div>
 
-          <Segment label="What a judge can inspect live">
-            <Figure caption="Each line comes from a persisted tool result linked to the reply it produced.">
+          <Segment label="While the customer waits">
+            <Figure caption="Each line is written by the code that did that thing, as it did it. Nothing is faked to look busy.">
               <ol className="flex flex-col gap-1.5">
                 {[
-                  ["Understood the customer's availability", "Bedrock"],
-                  ["Checked the published route", "OR-Tools"],
-                  ["Offered a feasible window", "LangGraph"],
+                  ["Read the customer’s message", "done"],
+                  ["Checked the published route", "done"],
+                  ["Offered 2–5pm with route evidence", "sent"],
                 ].map(([text, time]) => (
                   <li
                     key={text}
                     className="flex items-center justify-between gap-4 rounded-[9px] border border-rail bg-sunk/50 px-3.5 py-2.5"
                   >
-                    <span className="flex items-center gap-2.5 text-[13.5px] text-ink">
+                    <span className="flex items-center gap-2.5 text-[16px] text-ink">
                       <TickIcon />
                       {text}
                     </span>
-                    <span className="font-mono text-[11.5px] tnum text-ink-faint">{time}</span>
+                    <span className="font-mono text-[13.5px] tnum text-ink-faint">{time}</span>
                   </li>
                 ))}
               </ol>
             </Figure>
           </Segment>
 
-          <Segment label="Sponsor technology doing real work">
+          <Segment label="Integration path">
             <div className="grid gap-3 sm:grid-cols-2">
-              <Note title="Bedrock + LangGraph">
-                Bedrock interprets free text and selects actions. LangGraph runs the bounded loop
-                and records every result.
+              <Note title="Working now">
+                The agent loop, route maths, policy rules, operations console and database. Python,
+                FastAPI, Next.js, OR-Tools, LangGraph and Claude on AWS Bedrock.
               </Note>
-              <Note title="Deterministic truth">
-                Pydantic guards, OR-Tools and route providers decide what is legal and feasible. The
-                model cannot invent a time, distance or acceptance.
+              <Note title="Connect to the business">
+                The simulated customer thread and demo address lookup sit behind clear interfaces,
+                ready to connect to the operator&rsquo;s messaging and address systems.
               </Note>
             </div>
           </Segment>
         </Slide>
 
-        {/* 09 ------------------------------------------------------------- */}
-        <Slide n={8} eyebrow="How we know" criterion="Effectiveness">
-          <Headline>We check it. We don&rsquo;t just claim it.</Headline>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Metric figure="3" label="Fallback choices" note="Each one route-checked and ranked." />
-            <Metric figure="0" label="Promises moved" note="After a new customer accepts." />
-            <Metric figure="10" label="Steps, then it stops" note="A counter it cannot argue with." />
-            <Metric figure="2" label="Browser journeys" note="Happy and difficult paths replayed in CI." />
-          </div>
-
-          <Segment label="Two things we chose not to do">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Note title="No single “score”.">
-                One number mixing driving minutes with invented penalties looks meaningful and
-                isn&rsquo;t. We show the parts: minutes, kilometres, extra hours.
-              </Note>
-              <Note title="The AI never describes the route.">
-                It would say “we&rsquo;ll be in the East that morning” when the route isn&rsquo;t.
-                Those sentences are built from the real planned route.
-              </Note>
-            </div>
-          </Segment>
-        </Slide>
-
-        {/* 10 ------------------------------------------------------------- */}
-        <Slide n={9} eyebrow="What changes" criterion="Benefits" last>
-          <Headline>Customer replies become one route the driver can trust</Headline>
+        {/* 07 ------------------------------------------------------------- */}
+        <Slide n={6} eyebrow="What changes" criterion="Benefits" last>
+          <Headline>An afternoon of texting becomes something that answers itself</Headline>
 
           <BeforeAfter
             rows={[
-              { before: "Availability buried in chat", after: "Each reply becomes a planning constraint" },
-              { before: "Calendar slots detached from routes", after: "Every offered time is route-checked" },
-              { before: "A rejection needs another manual search", after: "A “no” starts a bounded fallback workflow" },
+              { before: "One coordinator chasing dozens of replies", after: "Each customer answered as they reply" },
+              { before: "Drivers sorting out timings between stops", after: "Drivers get a finished route the day before" },
+              { before: "“Not Friday” means starting over", after: "A “no” searches somewhere else by itself" },
               { before: "The plan lives in one person's head", after: "Every decision can be looked up afterwards" },
             ]}
           />
@@ -424,12 +303,12 @@ export default function AboutPage() {
           <Segment label="Why it spreads easily">
             <div className="grid gap-3 sm:grid-cols-3">
               <TraitCard
-                word="More routes"
-                text="Add published operating routes without changing the customer journey."
+                word="More days"
+                text="Delivery days are configuration, not code. Add Tuesday and it plans Tuesday."
               />
               <TraitCard
-                word="More vehicles"
-                text="Multi-vehicle assignment is the next optimisation layer."
+                word="More vans"
+                text="The same coordination loop can sit above a multi-vehicle route solver."
               />
               <TraitCard
                 word="Other trades"
@@ -439,12 +318,12 @@ export default function AboutPage() {
           </Segment>
 
           <div className="rounded-[14px] border border-accent-edge bg-accent-wash px-7 py-7">
-            <p className="font-display text-[22px] leading-[1.4] text-ink sm:text-[26px]">
-              Every offered time is one the route can keep.
+            <p className="font-display text-[26px] leading-[1.4] text-ink sm:text-[32px]">
+              Every customer gets a time they agreed to.
               <br />
               Every driver gets a route that makes sense.
               <br />
-              <span className="text-accent">The negotiation and the route stay in one loop.</span>
+              <span className="text-accent">Nobody spends an afternoon on WhatsApp.</span>
             </p>
           </div>
         </Slide>
@@ -484,7 +363,7 @@ function Slide({
       style={{ animationDelay: `${Math.min(n, 4) * 55}ms` }}
     >
       <div className="flex items-center gap-3">
-        <span className="font-mono text-[11px] font-medium tabular-nums text-ink-faint">
+        <span className="font-mono text-[13px] font-medium tabular-nums text-ink-faint">
           {String(n + 1).padStart(2, "0")}
         </span>
         <span aria-hidden className="h-px w-6 bg-rail-strong" />
@@ -492,7 +371,7 @@ function Slide({
         <span aria-hidden className="h-px flex-1 bg-rail" />
         <span
           title="The judging criterion this slide answers"
-          className="font-mono text-[9.5px] uppercase tracking-[0.11em] text-ink-faint"
+          className="font-mono text-[11.5px] uppercase tracking-[0.11em] text-ink-faint"
         >
           {criterion}
         </span>
@@ -504,14 +383,14 @@ function Slide({
 
 function Headline({ children }: { children: ReactNode }) {
   return (
-    <h2 className="max-w-[24ch] font-display text-[32px] leading-[1.1] tracking-[-0.015em] text-ink sm:text-[40px]">
+    <h2 className="max-w-[24ch] font-display text-[40px] leading-[1.1] tracking-[-0.015em] text-ink sm:text-[50px]">
       {children}
     </h2>
   );
 }
 
 function Lede({ children }: { children: ReactNode }) {
-  return <p className="max-w-[64ch] text-[15.5px] leading-[1.6] text-ink-soft">{children}</p>;
+  return <p className="max-w-[64ch] text-[19px] leading-[1.6] text-ink-soft">{children}</p>;
 }
 
 function Strong({ children }: { children: ReactNode }) {
@@ -524,7 +403,7 @@ function Tag({ who }: { who: "ai" | "code" }) {
     <span
       className={cx(
         "inline-block rounded-full border px-2 py-[1px] align-[1px]",
-        "font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em]",
+        "font-mono text-[11.5px] font-semibold uppercase tracking-[0.1em]",
         who === "ai"
           ? "border-accent-edge bg-accent-wash text-accent"
           : "border-rail-strong bg-sunk text-ink-muted",
@@ -535,7 +414,7 @@ function Tag({ who }: { who: "ai" | "code" }) {
   );
 }
 
-/** A labelled block inside a slide. This is what keeps ten dense slides readable. */
+/** A labelled block inside a slide. This keeps each slide readable. */
 function Segment({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-3.5 pt-2">
@@ -552,7 +431,7 @@ function Statement({ children }: { children: ReactNode }) {
   return (
     <div className="mt-2 rounded-[14px] border border-rail bg-surface px-6 py-5 shadow-[var(--shadow-raise)]">
       <Eyebrow>The problem, in one sentence</Eyebrow>
-      <p className="mt-2 font-display text-[20px] leading-[1.42] text-ink sm:text-[22px]">
+      <p className="mt-2 font-display text-[24px] leading-[1.42] text-ink sm:text-[26px]">
         {children}
       </p>
     </div>
@@ -583,7 +462,7 @@ function Rail({ active }: { active: number }) {
               i === active ? "w-5 bg-accent" : "w-2.5 bg-rail-strong group-hover:w-4",
             )}
           />
-          <span className="truncate text-[12px] leading-[1.4]">{label}</span>
+          <span className="truncate text-[14px] leading-[1.4]">{label}</span>
         </a>
       ))}
     </nav>
@@ -647,10 +526,10 @@ function PersonCard({
     <div className="flex flex-col gap-2.5 rounded-[12px] border border-rail bg-surface px-5 py-4 shadow-[var(--shadow-raise)]">
       <div className="flex items-center gap-2">
         <span className={cx("h-1.5 w-1.5 rounded-full", tone === "locked" ? "bg-locked" : "bg-pending")} />
-        <span className="text-[14px] font-semibold text-ink">{name}</span>
+        <span className="text-[17px] font-semibold text-ink">{name}</span>
       </div>
-      <p className="text-[13.5px] leading-[1.5] text-ink-muted">{does}</p>
-      <p className="border-t border-rail pt-2.5 text-[13.5px] leading-[1.5] text-ink-soft">{agent}</p>
+      <p className="text-[16px] leading-[1.5] text-ink-muted">{does}</p>
+      <p className="border-t border-rail pt-2.5 text-[16px] leading-[1.5] text-ink-soft">{agent}</p>
     </div>
   );
 }
@@ -658,19 +537,8 @@ function PersonCard({
 function TraitCard({ word, text }: { word: string; text: string }) {
   return (
     <div className="flex flex-col gap-1.5 rounded-[12px] border border-rail bg-surface px-5 py-4">
-      <span className="font-display text-[20px] leading-none text-accent">{word}</span>
-      <p className="text-[13px] leading-[1.5] text-ink-muted">{text}</p>
-    </div>
-  );
-}
-
-function MisbehaviourCard({ did, fix }: { did: string; fix: string }) {
-  return (
-    <div className="flex flex-col gap-2.5 rounded-[12px] border border-alert-edge bg-alert-wash/60 px-5 py-4">
-      <p className="text-[13.5px] leading-[1.5] text-alert">{did}</p>
-      <p className="border-t border-alert-edge/70 pt-2.5 text-[13.5px] leading-[1.5] text-ink-soft">
-        {fix}
-      </p>
+      <span className="font-display text-[24px] leading-none text-accent">{word}</span>
+      <p className="text-[15.5px] leading-[1.5] text-ink-muted">{text}</p>
     </div>
   );
 }
@@ -678,8 +546,8 @@ function MisbehaviourCard({ did, fix }: { did: string; fix: string }) {
 function DayCard({ day, regions }: { day: string; regions: string }) {
   return (
     <div className="flex flex-col gap-1 rounded-[12px] border border-rail bg-surface px-5 py-4 shadow-[var(--shadow-raise)]">
-      <span className="font-display text-[22px] leading-none text-ink">{day}</span>
-      <span className="text-[13px] leading-[1.5] text-ink-muted">{regions}</span>
+      <span className="font-display text-[26px] leading-none text-ink">{day}</span>
+      <span className="text-[15.5px] leading-[1.5] text-ink-muted">{regions}</span>
     </div>
   );
 }
@@ -693,7 +561,7 @@ function ScreenCard({ href, name, text }: { href: string; name: string; text: st
         "shadow-[var(--shadow-raise)] transition-colors duration-150 hover:border-accent-edge hover:bg-accent-wash/40",
       )}
     >
-      <span className="flex items-center gap-1.5 text-[14px] font-semibold text-ink">
+      <span className="flex items-center gap-1.5 text-[17px] font-semibold text-ink">
         {name}
         <svg
           viewBox="0 0 12 12"
@@ -704,26 +572,16 @@ function ScreenCard({ href, name, text }: { href: string; name: string; text: st
           <path d="M3.5 2.5 7.5 6l-4 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </span>
-      <span className="text-[13px] leading-[1.5] text-ink-muted">{text}</span>
+      <span className="text-[15.5px] leading-[1.5] text-ink-muted">{text}</span>
     </Link>
-  );
-}
-
-function Metric({ figure, label, note }: { figure: string; label: string; note: string }) {
-  return (
-    <div className="flex flex-col gap-0.5 rounded-[12px] border border-rail bg-surface px-5 py-4 shadow-[var(--shadow-raise)]">
-      <span className="font-display text-[34px] leading-[1.05] tnum text-ink">{figure}</span>
-      <span className="text-[13.5px] font-medium text-ink-soft">{label}</span>
-      <span className="text-[12.5px] leading-[1.45] text-ink-muted">{note}</span>
-    </div>
   );
 }
 
 function Note({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5 rounded-[12px] border border-rail bg-sunk/50 px-5 py-4">
-      <span className="text-[13.5px] font-semibold text-ink">{title}</span>
-      <p className="text-[13px] leading-[1.55] text-ink-muted">{children}</p>
+      <span className="text-[16px] font-semibold text-ink">{title}</span>
+      <p className="text-[15.5px] leading-[1.55] text-ink-muted">{children}</p>
     </div>
   );
 }

@@ -2,18 +2,18 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { cx } from "@/components/ui";
 
 /**
- * Three destinations, ordered as the operation runs.
+ * Four destinations, ordered as the operation runs.
  *
  * The console used to have six pages of equal weight, one per backend service. That is the
  * architecture's shape, not the business's -- and someone seeing this for the first time has to
- * work out which of six doors answers "what did the agent just do?". Three, in narrative order,
+ * work out which of six doors answers "what did the agent just do?". Four, in narrative order,
  * answers it by walking left to right.
  *
- * A top bar rather than a side rail: with three destinations a rail only steals width, and both
+ * A top bar rather than a side rail: with four destinations a rail only steals width, and both
  * the orders grid and the map want it.
  */
 const NAV = [
@@ -22,7 +22,7 @@ const NAV = [
   { href: "/chat", label: "Customer Chat", hint: "Booking, with the agent's working" },
   // Last, and deliberately so: it explains the three above it, so it only makes sense to someone
   // who has already seen one of them -- or to a visitor who wants the story before the product.
-  { href: "/about", label: "About", hint: "What this is, in ten slides" },
+  { href: "/about", label: "About", hint: "What this is, in seven slides" },
 ];
 
 export function Shell({ children }: { children: ReactNode }) {
@@ -31,15 +31,15 @@ export function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-30 border-b border-rail bg-surface/95 backdrop-blur">
-        <div className="mx-auto flex h-[58px] max-w-[1400px] items-center gap-8 px-7">
+        <div className="mx-auto flex min-h-[58px] max-w-[1400px] flex-wrap items-center gap-x-5 gap-y-1 px-4 py-2 sm:h-[58px] sm:flex-nowrap sm:gap-8 sm:px-7 sm:py-0">
           <Link href="/" className="flex shrink-0 items-baseline gap-2 rounded-[8px]">
             <span className="font-display text-[21px] leading-none text-ink">Dispatch</span>
-            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
+            <span className="hidden font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint sm:inline">
               Majestic Fighters
             </span>
           </Link>
 
-          <nav aria-label="Sections" className="flex items-center gap-1">
+          <nav aria-label="Sections" className="flex w-full items-center gap-1 sm:w-auto">
             {NAV.map((item) => {
               const active =
                 item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
@@ -50,7 +50,7 @@ export function Shell({ children }: { children: ReactNode }) {
                   aria-current={active ? "page" : undefined}
                   title={item.hint}
                   className={cx(
-                    "rounded-[9px] px-3.5 py-2 text-[14px] font-medium transition-colors duration-150",
+                    "rounded-[9px] px-2.5 py-1.5 text-[13px] font-medium transition-colors duration-150 sm:px-3.5 sm:py-2 sm:text-[14px]",
                     active ? "bg-accent-wash text-accent" : "text-ink-soft hover:bg-sunk",
                   )}
                 >
@@ -60,9 +60,9 @@ export function Shell({ children }: { children: ReactNode }) {
             })}
           </nav>
 
-          {/* The global "Agent activity" drawer used to sit here. Removed rather than repaired:
-              it showed "the agent hasn't run yet" while several runs were persisted, and even
-              working it only duplicated the per-message inspector -- which is strictly better,
+          {/* The global "Agent activity" drawer used to sit here. Removed because
+              it showed "the agent hasn't run yet" while several runs were persisted, and it
+              duplicated the per-message inspector, which is more useful
               because a trace is only meaningful next to the message it produced. */}
         </div>
       </header>
@@ -72,17 +72,8 @@ export function Shell({ children }: { children: ReactNode }) {
   );
 }
 
-function PulseDot() {
-  return (
-    <span className="relative flex h-1.5 w-1.5">
-      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
-      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-accent" />
-    </span>
-  );
-}
-
-/** Shared page frame. One measure and one rhythm across all three sections is most of what makes
- *  a multi-screen tool feel like one product rather than three. */
+/** Shared page frame. One measure and one rhythm across all four sections makes the console feel
+ *  like one product rather than four separate screens. */
 export function Page({
   title,
   lede,

@@ -1,53 +1,30 @@
 # Dispatch
 
-**An AI delivery coordinator that agrees a time with each customer, checks the real route before
-making the promise, and replans when the customer says no.**
+**An AI delivery coordinator that agrees a time with each customer, checks the
+published route before making the promise and replans when the customer says no.**
 
-Built by **Team Majestic Fighters** for the IGNITE Agentic AI Hackathon 2026. The use case was
-informed by an interview with Floof.sg, where fresh food cannot simply be left outside and staff
-must coordinate a recipient window.
+Built by **Team Majestic Fighters** for the IGNITE Agentic AI Hackathon 2026,
+Digital AI track. The use case was informed by an interview with Floof.sg, where
+staff coordinate attended deliveries for fresh pet food.
 
-[Open the 10-slide hackathon deck](submission/Dispatch-IGNITE-Hackathon-Deck.pptx).
+[Open the seven-slide hackathon deck](submission/Dispatch-IGNITE-Hackathon-Deck.pptx).
 
-## The 10-second version
+## The problem in ten seconds
 
-Google Maps can order stops. A calendar can store appointments. Neither can hold a conversation,
-understand a rejection, decide which routes are still feasible, ask for consent, then lock the
-accepted promise into a new route version.
+Google Maps can order known stops. A calendar can store appointments. Neither can
+talk to a customer, react to a rejection, check which routes remain feasible,
+ask for consent and then publish the accepted promise into a new route version.
 
-Dispatch does that loop:
+Dispatch handles that loop:
 
 1. A customer says when they are home in ordinary language.
-2. The agent checks the relevant published route and offers only a feasible window.
-3. If the customer rejects it, the agent excludes that choice, searches both routes and returns
-   three ranked alternatives.
-4. When the customer accepts, Dispatch locks the promise and republishes the day without moving
-   anyone already confirmed.
+2. The agent checks the relevant published route and offers a feasible window.
+3. If the customer rejects it, that choice is excluded and the agent searches
+   again.
+4. If the customer accepts, the promise is locked and the day is republished
+   without moving anyone already confirmed.
 
-## Three moments to demo
-
-### 1. One sentence becomes a safe offer
-
-Open **Customer Chat**, enter a customer and postal code, then type:
-
-> Saturday morning works for me.
-
-The agent interprets the request, chooses a bounded workflow, evaluates insertion positions and
-offers a window the route can keep.
-
-### 2. “No” triggers a different plan
-
-Select **Suggest another time**. Dispatch records the rejected slot, searches both published
-routes and presents exactly three calculated alternatives. These are not LLM guesses; each option
-contains route evidence and preserves every existing promise.
-
-### 3. Consent changes the operation
-
-Confirm the second option. The chat locks, the route moves from v1 to v2, the new stop is
-highlighted and the impact panel shows that zero existing promises moved. Refresh the page: the
-conversation, trace and confirmation remain.
-
-## Why this is agentic
+## What makes it agentic
 
 The optimiser calculates. The agent owns the changing conversation around it.
 
@@ -64,61 +41,116 @@ flowchart LR
     R -->|Reject| X[Exclude rejected slot]
     X --> D
     R -->|Accept| L[Lock promise]
-    L --> V[Publish route v2]
+    L --> V[Publish a new route version]
 ```
 
-The model is used where language and judgement matter. Deterministic code owns distance, policy,
-time windows, consent and route truth.
+The model is used where language and judgement matter. Deterministic code owns
+dates, distance, policy, consent and route truth.
+
+## Three moments to demo
+
+### 1. One message becomes a safe offer
+
+Open **Customer Chat**, enter a customer and postal code, then type:
+
+> Saturday morning works for me.
+
+Dispatch interprets the request, checks feasible insertion positions and offers
+a window the route can keep.
+
+### 2. A rejection changes the plan
+
+Select **Suggest another time**. Dispatch records the rejected slot, searches
+the permitted published routes and presents exactly three route-checked
+alternatives. If policy cannot produce all three, it hands the case to a
+coordinator instead of presenting a partial answer as complete.
+
+### 3. Consent changes the operation
+
+Confirm an option. The conversation locks, the route moves to a new version, the
+new stop is highlighted and the panel reports that zero existing promises moved.
+Refresh the page: the conversation, trace and confirmation remain.
+
+## Why existing tools stop short
+
+| Existing tool | What it does | What Dispatch adds |
+|---|---|---|
+| Google Maps | Orders known stops | Decides which appointment can safely become a stop |
+| Calendar booking | Stores a chosen slot | Offers only windows the published route can keep |
+| Route optimiser | Solves a fixed input | Reacts to rejection, asks for consent and runs another planning cycle |
+| Generic chatbot | Writes a reply | Uses approved tools, changes state, versions the route and leaves an audit trail |
+
+## Guardrails judges can inspect
+
+These are enforced in code, not left to a prompt.
+
+| Rule | Where it is enforced | Regression evidence |
+|---|---|---|
+| A model cannot invent dates | `dispatch_agent/planning/language.py` | `tests/test_conversation.py` |
+| Each intent exposes only legal actions | `dispatch_agent/planning/tools.py` | `tests/test_state_gate.py` |
+| The loop stops after ten tool steps | `dispatch_agent/agents/scheduling_agent.py` | `tests/test_scheduling_agent.py` |
+| An explanation cannot alter a booking | `dispatch_agent/planning/workflows.py` | `tests/test_browser_regressions.py` |
+| Existing confirmed promises do not move | `dispatch_agent/planning/insertion.py` | `tests/test_offer_integrity.py` |
+| Acceptance is idempotent and rolls back on failure | `dispatch_agent/planning/offer_service.py`, `dispatch_agent/db.py` | `tests/test_offers_and_plans.py` |
+| Provider errors are redacted before persistence | `dispatch_agent/planning/tools.py` | `tests/test_offer_integrity.py` |
+| A turn cannot finish with an unsent reply | `dispatch_agent/agents/scheduling_agent.py` | `tests/test_browser_regressions.py` |
 
 ## Architecture
 
 ```mermaid
 flowchart TB
     UI[Next.js operations console] --> API[FastAPI]
-    API --> G[LangGraph observe-decide-act loop]
+    API --> G[LangGraph observe, decide, act loop]
     G --> B[AWS Bedrock]
     G --> P[Policy and consent guards]
     G --> O[OR-Tools route solver]
-    O --> R[Google Maps / OneMap / offline routing]
-    G --> DB[(SQLite: messages, offers, traces, route versions)]
+    O --> R[Google Maps, OneMap or offline routing]
+    G --> DB[(SQLite: messages, offers, traces and route versions)]
 ```
 
-### Sponsor-native, not logo-native
+- **AWS Bedrock** handles free-text understanding and action selection.
+- **LangGraph** runs the bounded agent loop.
+- **Pydantic** validates tool calls before they reach operational state.
+- **OR-Tools** proves route feasibility. The model never invents route numbers.
+- **Persisted per-step logs** make each action and tool result inspectable in
+  the product.
 
-- **AWS Bedrock** reads free-text availability and drives the agent's action decisions.
-- **LangGraph** runs the bounded observe → decide → act loop and records every tool result.
-- **Pydantic** validates every tool call before it can reach operational state.
-- **OR-Tools** proves route feasibility; the LLM never invents route numbers.
-- **AgentCore** is the next deployment target for the existing Python agent runtime.
+## Evidence in the product
 
-## What makes it different
-
-| Existing tool | What it does | What Dispatch adds |
-|---|---|---|
-| Google Maps | Orders known stops | Decides which appointment can safely become a stop |
-| Calendar booking | Stores a chosen slot | Offers only slots the live route can keep |
-| Route optimiser | Solves a fixed input | Handles rejection, consent and another planning cycle |
-| Generic chatbot | Writes a reply | Uses tools, changes state, versions the route and leaves an audit trail |
-
-## Proof built into the product
-
-The seeded scenario is intentionally small enough to understand in a five-minute judging slot:
+The seeded scenario is deliberately small enough to understand in a five-minute
+judging slot:
 
 - 16 confirmed deliveries across two published routes
 - 2 waiting customers for the happy and difficult paths
-- exactly 3 route-checked alternatives in the difficult path
+- exactly 3 route-checked alternatives in a successful fallback
 - immutable accepted promises
 - persisted per-message tool traces
 - idempotent message and acceptance handling
 - rollback across offer, order, route and confirmation writes
-- real browser tests for both judge paths
+- four Chromium judge-path tests in CI
 
-Open **Function calls & results** under any reply to see which tool ran, what it received and what
-it found. The customer sees a simple conversation; the judge can inspect the machinery.
+Open **Function calls & results** under a reply to see which tool ran, what it
+received and what it found. The customer sees a simple conversation; a judge can
+inspect the machinery.
+
+## Real system and demo stand-ins
+
+| Part | Implemented | Demo stand-in |
+|---|---|---|
+| Customer conversation | Message history, intent handling, negotiation and consent | Web chat styled like WhatsApp |
+| Model path | Claude on AWS Bedrock or OpenAI chooses actions | `LLM_PROVIDER=none` uses the deterministic procedure |
+| Routing | Google Distance Matrix or OneMap | Haversine estimates when no provider is configured |
+| Orders and plans | Insertion search, offers, locks, route versions and driver sequence | 18 seeded orders and two published routes |
+| Policy | Searchable rules that the agent cites | Prototype operator policy in `knowledge/delivery-policy.md` |
+| Fleet | One van and two delivery days | Multi-vehicle routing is outside this prototype |
+
+Friday/Saturday, regional clusters, service times, the 10 km anchor radius and
+all customer records are synthetic prototype assumptions. They are not presented
+as Floof.sg operating policy.
 
 ## Run it
 
-Requirements: Python 3.11+, Node.js 22+, and an AWS Bedrock credential for the live model path.
+Requirements: Python 3.11+ and Node.js 22+.
 
 ```powershell
 git clone https://github.com/Stephensaleh1601/Delivery-Schedule-Agent.git
@@ -145,9 +177,9 @@ npm run dev
 
 Open [http://localhost:3000/chat](http://localhost:3000/chat).
 
-For a fully offline demo, set `LLM_PROVIDER=none`, `ROUTING_PROVIDER=haversine` and
-`GEOCODING_ENABLED=0`. Dispatch follows the same bounded workflow without making a paid provider
-call.
+For a fully offline demo, set `LLM_PROVIDER=none`,
+`ROUTING_PROVIDER=haversine` and `GEOCODING_ENABLED=0`. Dispatch follows the
+same bounded workflow without calling a paid provider.
 
 ## Verify it
 
@@ -159,24 +191,18 @@ npm run build:e2e
 npm run test:e2e
 ```
 
-CI runs the same Python, TypeScript, production-build and Chromium gates on every pull request.
+CI runs the Python suite, TypeScript check, production build and four Chromium
+judge paths on every pull request.
 
-## Safety invariants
+## Judging criteria
 
-- No booking without a customer-accepted offer and exact slot.
-- No confirmed appointment may move during replanning.
-- A route change invalidates stale offers before acceptance.
-- A rejected slot cannot be offered again in the same negotiation.
-- A model can call only the tools permitted for the current intent and state.
-- Every run has a hard step limit and a human-escalation path.
-- Provider failures degrade to the deterministic procedure.
-- Secrets are redacted before errors reach persisted traces.
-
-## Demo model
-
-Friday/Saturday, regional clusters, service times, the 10 km anchor radius and all demo customers
-are synthetic prototype assumptions. They make one repeatable coordination problem visible; they
-are not presented as Floof.sg's operating policy.
+| Criterion | Where to look |
+|---|---|
+| **Benefits** | The before-and-after on slide 7 and the persisted booking outcome |
+| **Innovation** | The rejection and consent loop around deterministic route optimisation |
+| **Effectiveness** | Happy and difficult customer paths over the real API |
+| **Technical quality** | The bounded LangGraph loop, guardrails, rollback, idempotency and CI |
+| **Presentation** | The seven-slide About story and the five-minute recorded demo |
 
 ## Repository map
 
@@ -194,4 +220,4 @@ tests/          Unit, integration and regression suite
 
 ## Team
 
-**Majestic Fighters** — Abhishek, Abel and Stephen.
+**Majestic Fighters:** Abhishek, Abel and Stephen.

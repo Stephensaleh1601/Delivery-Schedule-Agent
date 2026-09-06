@@ -71,6 +71,34 @@ def _event(order, event_type=PlanningEventType.NEW_ORDER, **payload):
     return PlanningEvent(event_type=event_type, order_id=order.id, payload=payload)
 
 
+@pytest.mark.parametrize("intent", ["explain", "policy_question", "general_support", "unclear"])
+def test_the_fallback_only_asks_for_actions_the_intent_allows(temp_db, intent):
+    """The standard procedure and the intent gate must agree. Otherwise every proposed action is
+    refused and a harmless customer question ends in an unnecessary coordinator hand-off."""
+    order = _order(temp_db)
+    question = "Why are you suggesting this time?"
+
+    run = handle_planning_event(
+        _event(
+            order,
+            PlanningEventType.MANUAL_RETRY,
+            intent=intent,
+            message=question,
+            question=question,
+        ),
+        repo=temp_db,
+        decider=RuleDecisionAgent(),
+        use_fallback=False,
+    )
+
+    refused = [
+        (action.tool, action.error)
+        for action in run.actions
+        if action.error in {"not_allowed_for_intent", "not_legal_yet", "action_not_allowed"}
+    ]
+    assert refused == [], refused
+
+
 @pytest.mark.parametrize(
     ("search_scope", "expected", "forbidden"),
     [

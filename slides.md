@@ -1,151 +1,144 @@
-# Slide 1 — The promise
+# Slide 1 — The ask
 
-## Nobody should spend the day asking customers when they are home
+*Judging criterion: Presentation*
 
-**Dispatch is an AI delivery coordinator that offers only times the route can keep.**
+## Nobody should spend an afternoon asking forty people when they are home
 
-Fresh-pet-food delivery · Singapore · Team Majestic Fighters
+Dispatch is an AI delivery coordinator that agrees a delivery time by text,
+checks the published route and only offers windows the van can keep.
 
----
+**Use case:** Floof.sg, fresh pet food delivery in Singapore
 
-# Slide 2 — The real bottleneck
+**Team:** Majestic Fighters
 
-## Before route optimisation, somebody has to negotiate the stops
-
-Informed by an interview with Floof.sg:
-
-- roughly 30–40 deliveries can run in a day
-- fresh food cannot simply be left outside
-- staff message customers to find a recipient window
-- those replies must then become a workable driver route
-
-One customer saying “not then” changes the input and sends the coordinator back into the loop.
+**Track:** IGNITE Agentic AI Hackathon 2026, Digital AI
 
 ---
 
-# Slide 3 — Why the existing tools stop short
+# Slide 2 — The problem
 
-| Tool | Useful for | Missing decision |
-|---|---|---|
-| WhatsApp | Getting a reply | Is the requested time operationally possible? |
-| Calendar | Storing a slot | Which safe slot should we offer? |
-| Google Maps | Ordering known stops | Should this customer become a stop on this route? |
-| Route optimiser | Solving fixed inputs | What happens after rejection or acceptance? |
+*Judging criteria: Benefits and Presentation*
 
-**The optimiser calculates. The agent owns the changing conversation around it.**
+## Two hard jobs, both done by hand
 
----
+Floof.sg coordinates attended deliveries for fresh pet food. Somebody must be
+home, so each order needs a time the customer accepted.
 
-# Slide 4 — One simple customer journey
+1. **Agree a time.** Floof reported 30–40 deliveries on a busy day in our
+   interview. One coordinator asks customers on WhatsApp.
+2. **Keep the route sensible.** Every accepted time changes where the stop can fit.
 
-```text
-Customer states availability
-          ↓
-Agent checks the relevant published route
-          ↓
-Offers one feasible window
-          ↓
-Customer accepts → lock promise → route v2
-        or
-Customer rejects → exclude slot → search again → three ranked choices
-```
+> Negotiating customers’ preferred delivery slots is the hardest part.
+>
+> *Floof.sg interview, 5 September 2026. Paraphrased.*
 
-No customer is moved without permission. No route number comes from the LLM.
+One rejection does not merely change a calendar entry. It starts another
+planning round.
 
 ---
 
-# Slide 5 — What makes it agentic
+# Slide 3 — What we built
+
+*Judging criterion: Effectiveness*
+
+## The customer texts. The agent replies with a time it can keep.
+
+1. The customer writes in ordinary language.
+2. The agent understands the request.
+3. It checks the relevant published route.
+4. It offers a feasible window with route evidence.
+5. A rejection excludes that choice and triggers another search.
+6. An acceptance locks the promise and publishes a new route version.
+
+**Happy path:** Mrs Chua accepts the first offer.
+
+**Difficult path:** Mr Rajan rejects it, receives route-checked alternatives and
+can be handed to a coordinator if policy cannot produce a complete set.
+
+No booking changes without the customer’s consent.
+
+---
+
+# Slide 4 — How it is built
+
+*Judging criteria: Innovation and Technical quality*
+
+## Everything comes back to the same question: what should I do next?
 
 ```mermaid
-flowchart LR
-    M[Message] --> O[Observe intent and state]
-    O --> D{Decide next action}
-    D --> T[Use bounded tools]
-    T --> R[Read route or policy result]
-    R --> A[Act: offer, confirm, explain or escalate]
-    A --> C{Customer response}
-    C -->|New constraint| O
-    C -->|Accepted| L[Lock and republish]
+flowchart TD
+    M[Customer message] --> U[Understand intent]
+    U --> A{Agent chooses the next action}
+    A --> P[Policy tools]
+    A --> R[Route tools]
+    A --> C[Action tools]
+    P --> A
+    R --> A
+    C --> A
+    A -->|Finished| O[One customer reply]
 ```
 
-The agent selects a legal workflow, observes the result and acts again. Pydantic contracts, consent
-guards and OR-Tools remain the source of truth.
+The AI handles language and chooses among approved actions. Deterministic code
+owns dates, distance, policy, consent and route truth. The loop is capped at ten
+tool steps and every action is persisted for inspection.
 
 ---
 
-# Slide 6 — Three moments judges can see
+# Slide 5 — Fitting people in
 
-## 1. Language becomes an operation
+*Judging criteria: Innovation and Technical quality*
 
-“Saturday morning works for me” becomes a route-checked offer.
+## Slide them into the day. Don’t rebuild it.
 
-## 2. Rejection changes the plan
+The repeatable demo has two published delivery days:
 
-“That does not work” records the declined slot and produces three different, ranked alternatives.
+- **Friday:** North, North-East, South and East
+- **Saturday:** Central, City and West
 
-## 3. Consent changes the route
+For a new customer, Dispatch tests positions around nearby stops and rejects any
+option that would make an existing promise late.
 
-The customer picks option two. Route v1 becomes v2, the stop is highlighted and **zero existing
-promises move**.
+Four rules stay fixed:
 
----
-
-# Slide 7 — Architecture
-
-```mermaid
-flowchart TB
-    UI[Next.js operations console] --> API[FastAPI]
-    API --> G[LangGraph observe-decide-act loop]
-    G --> B[AWS Bedrock]
-    G --> P[Policy and consent guards]
-    G --> O[OR-Tools route solver]
-    O --> MAPS[Google Maps / OneMap / offline routing]
-    G --> DB[(Messages, offers, traces, route versions)]
-```
-
-Every reply links to its persisted run. A judge can open the exact tool inputs and results that
-produced it.
+- Existing confirmed stops keep their order.
+- Existing promised windows do not move.
+- The agent searches only permitted delivery days.
+- It offers one normal slot, or exactly three fallbacks after a rejection.
 
 ---
 
-# Slide 8 — Sponsor technology is essential
+# Slide 6 — The prototype
 
-| Technology | Job in Dispatch |
+*Judging criteria: Effectiveness and Technical quality*
+
+## It runs. Here is where.
+
+- **Orders:** every job and its booking state
+- **Daily Routes:** published route versions in visiting order
+- **Customer Chat:** the conversation, tool calls and decision evidence
+
+The customer sees a simple reply. The coordinator can inspect what the agent
+read, which route it checked, what it rejected and why.
+
+Working now: Python, FastAPI, Next.js, LangGraph, AWS Bedrock, OR-Tools and
+SQLite. The demo channel and address lookup sit behind interfaces ready to
+connect to the operator’s messaging and address systems.
+
+---
+
+# Slide 7 — What changes
+
+*Judging criterion: Benefits*
+
+## An afternoon of texting becomes something that answers itself
+
+| Before | With Dispatch |
 |---|---|
-| AWS Bedrock | Understands free-text availability and chooses agent actions |
-| LangGraph | Runs the bounded observe → decide → act loop |
-| Pydantic | Rejects invalid or out-of-scope tool calls |
-| OR-Tools | Proves whether a promise fits the route |
-| Playwright + GitHub Actions | Replays both judge paths before every merge |
+| A coordinator chases dozens of replies | Each customer is answered as they reply |
+| A rejection starts another manual search | The agent excludes it and replans |
+| Route decisions live in one person’s head | Every decision and route version is inspectable |
+| Drivers reconcile appointments on the road | They receive a route built from accepted promises |
 
-Next deployment step: move the existing Python agent runtime into Bedrock AgentCore.
-
----
-
-# Slide 9 — Evidence, not a mock-up
-
-- 16 confirmed synthetic deliveries across two published demo routes
-- two waiting customers for the happy and difficult paths
-- exactly three route-checked alternatives after rejection
-- one accepted option republishes the route with zero promises moved
-- concurrent retries produce one message and one run
-- offer, order, route and confirmation writes roll back together
-- automated Python, TypeScript, production-build and Chromium gates
-
-The visible trace is backed by persisted tool results, not an animation.
-
----
-
-# Slide 10 — The outcome
-
-## From “when are you home?” to one route the driver can trust
-
-For the customer: a normal conversation and a time they agreed to.
-
-For the coordinator: fewer manual checks, no silent promise changes, and one auditable plan.
-
-For the operation: every offered slot is route-feasible; unresolved cases reach a person.
-
-**Dispatch negotiates the stops before the driver has to live with them.**
-
-Team Majestic Fighters · IGNITE Agentic AI Hackathon 2026
+Every customer gets a time they agreed to. Every driver gets a route that makes
+sense. The coordinator handles exceptions instead of spending the day on
+WhatsApp.
