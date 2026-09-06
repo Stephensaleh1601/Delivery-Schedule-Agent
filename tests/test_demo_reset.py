@@ -184,3 +184,36 @@ def test_reset_preserves_the_provider_caches(tmp_path, monkeypatch):
     finally:
         conn.close()
     assert "geocode_cache" in restored and "drive_time_cache" in restored
+
+
+def test_reset_endpoint_restores_the_two_clean_v1_routes(temp_db, monkeypatch):
+    """The browser button must remove rehearsal data and restore the exact recording state."""
+    from dispatch_agent.models import Address, JobRecord, JobType, PlanningStatus
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(config.settings, "demo_base_date", BASE.isoformat())
+    repo = JobsRepository()
+    repo.save_job(
+        JobRecord(
+            customer_name="Left over from rehearsal",
+            phone="90000000",
+            address=Address(raw_text="Test address", postal_code="408564"),
+            job_type=JobType.PET_FOOD_BOX,
+            planning_status=PlanningStatus.PENDING_AVAILABILITY,
+            duration_minutes=10,
+            raw_message="[test rehearsal data]",
+        )
+    )
+
+    from dispatch_agent.webapp.main import app
+
+    response = TestClient(app).post("/api/demo/reset")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["job_count"] == 18
+    assert [(route["version"], route["stop_count"]) for route in body["routes"]] == [
+        (1, 8),
+        (1, 8),
+    ]
+    assert not any(job.customer_name == "Left over from rehearsal" for job in repo.all_jobs())

@@ -318,6 +318,27 @@ def test_policy_search_keeps_the_customers_exact_question(temp_db):
     assert temp_db.messages(order.id), "the policy answer was never sent"
 
 
+def test_explanation_fallback_uses_current_read_only_tool(temp_db):
+    """A provider outage must not send an explanation through retired granular tools."""
+    order = _order(temp_db)
+    question = "Why are you suggesting this time?"
+    decision = RuleDecisionAgent().decide(
+        {
+            "event": _event(
+            order,
+            PlanningEventType.MANUAL_RETRY,
+            intent="explain",
+            message=question,
+            ),
+            "actions": [],
+        },
+        ["explain_offer", "finish"],
+    )
+
+    assert decision.action == "explain_offer"
+    assert decision.arguments == {"order_id": order.id, "reason": question}
+
+
 def test_saturday_only_question_retrieves_the_normal_day_exception():
     hits = policy_kb.search("So you can only do Saturday?")
 

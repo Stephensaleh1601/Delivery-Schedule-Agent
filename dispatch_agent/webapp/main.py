@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 from datetime import date as Date, time as Time
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -58,6 +59,10 @@ config.validate()
 
 app = FastAPI(title="Dispatch Sequencing")
 init_db()
+
+# Reseeding replaces several related tables. Only one reset may run at a time, otherwise two
+# clicks could interleave their deletes and inserts and leave a half-built demo.
+_demo_reset_lock = Lock()
 
 
 class RoutePlanRequest(BaseModel):
@@ -477,6 +482,43 @@ def bootstrap() -> dict:
             "routing_provider": settings.routing_provider,
         },
     }
+
+
+@app.post("/api/demo/reset")
+def reset_demo_data() -> dict:
+    """Restore the small, deterministic hackathon scenario while keeping provider caches.
+
+    This is deliberately an explicit endpoint behind a destructive button; application startup
+    never calls it. ``seed()`` clears only demo state and leaves geocode/drive-time cache tables
+    alone, so a second take stays fast and does not repeat paid provider requests.
+    """
+    if not _demo_reset_lock.acquire(blocking=False):
+        raise HTTPException(409, "A demo reset is already running")
+
+    try:
+        from scripts import seed_test_clients
+
+        summary = seed_test_clients.seed()
+        repo = JobsRepository()
+        routes = []
+        for day in PlanningClock.horizon_dates():
+            plan = repo.active_plan(day)
+            if plan is not None:
+                routes.append(
+                    {
+                        "date": day.isoformat(),
+                        "version": plan.version,
+                        "stop_count": len(plan.sequence.stops),
+                    }
+                )
+        return {
+            "status": "ok",
+            "summary": summary,
+            "job_count": len(repo.all_jobs()),
+            "routes": routes,
+        }
+    finally:
+        _demo_reset_lock.release()
 
 
 @app.get("/api/horizon")

@@ -100,11 +100,20 @@ class OpenAIChat:
         self._client = OpenAI(api_key=api_key or settings.openai_api_key)
 
     def complete(self, system: str, user: str, max_tokens: int = 1024) -> str:
+        request = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "max_completion_tokens": max_tokens,
+        }
+        if self.model.startswith("gpt-5.6"):
+            # GPT-5.6 supports function tools in Chat Completions only with reasoning disabled.
+            # These calls classify intent and choose from guarded actions; extra reasoning only
+            # adds latency and is not where route calculations happen.
+            request["reasoning_effort"] = "none"
+        else:
+            request["temperature"] = 0.2
         response = self._client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_completion_tokens=max_tokens,
-            temperature=0.2,
+            **request,
         )
         return response.choices[0].message.content or ""
 
@@ -118,13 +127,19 @@ class OpenAIChat:
     ) -> dict[str, Any]:
         """Force a single tool call, same trick as BedrockClaude.extract_structured -- the
         JSON schemas in agents/prompts.py are plain enough to hand to either provider as-is."""
+        request = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "tools": [{"type": "function", "function": {"name": tool_name, "parameters": tool_schema}}],
+            "tool_choice": {"type": "function", "function": {"name": tool_name}},
+            "max_completion_tokens": max_tokens,
+        }
+        if self.model.startswith("gpt-5.6"):
+            request["reasoning_effort"] = "none"
+        else:
+            request["temperature"] = 0
         response = self._client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            tools=[{"type": "function", "function": {"name": tool_name, "parameters": tool_schema}}],
-            tool_choice={"type": "function", "function": {"name": tool_name}},
-            max_completion_tokens=max_tokens,
-            temperature=0,
+            **request,
         )
         tool_calls = response.choices[0].message.tool_calls
         if not tool_calls:

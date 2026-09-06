@@ -80,6 +80,13 @@ export interface Bootstrap {
   };
 }
 
+export interface DemoResetResponse {
+  status: "ok";
+  summary: string;
+  job_count: number;
+  routes: Array<{ date: string; version: number; stop_count: number }>;
+}
+
 export type PlanningStatus =
   | "pending_availability"
   | "pending_planning"
@@ -537,6 +544,7 @@ export interface RoutePlanResponse {
 
 export const dispatch = {
   bootstrap: () => api.get<Bootstrap>("/api/bootstrap"),
+  resetDemo: () => api.post<DemoResetResponse>("/api/demo/reset"),
   horizon: () => api.get<Horizon>("/api/horizon"),
   orders: (planningStatus?: PlanningStatus) =>
     api.get<Order[]>(`/api/orders${planningStatus ? `?planning_status=${planningStatus}` : ""}`),

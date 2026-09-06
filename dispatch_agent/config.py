@@ -60,7 +60,7 @@ class Settings:
         "apac.anthropic.claude-haiku-4-5-20250929-v1:0",
     )
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
     # ROUTING_PROVIDER: "google" (Distance Matrix API), "onemap", or "haversine". Leave
     # credentials blank for whichever provider you're not using -- an unset/failing provider
     # falls back to the haversine estimate automatically.

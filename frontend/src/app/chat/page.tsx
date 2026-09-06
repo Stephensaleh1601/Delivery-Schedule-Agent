@@ -16,6 +16,7 @@ import {
   Wallpaper,
 } from "@/components/WhatsApp";
 import { Button, Card, ErrorPanel, Eyebrow, LockIcon, Pill, Skeleton, cx } from "@/components/ui";
+import { Modal } from "@/components/ui/Modal";
 import {
   dispatch,
   type ActivePlan,
@@ -69,6 +70,9 @@ export default function ChatPage() {
   const [after, setAfter] = useState<ActivePlan | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetNotice, setResetNotice] = useState<string | null>(null);
   const feed = useRef<HTMLDivElement>(null);
   // A failed request keeps its key, so clicking retry asks the server for the original outcome
   // instead of starting a second negotiation or publishing another route version.
@@ -233,6 +237,25 @@ export default function ChatPage() {
     boot.reload();
   }
 
+  async function resetDemo() {
+    if (resetting) return;
+    setResetting(true);
+    setError(null);
+    try {
+      const result = await dispatch.resetDemo();
+      reset();
+      const routes = result.routes
+        .map((route) => `${formatDate(route.date)} v${route.version} (${route.stop_count} stops)`)
+        .join(" and ");
+      setResetNotice(`Demo reset. ${routes}.`);
+      setResetOpen(false);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setResetting(false);
+    }
+  }
+
   const status = busy ? "typing…" : confirmed ? "delivery confirmed" : "online";
 
   return (
@@ -241,12 +264,50 @@ export default function ChatPage() {
       lede="The customer types in their own words. Every reply is the result of a real request — the agent reads the message, solves the route, and offers a window it can actually keep."
       wide
       actions={
-        <Button variant="ghost" onClick={reset}>
-          Start over
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" onClick={reset}>
+            Start over
+          </Button>
+          <Button variant="danger" onClick={() => setResetOpen(true)}>
+            Reset demo data
+          </Button>
+        </div>
       }
     >
       {boot.error ? <ErrorPanel error={boot.error} onRetry={boot.reload} /> : null}
+
+      <Modal
+        open={resetOpen}
+        onClose={() => !resetting && setResetOpen(false)}
+        title="Reset all demo data?"
+        subtitle="Use this before recording each demo path."
+        width={520}
+      >
+        <div className="flex flex-col gap-4 text-[13.5px] leading-[1.55] text-ink-soft">
+          <p>
+            This permanently removes every test chat, booking and route version, then rebuilds
+            the original Friday and Saturday routes at version 1.
+          </p>
+          <p>Saved geocodes and drive times are kept, so the next run stays fast.</p>
+          <div className="flex justify-end gap-2 border-t border-rail pt-4">
+            <Button disabled={resetting} onClick={() => setResetOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" busy={resetting} onClick={() => void resetDemo()}>
+              Reset demo data
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {resetNotice ? (
+        <div
+          role="status"
+          className="mb-4 rounded-[12px] border border-locked-edge bg-locked-wash px-4 py-3 text-[13px] text-ink"
+        >
+          {resetNotice}
+        </div>
+      ) : null}
 
       {/* Mounted at page level, not inside the phone column: the trace needs room to be read,
           and squeezing it into 380px is what made its rows collide in the first place. */}
