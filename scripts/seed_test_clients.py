@@ -16,7 +16,7 @@ day is Saturday. After they decline the Saturday morning offer:
 
     Saturday morning    rejected   the offer she declined
     Saturday afternoon  VALID      Thomson 3.9km, Cuscaden 6.7km
-    Saturday evening    excluded   Jurong East 16.1km, Jurong West 20.8km -- nothing within 10km
+    Saturday evening    excluded   Jurong East and Choa Chu Kang -- nothing within 10km
     Friday morning      VALID      Serangoon NEX 3.4km
     Friday afternoon    VALID      Kovan 5.3km
     Friday evening      excluded   Loyang 18.2km, Woodlands 15.6km
@@ -82,6 +82,7 @@ KNOWN_LOCATIONS: dict[str, tuple[float, float, str]] = {
     "600101": (1.33701, 103.73879, "101 Jurong East Street 13"),
     "640690": (1.34119, 103.70671, "690 Jurong West Central 1"),
     "648886": (1.33945, 103.70669, "1 Jurong West Central 2, Jurong Point"),
+    "680686": (1.40408, 103.74890, "686 Choa Chu Kang Crescent"),
     # -- The two customers the demo is about. Neither is a stop on either route. --------
     "408564": (1.32634, 103.89626, "10 Ubi Crescent, Ubi Techpark"),
 }
@@ -121,7 +122,9 @@ SATURDAY_ROUTE: list[tuple[str, str, DeliverySlot, JobType]] = [
     ("Mrs Devi", "249715", AFTERNOON, JobType.PET_FOOD_BOX),
     ("Mr Goh", "129588", AFTERNOON, JobType.ONE_OFF_PET_ORDER),
     ("Ms Farah", "600101", EVENING, JobType.PET_FOOD_BOX),
-    ("Mr Iskandar", "640690", EVENING, JobType.PET_FOOD_BOX),
+    # A real West anchor near the 68xxxx demo postal codes. Without it the greeting said West
+    # belongs to Saturday, then the insertion search found zero nearby Saturday stops.
+    ("Mr Iskandar", "680686", EVENING, JobType.PET_FOOD_BOX),
 ]
 
 # The two customers the demo is about. Neither has stated a time yet -- they say it in the thread,
