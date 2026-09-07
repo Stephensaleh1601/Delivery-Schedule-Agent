@@ -326,8 +326,11 @@ export default function ChatPage() {
         {/* -- the phone -------------------------------------------------- */}
         <div
           className={cx(
-            "flex flex-col gap-3 lg:order-1 lg:sticky lg:top-[74px]",
-            orderId ? "order-1" : "order-2",
+            "flex-col gap-3 lg:order-1 lg:sticky lg:top-[74px]",
+            // On a small screen the inactive phone is a 520px preview that pushes the actual
+            // setup action below the fold. Show it after the chat opens; desktop keeps the
+            // side-by-side preview.
+            orderId ? "order-1 flex" : "order-2 hidden lg:flex",
           )}
         >
           {/* Keep the phone inside the viewport. Only the message wallpaper scrolls; the header,

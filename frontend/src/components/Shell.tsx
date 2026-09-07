@@ -94,14 +94,14 @@ export function Page({
         wide ? "max-w-[1400px]" : "max-w-[1180px]",
       )}
     >
-      <header className="enter flex items-start justify-between gap-8">
+      <header className="enter flex flex-col items-start gap-4 sm:flex-row sm:justify-between sm:gap-8">
         <div className="flex flex-col gap-1.5">
           <h1 className="font-display text-[30px] leading-[1.08] tracking-[-0.01em] text-ink">
             {title}
           </h1>
           {lede && <p className="max-w-[70ch] text-[14px] leading-[1.55] text-ink-muted">{lede}</p>}
         </div>
-        {actions && <div className="flex shrink-0 items-center gap-2 pt-1">{actions}</div>}
+        {actions && <div className="flex shrink-0 items-center gap-2 sm:pt-1">{actions}</div>}
       </header>
       {children}
     </div>
