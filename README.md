@@ -113,19 +113,49 @@ These are enforced in code, not left to a prompt.
 flowchart TB
     UI[Next.js operations console] --> API[FastAPI]
     API --> G[LangGraph observe, decide, act loop]
-    G --> B[AWS Bedrock]
+    G <--> M[OpenAI gpt-5.6-luna]
     G --> P[Policy and consent guards]
     G --> O[OR-Tools route solver]
     O --> R[Google Maps, OneMap or offline routing]
     G --> DB[(SQLite: messages, offers, traces and route versions)]
 ```
 
-- **AWS Bedrock** handles free-text understanding and action selection.
+- **gpt-5.6-luna through OpenAI** handles free-text understanding and action selection in the
+  demo. Models accessed through AWS Bedrock remain configurable as an alternative provider.
 - **LangGraph** runs the bounded agent loop.
 - **Pydantic** validates tool calls before they reach operational state.
-- **OR-Tools** proves route feasibility. The model never invents route numbers.
+- **OR-Tools and deterministic insertion code** prove route feasibility. The model never invents
+  route numbers.
 - **Persisted per-step logs** make each action and tool result inspectable in
   the product.
+
+## How the best insertion position is chosen
+
+The language model does not guess where to place a customer. It calls a deterministic route tool
+that tests the customer against the current published routes.
+
+1. **Find nearby stops.** The tool measures the customer's address against every existing stop.
+   Only stops within 10 km become possible anchors — nearby stops where an insertion may make
+   sense.
+2. **Test both sides.** For every anchor, the tool tries placing the customer immediately before
+   and immediately after it. Duplicate gaps are removed so the same position is not tested twice.
+3. **Calculate the real detour.** For each position, the extra distance is:
+
+   `previous -> customer + customer -> next - previous -> next`
+
+   For example, if the old leg is 4 km and the two new legs are 3 km and 2 km, the insertion adds
+   `3 + 2 - 4 = 1 km`. This measures the extra journey, rather than only checking how close the
+   customer is to one stop.
+4. **Simulate the complete route.** A position is rejected if an existing customer would become
+   late, the new arrival is outside the delivery windows, the route exceeds the working-day limit,
+   or the customer already rejected that choice.
+5. **Rank the valid choices.** The tool keeps one best insertion per date and delivery window. It
+   ranks them by added distance, then added driving time, followed by stable date, window and
+   position tie-breakers. The same inputs therefore produce the same order every time.
+
+The difficult-customer flow returns the calculated top three. The model can explain the results,
+but it cannot change their figures or reorder them. Keeping the current stop order also avoids
+disrupting customers who already have confirmed deliveries.
 
 ## What the prototype proves
 
