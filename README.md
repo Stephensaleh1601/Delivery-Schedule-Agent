@@ -139,13 +139,27 @@ that tests the customer against the current published routes.
    sense.
 2. **Test both sides.** For every anchor, the tool tries placing the customer immediately before
    and immediately after it. Duplicate gaps are removed so the same position is not tested twice.
-3. **Calculate the real detour.** For each position, the extra distance is:
+3. **Calculate the real detour.** Let `P` be the previous stop, `C` the new customer and `N` the
+   next stop. The tool uses this formula:
 
-   `previous -> customer + customer -> next - previous -> next`
+   $$
+   \boxed{\Delta d = d(P,C) + d(C,N) - d(P,N)}
+   $$
 
-   For example, if the old leg is 4 km and the two new legs are 3 km and 2 km, the insertion adds
-   `3 + 2 - 4 = 1 km`. This measures the extra journey, rather than only checking how close the
-   customer is to one stop.
+   In plain English:
+
+   > **Added distance = previous to customer + customer to next − the original previous-to-next leg**
+
+   ```text
+   Before:  Previous ─────────── 4 km ───────────> Next
+
+   After:   Previous ── 3 km ──> Customer ── 2 km ──> Next
+
+   Added distance = 3 km + 2 km - 4 km = 1 km
+   ```
+
+   The original leg is subtracted because the driver would have travelled it anyway. This measures
+   the actual extra journey, rather than only checking how close the customer is to one stop.
 4. **Simulate the complete route.** A position is rejected if an existing customer would become
    late, the new arrival is outside the delivery windows, the route exceeds the working-day limit,
    or the customer already rejected that choice.
