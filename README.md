@@ -7,9 +7,14 @@ Built by **Team Majestic Fighters** for the IGNITE Agentic AI Hackathon 2026,
 Digital AI track, with **Floof.sg** as the real client use case for attended
 fresh-pet-food delivery.
 
+[Watch the demo](https://youtu.be/IVFSnU6MvtM) ·
 [Deck](submission/Dispatch-IGNITE-Hackathon-Deck.pptx) ·
 [Architecture](#architecture) · [Guardrails & tests](#guardrails-and-tests) ·
 [Run it](#run-it)
+
+[![Watch the Dispatch demo: fresh pet food needs someone home](docs/screenshots/demo-thumbnail.png)](https://youtu.be/IVFSnU6MvtM)
+
+[**Watch the 3-minute demo →**](https://youtu.be/IVFSnU6MvtM)
 
 ## The problem
 
@@ -74,10 +79,9 @@ new stop is highlighted and the panel reports that zero existing promises moved.
 Refresh the page: the conversation, trace and confirmation remain.
 
 <p align="center">
-  <img src="docs/screenshots/customer-negotiation.png" alt="Dispatch offering three route-checked alternatives after a customer rejects the first delivery window" width="49%">
-  <img src="docs/screenshots/route-republished.png" alt="Dispatch locking the accepted appointment and publishing route plan version two" width="49%">
+  <a href="docs/screenshots/customer-negotiation.png"><img src="docs/screenshots/customer-negotiation.png" alt="Dispatch offering three route-checked alternatives after a customer rejects the first delivery window" width="100%"></a>
 </p>
-<p align="center"><sub>The difficult path: reject, replan, confirm and publish a new route version.</sub></p>
+<p align="center"><sub>One rejected window, three route-checked alternatives. Existing delivery promises stay fixed.</sub></p>
 
 ## Why existing tools stop short
 
@@ -230,7 +234,7 @@ demo paths on every pull request.
 | **Innovation** | The rejection and consent loop around deterministic route optimisation |
 | **Effectiveness** | Happy and difficult customer paths over the real API |
 | **Technical quality** | The bounded LangGraph loop, guardrails, rollback, idempotency and CI |
-| **Presentation** | The seven-slide About story and the five-minute recorded demo |
+| **Presentation** | The seven-slide About story and the [3-minute demo](https://youtu.be/IVFSnU6MvtM) |
 
 ## Repository map
 
