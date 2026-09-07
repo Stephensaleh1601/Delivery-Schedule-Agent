@@ -7,16 +7,22 @@ Built by **Team Majestic Fighters** for the IGNITE Agentic AI Hackathon 2026,
 Digital AI track, with **Floof.sg** as the real client use case for attended
 fresh-pet-food delivery.
 
+[![CI](https://github.com/Stephensaleh1601/Delivery-Schedule-Agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Stephensaleh1601/Delivery-Schedule-Agent/actions/workflows/ci.yml)
+
 [Watch the demo](https://youtu.be/IVFSnU6MvtM) ·
 [Deck](submission/Dispatch-IGNITE-Hackathon-Deck.pptx) ·
 [Architecture](#architecture) · [Guardrails & tests](#guardrails-and-tests) ·
-[Run it](#run-it)
+[Rubric evidence](#rubric-evidence) · [Run it](#run-it)
 
 [![Watch the Dispatch demo: fresh pet food needs someone home](docs/screenshots/demo-thumbnail.png)](https://youtu.be/IVFSnU6MvtM)
 
 [**Watch the 3-minute demo →**](https://youtu.be/IVFSnU6MvtM)
 
 ## The problem
+
+In our 5 September interview, Floof.sg described busy days of roughly **30-40
+attended deliveries**. Route drawing was not the bottleneck. The hard part was
+consolidating customer replies into booking times, by hand, over WhatsApp.
 
 Google Maps can order known stops. A calendar can store appointments. Neither can
 talk to a customer, react to a rejection, check which routes remain feasible,
@@ -53,6 +59,14 @@ flowchart LR
 
 The model is used where language and judgement matter. Deterministic code owns
 dates, distance, policy, consent and route truth.
+
+| Part | Responsibility |
+|---|---|
+| Language model | Understands free text, chooses the next permitted action and writes the reply |
+| State gate | Exposes only tools that are legal for the current intent and booking state |
+| Policy knowledge base | Supplies fixed delivery-day, time-window, attendance and escalation rules |
+| Route tools | Calculate insertion positions, detours and time feasibility |
+| Database | Persists messages, offers, tool traces, consent and every route version |
 
 ## Three moments to demo
 
@@ -91,6 +105,19 @@ Refresh the page: the conversation, trace and confirmation remain.
 | Calendar booking | Stores a chosen slot | Offers only windows the published route can keep |
 | Route optimiser | Solves a fixed input | Reacts to rejection, asks for consent and runs another planning cycle |
 | Generic chatbot | Writes a reply | Uses approved tools, changes state, versions the route and leaves an audit trail |
+
+## Rubric evidence
+
+The official rubric gives 20% to each criterion. This table points judges to
+evidence they can inspect in the repository or working demo.
+
+| Criterion | Evidence in Dispatch |
+|---|---|
+| **Benefits delivered** | In the demonstrated flow, a coordinator no longer restarts the search after every customer rejection. The prototype turns one rejection into three checked alternatives, protects all 16 existing promises and hands unresolved cases to a person. Provider interfaces and a no-key offline mode make the proof of concept easy to adopt and repeat. |
+| **Original / innovative idea** | Dispatch optimises the negotiation, not only the route. It combines a language-model decision loop with deterministic insertion, explicit customer consent and route versioning. The model cannot invent or reorder route results. |
+| **Effectiveness** | Both required journeys run end to end: a normal cluster-day booking and a difficult customer who rejects, receives alternatives and accepts one. The accepted stop appears in plan v2 without moving an existing promise. |
+| **Technical quality** | The working prototype uses a bounded LangGraph loop, typed tool inputs, intent-based tool permissions, OR-Tools, transactional writes, idempotency and persisted traces. CI currently checks 506 Python tests and four Chromium browser tests. |
+| **Presentation** | The [3-minute video](https://youtu.be/IVFSnU6MvtM), [deck](submission/Dispatch-IGNITE-Hackathon-Deck.pptx), screenshots and three demo moments follow one story: problem, agent decision, route proof and measurable outcome. |
 
 ## Guardrails and tests
 
@@ -189,6 +216,19 @@ Open **Function calls & results** under a reply to see which tool ran, what it
 received and what it found. The customer sees a simple conversation; a judge can
 inspect the machinery.
 
+### Measured prototype results
+
+These are repeatable demo and test results, not estimated production savings.
+
+| Measure | Result | Why it matters |
+|---|---:|---|
+| Published starting workload | 16 confirmed stops across 2 routes | The new booking is tested against existing work |
+| Demonstrated customer journeys | 2 complete paths | Covers first-offer acceptance and rejection/replanning |
+| Difficult-customer alternatives | Exactly 3 | A complete choice set is calculated, or the case escalates |
+| Existing promises moved after acceptance | 0 | A new booking does not break an earlier promise |
+| Route history | v1 before, v2 after acceptance | Consent produces an auditable operational change |
+| Automated checks | 506 Python + 4 Chromium tests | Covers rules, tools, persistence and both visible demo paths |
+
 ## Repeatable demo
 
 The repository ships with 18 synthetic orders, two published routes and two
@@ -197,9 +237,43 @@ reproducible. AWS Bedrock, Google Maps and OneMap remain selectable through
 environment configuration; deterministic provider modes keep local runs and CI
 stable when credentials are unavailable.
 
+### What is real and what is simulated
+
+| Real in the prototype | Simulated for the hackathon |
+|---|---|
+| Language-model action selection, policy lookup and bounded tool loop | WhatsApp-style customer screen |
+| Insertion search, detour calculation and OR-Tools feasibility checks | Synthetic customer and route data |
+| Consent, database writes, route versioning and driver dispatch action | Offline distance provider used by CI |
+| Persisted messages, offers and per-step audit trace | One seeded driver per delivery day |
+
+The remaining production work is mainly integration and operational hardening:
+connect the chat API to WhatsApp, replace SQLite with a managed multi-user
+database, add authentication and run a live operational pilot. The agent,
+policy, insertion and consent boundaries are already separated for those
+integrations.
+
 ## Run it
 
 Requirements: Python 3.11+ and Node.js 22+.
+
+Run all commands from the repository root. No machine-specific file paths or
+global `PYTHONPATH` changes are required. Copy `.env.example` to `.env`; `.env`
+is ignored by Git so credentials are not committed.
+
+### Environment and provider options
+
+| Variable | Purpose |
+|---|---|
+| `LLM_PROVIDER` | `openai`, `bedrock` or `none` for deterministic offline runs |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | Required only when using OpenAI |
+| `AWS_REGION`, `AWS_PROFILE`, `BEDROCK_MODEL_ID` | Required only when using AWS Bedrock |
+| `ROUTING_PROVIDER`, `GOOGLE_MAPS_API_KEY` | Use `google` for road data or `haversine` for no-key local runs |
+| `GEOCODING_ENABLED` | Set to `0` for the fully seeded offline demo |
+| `DB_PATH` | SQLite file location; defaults to `./data/dispatch.db` |
+| `DEMO_BASE_DATE` | Optional fixed date that makes a recorded demo repeatable |
+
+For a no-key setup, use `LLM_PROVIDER=none`, `ROUTING_PROVIDER=haversine` and
+`GEOCODING_ENABLED=0` in `.env`. See `.env.example` for every tuning variable.
 
 ### macOS / Linux
 
@@ -253,9 +327,14 @@ npm run dev
 
 Open [http://localhost:3000/chat](http://localhost:3000/chat).
 
-For a fully offline demo, set `LLM_PROVIDER=none`,
-`ROUTING_PROVIDER=haversine` and `GEOCODING_ENABLED=0`. Dispatch follows the
-same bounded workflow without calling a paid provider.
+To restore the exact demo state on Windows, stop the existing API and run:
+
+```powershell
+.\scripts\demo_reset.ps1
+```
+
+This command deliberately clears the database at `DB_PATH`, reseeds the 18 demo
+orders and starts the API. Do not run it against data you need to keep.
 
 ## Verify it
 
@@ -270,29 +349,24 @@ npm run test:e2e
 CI runs the Python suite, TypeScript check, production build and four Chromium
 demo paths on every pull request.
 
-## Judging criteria
-
-| Criterion | Where to look |
-|---|---|
-| **Benefits** | The before-and-after on slide 7 and the persisted booking outcome |
-| **Innovation** | The rejection and consent loop around deterministic route optimisation |
-| **Effectiveness** | Happy and difficult customer paths over the real API |
-| **Technical quality** | The bounded LangGraph loop, guardrails, rollback, idempotency and CI |
-| **Presentation** | The seven-slide About story and the [3-minute demo](https://youtu.be/IVFSnU6MvtM) |
-
 ## Repository map
 
-```text
-dispatch_agent/
-  agents/       LangGraph loop, message understanding and progress traces
-  planning/     Offers, insertion search, policy, consent and route versions
-  geo/          Geocoding and routing providers
-  webapp/       FastAPI endpoints
-frontend/       Next.js operations console and Playwright demo-path tests
-knowledge/      Delivery policy used by the agent
-scripts/        Deterministic demo seed and test server
-tests/          Unit, integration and regression suite
-```
+| Path | Purpose |
+|---|---|
+| `dispatch_agent/agents/scheduling_agent.py` | Runs the LangGraph observe-decide-act loop and its ten-step cap |
+| `dispatch_agent/planning/tools.py` | Registers tools, validates calls and enforces intent/state permissions |
+| `dispatch_agent/planning/insertion_tools.py` | Tests and ranks safe insertion positions for normal and fallback offers |
+| `dispatch_agent/planning/policy_kb.py` | Retrieves relevant rules from the delivery-policy knowledge base |
+| `dispatch_agent/solver.py` | Uses OR-Tools to solve routes while respecting customer windows |
+| `dispatch_agent/db.py` | Owns the SQLite schema, migrations and transactional persistence |
+| `dispatch_agent/geo/` | Provides Google Maps, OneMap, caching and offline routing adapters |
+| `dispatch_agent/webapp/main.py` | Starts the FastAPI application and exposes the operational API |
+| `frontend/src/app/` | Implements Orders, Daily Routes, Customer Chat and the About story in Next.js |
+| `knowledge/delivery-policy.md` | Human-readable operating rules retrieved by the agent |
+| `scripts/seed_test_clients.py` | Builds the 18-order Friday/Saturday demo scenario |
+| `scripts/demo_reset.ps1` | Safely resets that scenario and starts the Windows demo API |
+| `frontend/e2e/demo.spec.ts` | Replays the visible happy and difficult customer paths in Chromium |
+| `tests/` | Holds unit, integration, safety and regression tests |
 
 ## Team
 
